@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Runtime data
+backend/data/
+
+# Local planning notes
+task_plan.md
+findings.md
+progress.md
+
+# Course delivery documents kept locally
+docs/代码说明文档.md
+docs/使用文档与HCI分析.md
+docs/*.docx
+
+# Local browser/test artifacts
+.playwright-cli/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+~$*.docx
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

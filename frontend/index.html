@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VisionCraft</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">VisionCraft</p>
+          <h1>多智能体 AIGC 影视工作台</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="connectionStatus" class="status-pill neutral">本地模式</span>
+          <button id="refreshBtn" class="icon-btn" title="刷新项目状态">⟳</button>
+          <button id="deleteProjectBtn" class="secondary-btn danger-btn">删除项目</button>
+          <button id="cleanupDemoBtn" class="secondary-btn">整理演示数据</button>
+          <button id="exportJsonBtn" class="secondary-btn">导出 JSON</button>
+          <button id="exportMdBtn" class="primary-btn">导出 Markdown</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="left-panel panel">
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>创建项目</h2>
+              <span id="routingBadge" class="status-pill">Direct</span>
+            </div>
+            <form id="projectForm" class="project-form">
+              <label>
+                项目名称
+                <input id="titleInput" maxlength="120" placeholder="输入项目名称" />
+              </label>
+              <label>
+                原著 / 故事文本
+                <textarea id="sourceTextInput" rows="9" placeholder="粘贴故事文本，或拖拽本地文本文件到下方上传区域"></textarea>
+              </label>
+              <div id="textDropzone" class="dropzone" role="button" tabindex="0">
+                <input id="textFileInput" type="file" accept=".txt,.md,.markdown,.json,text/plain,text/markdown,application/json" hidden />
+                <strong>拖拽原著文本到这里</strong>
+                <span>或点击选择本地 .txt / .md / .json 文件</span>
+                <small id="uploadStatus">未选择文件</small>
+              </div>
+              <div class="form-grid">
+                <label>
+                  视觉风格
+                  <select id="styleInput">
+                    <option value="cinematic clean realism">电影感写实</option>
+                    <option value="neo-noir rainy city">黑色悬疑雨夜</option>
+                    <option value="soft sci-fi minimalism">柔和科幻极简</option>
+                    <option value="ink wash animation">水墨动画</option>
+                  </select>
+                </label>
+                <label>
+                  视频比例
+                  <select id="ratioInput"></select>
+                </label>
+                <label>
+                  单镜时长
+                  <select id="durationInput"></select>
+                </label>
+                <label>
+                  镜头策略
+                  <select id="shotModeInput">
+                    <option value="auto">自动</option>
+                    <option value="manual">手动</option>
+                  </select>
+                </label>
+              </div>
+              <label id="manualShotField" class="hidden">
+                镜头数量
+                <input id="shotCountInput" type="number" min="1" max="12" value="4" />
+              </label>
+              <label class="checkbox-row">
+                <input id="reviewModeInput" type="checkbox" />
+                <span>监制模式：质检后暂停，等待人工确认再继续</span>
+              </label>
+              <div class="button-row">
+                <button type="submit" class="primary-btn">创建项目</button>
+                <button id="runWorkflowBtn" type="button" class="secondary-btn">启动改编流程</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>项目列表</h2>
+              <span id="projectCount" class="muted-text">0</span>
+            </div>
+            <div id="projectList" class="project-list"></div>
+          </section>
+
+          <section class="panel-section story-section">
+            <div class="section-title">
+              <h2>故事圣经</h2>
+            </div>
+            <div id="storyBible" class="story-bible empty-state">创建并运行项目后显示故事摘要、世界观和风格标签。</div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>Provider 诊断</h2>
+            </div>
+            <div id="providerDiagnostics" class="provider-diagnostics empty-state">等待服务状态。</div>
+          </section>
+        </aside>
+
+        <section class="center-panel">
+          <div class="agent-board panel">
+            <div class="section-title">
+              <h2>Agent 状态流</h2>
+              <span id="projectStatus" class="status-pill neutral">未创建</span>
+            </div>
+            <div id="agentFlow" class="agent-flow"></div>
+            <div id="assetSummaryBar" class="asset-summary-bar empty-state">视觉资产摘要会在项目运行后显示。</div>
+            <div class="workflow-controls">
+              <button id="resumeWorkflowBtn" class="secondary-btn" type="button">恢复流程</button>
+              <button id="retryWorkflowBtn" class="secondary-btn" type="button">重试流程</button>
+            </div>
+          </div>
+
+          <div class="shots-panel panel">
+            <div class="section-title">
+              <div>
+                <h2>分镜时间线</h2>
+                <p id="shotSummary" class="muted-text">等待生成分镜。</p>
+              </div>
+              <div class="button-row">
+                <button id="generateAllVideosBtn" class="secondary-btn" type="button">生成全部视频</button>
+                <button id="assembleProjectBtn" class="primary-btn" type="button">合成成片</button>
+              </div>
+            </div>
+            <div id="shotGrid" class="shot-grid empty-state">分镜卡片会出现在这里。</div>
+          </div>
+        </section>
+
+        <aside class="right-panel panel">
+          <section class="panel-section inspector-section">
+            <div class="section-title">
+              <h2>监制控制台</h2>
+              <span id="selectedShotBadge" class="status-pill">未选择</span>
+            </div>
+            <div id="shotInspector" class="shot-inspector empty-state">选择一个镜头查看关键帧、Prompt 和修改历史。</div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>自然语言反馈</h2>
+            </div>
+            <textarea id="feedbackInput" rows="4" placeholder="例如：这一幕更压抑一点，光线暗一些。"></textarea>
+            <button id="sendFeedbackBtn" class="primary-btn full-width">提交监制意见</button>
+            <div id="feedbackResult" class="feedback-result"></div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>全局约束</h2>
+            </div>
+            <div id="constraintList" class="constraint-list empty-state">暂无全局约束。</div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>记忆检索</h2>
+            </div>
+            <div class="memory-search">
+              <input id="memoryQueryInput" placeholder="检索角色、场景、原文或资产" />
+              <button id="memorySearchBtn" class="secondary-btn" type="button">检索</button>
+            </div>
+            <div id="memoryResults" class="memory-results empty-state">等待检索。</div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>视觉资产库</h2>
+              <span id="assetCount" class="muted-text">0</span>
+            </div>
+            <div id="assetLibrary" class="asset-library empty-state">运行项目后显示角色、场景与关键帧资产。</div>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="task-drawer">
+        <div>
+          <strong>任务队列</strong>
+          <span id="jobMessage" class="muted-text">等待任务。</span>
+        </div>
+        <div class="progress-track">
+          <div id="jobProgress" class="progress-bar"></div>
+        </div>
+        <span id="jobStatus" class="status-pill neutral">Idle</span>
+      </footer>
+    </div>
+
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
