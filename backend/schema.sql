@@ -1,0 +1,175 @@
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  style TEXT NOT NULL,
+  aspect_ratio TEXT NOT NULL,
+  duration_seconds INTEGER NOT NULL,
+  shot_count_mode TEXT NOT NULL,
+  requested_shot_count INTEGER,
+  review_mode INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  routing_mode TEXT NOT NULL DEFAULT 'direct',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS story_bibles (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL,
+  worldview TEXT NOT NULL,
+  style_tags TEXT NOT NULL,
+  themes TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS characters (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  description TEXT NOT NULL,
+  visual_prompt TEXT NOT NULL,
+  asset_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scenes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  visual_prompt TEXT NOT NULL,
+  asset_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS global_constraints (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target TEXT NOT NULL,
+  positive_prompt TEXT NOT NULL,
+  negative_prompt TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shots (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  shot_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  characters TEXT NOT NULL,
+  scene TEXT NOT NULL,
+  camera_motion TEXT NOT NULL,
+  visual_prompt TEXT NOT NULL,
+  negative_prompt TEXT NOT NULL,
+  audio_prompt TEXT NOT NULL,
+  rag_evidence TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  current_version_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shot_versions (
+  id TEXT PRIMARY KEY,
+  shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  visual_prompt TEXT NOT NULL,
+  negative_prompt TEXT NOT NULL,
+  audio_prompt TEXT NOT NULL,
+  first_frame_path TEXT,
+  last_frame_path TEXT,
+  video_path TEXT,
+  video_mode TEXT NOT NULL DEFAULT 't2v',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assets (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  embedding_ref TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feedback_records (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  shot_id TEXT REFERENCES shots(id) ON DELETE CASCADE,
+  user_text TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  target TEXT NOT NULL,
+  positive_prompt TEXT NOT NULL,
+  negative_prompt TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT '',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS video_tasks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  shot_id TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+  version_id TEXT NOT NULL REFERENCES shot_versions(id) ON DELETE CASCADE,
+  job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  remote_task_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  cloud_status TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  submit_payload TEXT NOT NULL DEFAULT '{}',
+  status_payload TEXT NOT NULL DEFAULT '{}',
+  video_url TEXT,
+  result_path TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider, remote_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  node TEXT NOT NULL,
+  status TEXT NOT NULL,
+  state_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_capabilities (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  supported_ratios TEXT NOT NULL,
+  supported_durations TEXT NOT NULL,
+  supported_resolutions TEXT NOT NULL,
+  mode TEXT NOT NULL
+);
