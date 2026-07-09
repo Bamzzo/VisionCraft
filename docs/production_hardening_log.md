@@ -391,6 +391,64 @@ python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 2
 python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
 ```
 
+## 任务 2：Pydantic 结构化校验与修复重试
+
+### 改动文件
+
+- `backend/providers/llm_provider.py`
+- `backend/workflow/langgraph_workflow.py`
+- `backend/workflow/mock_workflow.py`
+- `tools/story_plan_validation_smoke.py`
+- `.env.example`
+
+### 设计记录
+
+- 当前环境 Pydantic 版本为 `2.12.5`，结构化校验使用 v2 的 `model_validate`。
+- 新增 `StoryPlanModel`、`StoryCharacterModel`、`StorySceneModel`、`StoryShotModel`，覆盖编剧 Agent 输出的故事圣经、角色、场景和镜头字段。
+- `extra=ignore`：模型多返回字段不会失败；缺少必要字段、空字符串、空列表、镜头数量不等于 `shot_count` 会触发校验失败。
+- 新增 `PLAN_VALIDATION_MAX_RETRIES=2`，默认最多修复 2 次，即总共 3 次 LLM JSON 尝试。
+- 校验失败后，把 Pydantic 错误摘要压缩到 800 字以内，追加到下一轮修复提示中，要求模型只返回 JSON。
+- 如果多次修复仍失败，但最后一次至少返回了可解析 JSON，则走 `_coerce_story_plan` 兜底并标记 `_validation.status=coerced_after_validation_failure`。如果连 JSON 都无法解析，则抛出 `ProviderError`，工作流回退本地 planner。
+- LangGraph workflow 和 mock workflow 会把 schema 状态写入 job message，例如 `Story plan schema validated after 2 attempt(s)`。
+
+### 专项验收
+
+命令：
+```powershell
+python tools\story_plan_validation_smoke.py
+python -c "import pydantic; print('pydantic', pydantic.__version__)"
+```
+
+关键输出：
+```text
+retry_then_valid ok attempts=2
+coerce_after_validation_failure ok attempts=3
+pydantic 2.12.5
+```
+
+结论：第一次 schema 不合格、第二次修复成功的路径通过；连续失败后 coerce 兜底的路径通过。
+
+### 回归检查
+
+命令：
+```powershell
+python -c "import ast; from pathlib import Path; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in ['backend','eval','tools'] for p in Path(root).rglob('*.py')]; print('backend eval tools python syntax ok')"
+node --check frontend\js\api.js
+node --check frontend\js\app.js
+node --check frontend\js\render.js
+node --check frontend\js\state.js
+python -m pip show pytest
+```
+
+关键输出：
+```text
+backend eval tools python syntax ok
+node --check 无输出，表示通过
+WARNING: Package(s) not found: pytest
+```
+
+结论：Python/JS 语法回归通过，pytest 仍未安装，与基线一致，没有新增失败。
+
 ### 遗留问题
 
 - 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。

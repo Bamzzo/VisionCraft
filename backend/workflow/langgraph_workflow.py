@@ -138,7 +138,12 @@ def _plan_story(state: VisionCraftState) -> VisionCraftState:
     if live_llm_available():
         update_job(job_id, "running", 34, f"Calling live LLM provider for {route} story planning")
         try:
-            story_data = _normalize_live_story_data(generate_story_plan(payload, shot_count), payload)
+            live_plan = generate_story_plan(payload, shot_count)
+            validation = live_plan.get("_validation") or {}
+            status = validation.get("status", "unknown")
+            attempts = validation.get("attempts", 1)
+            update_job(job_id, "running", 38, f"Story plan schema {status} after {attempts} attempt(s)")
+            story_data = _normalize_live_story_data(live_plan, payload)
         except ProviderError as exc:
             update_job(job_id, "running", 40, f"Live LLM failed, fallback to local planner: {exc}")
     save_story_bible(

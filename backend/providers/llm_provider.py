@@ -6,6 +6,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
 from ..schemas import ProjectCreate
 
 
@@ -18,6 +20,65 @@ class LLMConfig:
     api_key: str
     base_url: str
     model: str
+
+
+class _PlanBase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_string_fields(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+class StoryCharacterModel(_PlanBase):
+    name: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_prompt: str = Field(min_length=1)
+
+
+class StorySceneModel(_PlanBase):
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_prompt: str = Field(min_length=1)
+
+
+class StoryShotModel(_PlanBase):
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    characters: list[str] = Field(min_length=1)
+    scene: str = Field(min_length=1)
+    camera_motion: str = Field(min_length=1)
+    visual_prompt: str = Field(min_length=1)
+    negative_prompt: str = Field(min_length=1)
+    audio_prompt: str = Field(min_length=1)
+
+    @field_validator("characters")
+    @classmethod
+    def _clean_characters(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if not cleaned:
+            raise ValueError("characters must contain at least one non-empty name")
+        return cleaned
+
+
+class StoryPlanModel(_PlanBase):
+    summary: str = Field(min_length=1)
+    worldview: str = Field(min_length=1)
+    style_tags: list[str] = Field(min_length=1)
+    themes: list[str] = Field(min_length=1)
+    characters: list[StoryCharacterModel] = Field(min_length=1)
+    scenes: list[StorySceneModel] = Field(min_length=1)
+    shots: list[StoryShotModel] = Field(min_length=1)
+
+    @field_validator("style_tags", "themes")
+    @classmethod
+    def _clean_string_list(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if not cleaned:
+            raise ValueError("list must contain at least one non-empty string")
+        return cleaned
 
 
 def live_llm_available() -> bool:
@@ -162,11 +223,94 @@ Return this exact JSON shape:
 """.strip(),
         },
     ]
+    return _call_validated_storyboard_json(config, messages, shot_count, payload)
+
+
+def _call_validated_storyboard_json(
+    config: LLMConfig,
+    messages: list[dict[str, str]],
+    shot_count: int,
+    payload: ProjectCreate,
+) -> dict:
+    max_retries = _plan_validation_max_retries()
+    attempts = max_retries + 1
+    last_error = ""
+    last_parsed: dict[str, Any] | None = None
+    current_messages = list(messages)
+    for attempt in range(1, attempts + 1):
+        try:
+            parsed = _call_chat_json(config, current_messages, temperature=0.65, timeout=120)
+            last_parsed = parsed
+            return _validate_story_plan(parsed, shot_count, payload, attempt)
+        except Exception as exc:
+            last_error = _validation_error_summary(exc)
+            if attempt < attempts:
+                current_messages = _append_story_plan_repair_message(current_messages, shot_count, last_error)
+                continue
+            if last_parsed is not None:
+                coerced = _coerce_story_plan(last_parsed, shot_count, payload)
+                coerced["_validation"] = {
+                    "schema": "StoryPlanModel",
+                    "pydantic": "v2",
+                    "status": "coerced_after_validation_failure",
+                    "attempts": attempt,
+                    "last_error": last_error,
+                }
+                return coerced
+            raise ProviderError(f"LLM story plan JSON validation failed: {last_error}") from exc
+    raise ProviderError(f"LLM story plan JSON validation failed: {last_error}")
+
+
+def _validate_story_plan(plan: dict[str, Any], shot_count: int, payload: ProjectCreate, attempt: int) -> dict:
+    validated = StoryPlanModel.model_validate(plan or {})
+    if len(validated.shots) != shot_count:
+        raise ValueError(f"shots length {len(validated.shots)} does not match expected shot_count {shot_count}")
+    result = _coerce_story_plan(validated.model_dump(), shot_count, payload)
+    result["_validation"] = {
+        "schema": "StoryPlanModel",
+        "pydantic": "v2",
+        "status": "validated",
+        "attempts": attempt,
+        "last_error": "",
+    }
+    return result
+
+
+def _append_story_plan_repair_message(
+    messages: list[dict[str, str]],
+    shot_count: int,
+    error_summary: str,
+) -> list[dict[str, str]]:
+    repair_payload = {
+        "task": "Repair the previous story plan JSON. Return JSON only.",
+        "expected_shot_count": shot_count,
+        "validation_error": error_summary[:800],
+        "rules": [
+            "Keep the exact top-level keys from the requested schema.",
+            "Fill every required string field with non-empty content.",
+            "Return exactly expected_shot_count shots.",
+            "Each shot.characters must be a non-empty array of character names.",
+            "Do not add markdown fences or explanatory text.",
+        ],
+    }
+    return messages + [{"role": "user", "content": json.dumps(repair_payload, ensure_ascii=False)}]
+
+
+def _validation_error_summary(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        messages = []
+        for error in exc.errors()[:8]:
+            location = ".".join(str(part) for part in error.get("loc", ()))
+            messages.append(f"{location}: {error.get('msg')}")
+        return "; ".join(messages)[:800]
+    return str(exc)[:800]
+
+
+def _plan_validation_max_retries() -> int:
     try:
-        parsed = _call_chat_json(config, messages, temperature=0.65, timeout=120)
-    except Exception as exc:
-        raise ProviderError(str(exc)) from exc
-    return _coerce_story_plan(parsed, shot_count, payload)
+        return max(0, min(5, int(os.getenv("PLAN_VALIDATION_MAX_RETRIES", "2"))))
+    except ValueError:
+        return 2
 
 
 def _call_map_reduce_storyboard(config: LLMConfig, payload: ProjectCreate, shot_count: int, route: str) -> dict:
