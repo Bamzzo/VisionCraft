@@ -123,6 +123,12 @@ def append_result(row: dict) -> None:
         f"| {row['timestamp']} | {row['commit']} | {row['provider']} | {row['active_provider']} | "
         f"{row['mode']} | {row['k']} | {row['cases']} | {row['recall']:.4f} | {row['mrr']:.4f} | {row['status']} |\n"
     )
+    content = RESULTS_PATH.read_text(encoding="utf-8")
+    marker = "\n## Breakdown By Case Category\n"
+    if marker in content:
+        before, after = content.split(marker, 1)
+        RESULTS_PATH.write_text(before.rstrip() + "\n" + line + marker + after, encoding="utf-8")
+        return
     with RESULTS_PATH.open("a", encoding="utf-8") as file:
         file.write(line)
 

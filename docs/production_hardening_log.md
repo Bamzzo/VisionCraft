@@ -542,6 +542,75 @@ WARNING: Package(s) not found: pytest
 
 结论：最终回归通过，pytest 仍未安装，与基线一致。
 
+## 评测补跑：breakdown 与 SiliconFlow live
+
+### 改动文件
+
+- `eval/run_retrieval_eval.py`
+- `eval/results.md`
+- `README.md`
+- `docs/VisionCraft_优化交付报告.md`
+- `docs/production_hardening_log.md`
+
+### 设计记录
+
+- `run_retrieval_eval.py` 新增 `--breakdown` 参数。
+- breakdown 按 `note` 前缀归类：
+  - `direct_match`
+  - `semantic_rewrite`
+  - `cross_shot`
+- 分组指标包括 `cases`、`expected_labels`、`recall@k`、`MRR`、`hit_rate@k`。
+- 修复 `results.md` 追加逻辑：当文件已有 breakdown section 时，总分新行会插入主表末尾，不再误写进 breakdown 表。
+
+### hash breakdown
+
+命令：
+```powershell
+$env:EMBEDDING_PROVIDER='hash'
+python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 5 --breakdown
+python eval\run_retrieval_eval.py --provider hash --mode lexical_only --k 5 --breakdown
+python eval\run_retrieval_eval.py --provider hash --mode vector_only --k 5 --breakdown
+```
+
+关键输出：
+```text
+provider=hash active_provider=hash mode=hybrid k=5 cases=28 recall@k=0.8363 mrr=0.6619 hit_rate@k=0.9286 status=OK
+  semantic_rewrite: cases=10 expected_labels=19 recall@k=0.8500 mrr=0.8333 hit_rate@k=1.0000
+
+provider=hash active_provider=hash mode=lexical_only k=5 cases=28 recall@k=0.8363 mrr=0.6619 hit_rate@k=0.9286 status=OK
+  semantic_rewrite: cases=10 expected_labels=19 recall@k=0.8500 mrr=0.8333 hit_rate@k=1.0000
+
+provider=hash active_provider=hash mode=vector_only k=5 cases=28 recall@k=0.7381 mrr=0.6452 hit_rate@k=0.8929 status=OK
+  semantic_rewrite: cases=10 expected_labels=19 recall@k=0.7000 mrr=0.7333 hit_rate@k=0.9000
+```
+
+结论：hash hybrid@5 与 lexical_only@5 完全同分，说明当前 hash 向量没有带来排序增益；vector_only 明显更低。
+
+### SiliconFlow live 补跑
+
+命令：
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+python eval\run_retrieval_eval.py --provider siliconflow --mode vector_only --k 2 --breakdown
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 2 --breakdown
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5 --breakdown
+```
+
+关键输出：
+```text
+provider=siliconflow active_provider=siliconflow:BAAI/bge-m3 mode=vector_only k=2 cases=28 recall@k=0.7738 mrr=0.8929 hit_rate@k=0.8929 status=OK
+provider=siliconflow active_provider=siliconflow:BAAI/bge-m3 mode=hybrid k=2 cases=28 recall@k=0.7708 mrr=0.8750 hit_rate@k=0.9643 status=OK
+provider=siliconflow active_provider=siliconflow:BAAI/bge-m3 mode=hybrid k=5 cases=28 recall@k=0.9494 mrr=0.8869 hit_rate@k=1.0000 status=OK
+  semantic_rewrite: cases=10 expected_labels=19 recall@k=1.0000 mrr=0.9500 hit_rate@k=1.0000
+```
+
+结论：
+
+- SiliconFlow live embedding 已补跑成功，`active_provider=siliconflow:BAAI/bge-m3`，status 为 `OK`。
+- 总 recall@5 从 hash hybrid 的 `0.8363` 提升到 SiliconFlow hybrid 的 `0.9494`。
+- 同义改写类 recall@5 从 `0.8500` 提升到 `1.0000`。
+- k=2 的 recall 受多 expected label 用例影响，应同时引用 hit_rate@k。
+
 ### 遗留问题
 
 - 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。

@@ -330,18 +330,27 @@ Provider 建议：
 ```powershell
 $env:EMBEDDING_PROVIDER='hash'
 python eval\dump_memory_labels.py
-python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 2
-python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 5
+python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 5 --breakdown
 ```
 
-当前 hash 基线结果见 `eval/results.md`。SiliconFlow live embedding 评测需要账户余额和 key 可用：
+SiliconFlow live embedding：
 
 ```powershell
 $env:EMBEDDING_PROVIDER='siliconflow'
 $env:HYBRID_LEXICAL_WEIGHT='0.3'
 $env:HYBRID_VECTOR_WEIGHT='0.7'
-python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5 --breakdown
 ```
+
+当前 `eval/results.md` 中的主要结果：
+
+| provider | mode | k | recall@k | MRR | 说明 |
+| --- | --- | ---: | ---: | ---: | --- |
+| hash | hybrid | 5 | 0.8363 | 0.6619 | 与 lexical_only 完全相同，hash 向量没有带来排序增益 |
+| hash | vector_only | 5 | 0.7381 | 0.6452 | 低于 hybrid / lexical_only |
+| siliconflow | hybrid | 5 | 0.9494 | 0.8869 | live BGE-M3 embedding，状态 OK |
+
+分组结果里，`semantic_rewrite` 类从 hash hybrid@5 的 `0.8500` 提升到 SiliconFlow hybrid@5 的 `1.0000`。`k=2` 的 recall 受多 expected label 用例影响较大，建议同时看 hit_rate@k；SiliconFlow hybrid@2 的 hit_rate@2 为 `0.9643`。
 
 评测脚本会重建 synthetic 项目 `eval_project_001`，请串行执行。
 
@@ -403,4 +412,4 @@ visioncraft/
 - ChromaDB 本地持久化迁移到独立向量服务或 pgvector。
 - 前端在多人协作、复杂状态和权限管理场景下迁移到 React / Vue。
 
-已加入的生产化改造记录在 `docs/production_hardening_log.md`。其中 SiliconFlow embedding live 评测因账户余额不足标记为 `PENDING_LIVE_KEY`，key 与余额就绪后可按文档中的命令补跑。
+已加入的生产化改造记录在 `docs/production_hardening_log.md`。SiliconFlow embedding live 评测已经补跑成功，最新指标见 `eval/results.md`。

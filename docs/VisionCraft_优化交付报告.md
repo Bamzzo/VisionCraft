@@ -12,6 +12,7 @@
 | `b8198e1` | task 4 | memory label dump、检索评测结果、验收日志 |
 | `597371b` | task 2 | Pydantic v2 story-plan schema、修复重试、smoke 脚本 |
 | `276fb6e` | task 5 | 中文 README、`.env.example` 注释、文档验收 |
+| `f19f237` | eval | 检索评测增加按用例类别分组输出 |
 
 本次交付物：
 
@@ -126,7 +127,7 @@ fallback_used True
 
 ### 边界
 
-SiliconFlow live 语义质量尚未完成验证，原因是账户余额不足。代码路径和 fallback 已验证。
+SiliconFlow live 语义质量已在充值后补跑成功。fallback 记录仍保留在 `eval/results.md` 中，用于说明余额不足时系统会降级到 hash provider。
 
 ## 任务 4：检索评测
 
@@ -161,8 +162,30 @@ memory_rows 16
 | hash | hash | vector_only | 5 | 28 | 0.7381 | 0.6452 | OK |
 | hash | hash | lexical_only | 5 | 28 | 0.8363 | 0.6619 | OK |
 | siliconflow | hash | vector_only | 2 | 28 | 0.4792 | 0.5893 | PENDING_LIVE_KEY |
+| siliconflow | siliconflow:BAAI/bge-m3 | vector_only | 2 | 28 | 0.7738 | 0.8929 | OK |
+| siliconflow | siliconflow:BAAI/bge-m3 | hybrid | 2 | 28 | 0.7708 | 0.8750 | OK |
+| siliconflow | siliconflow:BAAI/bge-m3 | hybrid | 5 | 28 | 0.9494 | 0.8869 | OK |
 
-SiliconFlow 行使用了 fallback hash，状态已标记为 `PENDING_LIVE_KEY`。
+充值前的 SiliconFlow 行使用了 fallback hash，状态为 `PENDING_LIVE_KEY`。充值后补跑成功，`active_provider` 为 `siliconflow:BAAI/bge-m3`，status 为 `OK`。
+
+分组评测结果：
+
+| provider | mode | k | group | recall@k | MRR | hit_rate@k |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| hash | hybrid | 5 | direct_match | 0.8000 | 0.5283 | 0.8000 |
+| hash | hybrid | 5 | semantic_rewrite | 0.8500 | 0.8333 | 1.0000 |
+| hash | hybrid | 5 | cross_shot | 0.8646 | 0.6146 | 1.0000 |
+| siliconflow | hybrid | 5 | direct_match | 1.0000 | 0.9333 | 1.0000 |
+| siliconflow | hybrid | 5 | semantic_rewrite | 1.0000 | 0.9500 | 1.0000 |
+| siliconflow | hybrid | 5 | cross_shot | 0.8229 | 0.7500 | 1.0000 |
+
+关键发现：
+
+- hash hybrid@5 与 hash lexical_only@5 的总分完全相同，均为 recall@5 `0.8363`、MRR `0.6619`，说明 hash 向量在当前权重下没有给排序带来增益。
+- hash vector_only@5 只有 recall@5 `0.7381`，低于字面匹配路径。
+- SiliconFlow BGE-M3 hybrid@5 将总 recall@5 提升到 `0.9494`，MRR 提升到 `0.8869`。
+- 同义改写类从 hash hybrid@5 的 `0.8500` 提升到 SiliconFlow hybrid@5 的 `1.0000`。
+- k=2 用例中部分 expected_labels 有 2-4 个，recall@2 存在结构性天花板，因此报告和面试中应同时引用 hit_rate@k。
 
 ## 任务 2：Pydantic 校验重试
 
@@ -223,21 +246,12 @@ WARNING: Package(s) not found: pytest
 
 ## PENDING 清单
 
-SiliconFlow embedding live 评测因账户余额不足未完成。key 和余额可用后执行：
+当前没有未完成的 live embedding 评测项。SiliconFlow 补跑已完成，`eval/results.md` 中最新三条 live 记录均为：
 
-```powershell
-$env:EMBEDDING_PROVIDER='siliconflow'
-$env:HYBRID_LEXICAL_WEIGHT='0'
-$env:HYBRID_VECTOR_WEIGHT='1'
-python eval\run_retrieval_eval.py --provider siliconflow --mode vector_only --k 2
-
-$env:HYBRID_LEXICAL_WEIGHT='0.3'
-$env:HYBRID_VECTOR_WEIGHT='0.7'
-python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 2
-python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
+```text
+active_provider=siliconflow:BAAI/bge-m3
+status=OK
 ```
-
-执行后检查 `eval/results.md` 中 `active_provider` 是否为 `siliconflow:BAAI/bge-m3`，并确认 status 为 `OK`。
 
 ## 附录调查
 
@@ -308,7 +322,7 @@ python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
 
 ### 任务 4
 
-这个任务给 RAG 检索建立了可复现评测。评测项目是 synthetic 数据，先 dump 真实 memory label，再让用例的 expected label 从 dump 中选取，避免主观编造答案。指标记录 commit hash、provider、mode、k、recall@k 和 MRR，后续替换 embedding 模型时可以直接比较。
+这个任务给 RAG 检索建立了可复现评测。评测项目是 synthetic 数据，先 dump 真实 memory label，再让用例的 expected label 从 dump 中选取，避免主观编造答案。指标记录 commit hash、provider、mode、k、recall@k、MRR 和分组 breakdown；实测 hash hybrid 与 lexical_only 完全同分，推动了语义 embedding 升级，SiliconFlow BGE-M3 在 hybrid@5 下将总 recall 从 `0.8363` 提升到 `0.9494`，同义改写类从 `0.8500` 提升到 `1.0000`。
 
 ### 任务 2
 
