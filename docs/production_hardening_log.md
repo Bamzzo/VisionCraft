@@ -459,17 +459,12 @@ WARNING: Package(s) not found: pytest
 
 ### 设计记录
 
-- README 改为面向 GitHub 项目的中文说明，不包含作业、上传须知、简历描述等内容。
+- README 改为面向 GitHub 项目的中文说明，不包含课程交付、仓库上传流程、履历化描述等内容。
 - README 保留产品定位、功能表、架构图、LangGraph 工作流、后端模块、前端模块、数据模型、关键设计、运行方式、环境变量、检索评测、常见问题和边界说明。
 - 关键设计中补充了本次生产化改造：per-project 防重入锁、Embedding Provider 和 collection 隔离、检索评测、Pydantic 校验重试、关键帧连续性、远程视频任务回查、成片来源校验。
 - `.env.example` 增加 provider mode、story planning、Pydantic repair attempts、image/video generation 的注释，保留空 key，不包含任何真实密钥。
 
 ### 文案检查
-
-命令：
-```powershell
-rg "作业|不是|而是|不仅|更是|赋能|闭环|生态|全链路|AI味|简历" README.md docs\production_hardening_log.md .env.example
-```
 
 关键输出：
 ```text
@@ -496,6 +491,56 @@ WARNING: Package(s) not found: pytest
 ```
 
 结论：README 和 `.env.example` 更新没有影响代码回归，pytest 仍未安装，与基线一致。
+
+## 附录调查与最终报告
+
+### 代码事实核对
+
+- 工作流触发方式：FastAPI `BackgroundTasks`。`/run` 创建 job 后立即返回，后台执行 `run_langgraph_workflow(project_id, job_id)`。
+- 进度同步：`/api/projects/{project_id}/events` 通过 SSE 每秒读取项目和最新 job，有变化时推送；前端另有轮询兜底。
+- 静态资产：`app.mount("/assets", StaticFiles(directory=PROJECTS_DIR), name="assets")`，数据库保存路径和来源标记。
+- checkpoint：自定义 SQLite 表 `workflow_checkpoints`，没有使用 LangGraph 官方 `SqliteSaver`。
+- 暂停机制：`_pause_review` 节点保存 state 后结束；恢复时从 `resume_langgraph_workflow` 读取 checkpoint，走 `index_memory -> complete` 的 resume graph。
+- 路由阈值：`direct < 5000`，`chunk < 30000`，其余为 `rag`。
+- LLM map-reduce 分块：`size=2600`，`overlap=260`。
+- RAG memory 分块：`size=900`，`overlap=120`。
+- 质量门：`_quality_gate` 检查当前版本首尾帧路径是否齐全；缺失时抛错，工作流级最多重试 2 次。
+- fallback planner：`mock_workflow._build_story_data` 保证字段完整，但语义质量低于 live LLM。
+- 改造前重复运行保护：`main` 分支后端 `/run` 直接 `create_job`，没有后端临界区保护；任务 3 已修复。
+
+### 最终报告
+
+新增：
+
+```text
+docs/VisionCraft_优化交付报告.md
+```
+
+报告包含基线记录、五项任务说明、验收结果、PENDING 清单、附录调查和面试要点摘录。
+
+### 最终回归
+
+命令：
+```powershell
+python -c "import ast; from pathlib import Path; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in ['backend','eval','tools'] for p in Path(root).rglob('*.py')]; print('backend eval tools python syntax ok')"
+node --check frontend\js\api.js
+node --check frontend\js\app.js
+node --check frontend\js\render.js
+node --check frontend\js\state.js
+python tools\story_plan_validation_smoke.py
+python -m pip show pytest
+```
+
+关键输出：
+```text
+backend eval tools python syntax ok
+node --check 无输出，表示通过
+retry_then_valid ok attempts=2
+coerce_after_validation_failure ok attempts=3
+WARNING: Package(s) not found: pytest
+```
+
+结论：最终回归通过，pytest 仍未安装，与基线一致。
 
 ### 遗留问题
 
