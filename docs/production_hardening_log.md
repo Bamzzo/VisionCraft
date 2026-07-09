@@ -449,6 +449,54 @@ WARNING: Package(s) not found: pytest
 
 结论：Python/JS 语法回归通过，pytest 仍未安装，与基线一致，没有新增失败。
 
+## 任务 5：README 与环境变量模板
+
+### 改动文件
+
+- `README.md`
+- `.env.example`
+- `docs/production_hardening_log.md`
+
+### 设计记录
+
+- README 改为面向 GitHub 项目的中文说明，不包含作业、上传须知、简历描述等内容。
+- README 保留产品定位、功能表、架构图、LangGraph 工作流、后端模块、前端模块、数据模型、关键设计、运行方式、环境变量、检索评测、常见问题和边界说明。
+- 关键设计中补充了本次生产化改造：per-project 防重入锁、Embedding Provider 和 collection 隔离、检索评测、Pydantic 校验重试、关键帧连续性、远程视频任务回查、成片来源校验。
+- `.env.example` 增加 provider mode、story planning、Pydantic repair attempts、image/video generation 的注释，保留空 key，不包含任何真实密钥。
+
+### 文案检查
+
+命令：
+```powershell
+rg "作业|不是|而是|不仅|更是|赋能|闭环|生态|全链路|AI味|简历" README.md docs\production_hardening_log.md .env.example
+```
+
+关键输出：
+```text
+无输出，表示未命中
+```
+
+### 回归检查
+
+命令：
+```powershell
+python -c "import ast; from pathlib import Path; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in ['backend','eval','tools'] for p in Path(root).rglob('*.py')]; print('backend eval tools python syntax ok')"
+node --check frontend\js\api.js
+node --check frontend\js\app.js
+node --check frontend\js\render.js
+node --check frontend\js\state.js
+python -m pip show pytest
+```
+
+关键输出：
+```text
+backend eval tools python syntax ok
+node --check 无输出，表示通过
+WARNING: Package(s) not found: pytest
+```
+
+结论：README 和 `.env.example` 更新没有影响代码回归，pytest 仍未安装，与基线一致。
+
 ### 遗留问题
 
 - 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。
