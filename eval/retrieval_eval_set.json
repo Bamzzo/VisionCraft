@@ -1,0 +1,35 @@
+{
+  "project_id": "eval_project_001",
+  "cases": [
+    {"query": "李昭", "expected_labels": ["李昭"], "note": "直接实体名匹配：角色"},
+    {"query": "沈青岚", "expected_labels": ["沈青岚"], "note": "直接实体名匹配：角色"},
+    {"query": "玄衣信使", "expected_labels": ["玄衣信使"], "note": "直接实体名匹配：角色"},
+    {"query": "御书房", "expected_labels": ["御书房"], "note": "直接实体名匹配：场景"},
+    {"query": "雨巷", "expected_labels": ["雨巷"], "note": "直接实体名匹配：场景"},
+    {"query": "旧藏书楼", "expected_labels": ["旧藏书楼"], "note": "直接实体名匹配：场景"},
+    {"query": "城门月台", "expected_labels": ["城门月台"], "note": "直接实体名匹配：场景"},
+    {"query": "密诏", "expected_labels": ["镜头1 密诏"], "note": "直接实体名匹配：分镜标题"},
+    {"query": "青铜灯", "expected_labels": ["青铜灯视觉锚点"], "note": "直接实体名匹配：资产"},
+    {"query": "银杏叶", "expected_labels": ["银杏叶视觉锚点"], "note": "直接实体名匹配：资产"},
+
+    {"query": "君主审阅奏章", "expected_labels": ["李昭", "御书房"], "note": "同义改写：皇帝→君主，奏章→政务文书"},
+    {"query": "女史修补档案", "expected_labels": ["沈青岚", "旧藏书楼"], "note": "同义改写：修史官→女史，案卷→档案"},
+    {"query": "黑衣送信人", "expected_labels": ["玄衣信使", "雨巷"], "note": "同义改写：玄衣→黑衣，信使→送信人"},
+    {"query": "宫殿里的最高统治者", "expected_labels": ["李昭", "御书房"], "note": "同义改写：皇帝角色的抽象表述"},
+    {"query": "档案楼里查旧案", "expected_labels": ["旧藏书楼", "沈青岚"], "note": "同义改写：藏书楼→档案楼，案卷→旧案"},
+    {"query": "夜雨小巷传递信物", "expected_labels": ["雨巷", "玄衣信使"], "note": "同义改写：雨巷和信使动作"},
+    {"query": "城楼外临别", "expected_labels": ["城门月台"], "note": "同义改写：城门月台→城楼外"},
+    {"query": "秘密命令", "expected_labels": ["镜头1 密诏", "故事圣经"], "note": "同义改写：密诏→秘密命令"},
+    {"query": "铜灯照亮案卷", "expected_labels": ["青铜灯视觉锚点", "旧藏书楼"], "note": "同义改写：资产与场景联合召回"},
+    {"query": "落叶作为约定信号", "expected_labels": ["银杏叶视觉锚点", "城门月台"], "note": "同义改写：银杏叶作为叙事信号"},
+
+    {"query": "第一个镜头的皇帝在哪里收到消息", "expected_labels": ["镜头1 密诏", "御书房", "李昭"], "note": "跨镜头设定回查：镜头1角色与场景"},
+    {"query": "沈青岚在哪一幕发现旧档", "expected_labels": ["沈青岚", "镜头3 案卷", "旧藏书楼"], "note": "跨镜头设定回查：角色动作与分镜"},
+    {"query": "信使第一次出现的场景", "expected_labels": ["玄衣信使", "镜头2 雨巷", "雨巷"], "note": "跨镜头设定回查：角色首次出现"},
+    {"query": "青铜灯最早定义在哪个空间", "expected_labels": ["青铜灯视觉锚点", "旧藏书楼"], "note": "跨镜头设定回查：资产到场景"},
+    {"query": "银杏叶和离别对应哪个场景", "expected_labels": ["银杏叶视觉锚点", "城门月台"], "note": "跨镜头设定回查：道具到结尾场景"},
+    {"query": "君主和女史最终在哪会合", "expected_labels": ["李昭", "沈青岚", "镜头5 城门", "城门月台"], "note": "跨镜头设定回查：结尾会合"},
+    {"query": "雨夜密信推动哪个转折", "expected_labels": ["镜头2 雨巷", "故事圣经"], "note": "跨镜头设定回查：事件到剧情转折"},
+    {"query": "旧案真相由谁查出", "expected_labels": ["沈青岚", "镜头3 案卷"], "note": "跨镜头设定回查：事件到角色"}
+  ]
+}
