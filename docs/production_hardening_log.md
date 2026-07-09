@@ -395,3 +395,115 @@ python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
 
 - 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。
 - embedding collection 会按 provider 分离；切换 provider 后需要手动调用 `/memory/index` 或运行评测脚本重建目标项目索引。
+
+## 任务 4：检索评测集与评测脚本
+
+### 改动文件
+
+- `eval/eval_support.py`
+- `eval/dump_memory_labels.py`
+- `eval/run_retrieval_eval.py`
+- `eval/retrieval_eval_set.json`
+- `eval/memory_labels_dump.md`
+- `eval/results.md`
+
+### 设计记录
+
+- 新建固定 synthetic 项目 `eval_project_001`，只用于检索评测，不触碰用户已有项目。
+- 评测项目包含故事圣经、3 个角色、4 个场景、2 个视觉资产、5 个镜头，共 16 条 memory 文档。
+- `dump_memory_labels.py` 会先重建评测项目，再把 ChromaDB 中实际写入的 `label / kind / 摘要前 50 字` 写入 `eval/memory_labels_dump.md`。
+- `retrieval_eval_set.json` 共 28 条用例：前 10 条直接实体匹配，中 10 条同义改写，后 8 条跨镜头追问；每条用例都带 `note`。
+- `run_retrieval_eval.py` 支持 `--provider hash|siliconflow`、`--mode vector_only|lexical_only|hybrid`、`--k`，并在运行前校验 `expected_labels` 必须来自当前 memory dump。
+- 评测脚本会重建同一个 synthetic 项目，因此应串行执行。一次并行尝试出现了共享评测项目重建竞争，随后改为串行验收。
+
+### 代码提交
+
+```text
+a0ae1bc [task-4] add retrieval evaluation harness
+```
+
+### memory label dump
+
+命令：
+```powershell
+$env:EMBEDDING_PROVIDER='hash'
+python eval\dump_memory_labels.py
+```
+
+关键输出：
+```text
+wrote D:\...\visioncraft\eval\memory_labels_dump.md
+memory_rows 16
+```
+
+### hash 评测
+
+命令：
+```powershell
+$env:EMBEDDING_PROVIDER='hash'
+python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 2
+python eval\run_retrieval_eval.py --provider hash --mode hybrid --k 5
+python eval\run_retrieval_eval.py --provider hash --mode vector_only --k 5
+python eval\run_retrieval_eval.py --provider hash --mode lexical_only --k 5
+```
+
+关键输出：
+```text
+provider=hash active_provider=hash mode=hybrid k=2 cases=28 recall@k=0.4732 mrr=0.6071 status=OK
+provider=hash active_provider=hash mode=hybrid k=5 cases=28 recall@k=0.8363 mrr=0.6619 status=OK
+provider=hash active_provider=hash mode=vector_only k=5 cases=28 recall@k=0.7381 mrr=0.6452 status=OK
+provider=hash active_provider=hash mode=lexical_only k=5 cases=28 recall@k=0.8363 mrr=0.6619 status=OK
+```
+
+### SiliconFlow live 评测
+
+命令：
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+python eval\run_retrieval_eval.py --provider siliconflow --mode vector_only --k 2
+```
+
+关键输出：
+```text
+Falling back to hash embedding provider: SiliconFlow embedding HTTP 403: {"code":30001,"message":"Sorry, your account balance is insufficient","data":null}
+provider=siliconflow active_provider=hash mode=vector_only k=2 cases=28 recall@k=0.4792 mrr=0.5893 status=PENDING_LIVE_KEY
+```
+
+结论：SiliconFlow embedding 仍因账户余额不足返回 403。本次 live 语义评测标记为 `PENDING_LIVE_KEY`，hash 模式和 fallback 路径可运行。
+
+### 回归检查
+
+命令：
+```powershell
+python -c "import ast; from pathlib import Path; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for root in ['backend','eval'] for p in Path(root).rglob('*.py')]; print('backend and eval python syntax ok')"
+node --check frontend\js\api.js
+node --check frontend\js\app.js
+node --check frontend\js\render.js
+node --check frontend\js\state.js
+python -m pip show pytest
+```
+
+关键输出：
+```text
+backend and eval python syntax ok
+node --check 无输出，表示通过
+WARNING: Package(s) not found: pytest
+```
+
+结论：Python/JS 语法回归通过，pytest 仍未安装，与基线一致，没有新增失败。
+
+### PENDING_LIVE_KEY
+
+SiliconFlow key/余额可用后执行：
+
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+$env:HYBRID_LEXICAL_WEIGHT='0'
+$env:HYBRID_VECTOR_WEIGHT='1'
+python eval\run_retrieval_eval.py --provider siliconflow --mode vector_only --k 2
+
+$env:HYBRID_LEXICAL_WEIGHT='0.3'
+$env:HYBRID_VECTOR_WEIGHT='0.7'
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 2
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
+```
