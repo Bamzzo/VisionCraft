@@ -189,3 +189,209 @@ resume_C 200 {'job_id': 'job_70d388ec06', 'status': 'resuming'}
 
 - 进程内锁不适用于多 worker 或多机部署。
 - 当前 startup cleanup 会将所有历史 queued/running job 置为 failed，符合单进程重启语义；如果未来引入持久任务队列，需要由队列系统恢复或认领任务。
+
+## 任务 1：Embedding Provider 抽象与 SiliconFlow 降级
+
+### 改动文件
+
+- `backend/providers/embedding_provider.py`
+- `backend/services/memory_service.py`
+- `.env.example`
+- `docs/production_hardening_log.md`
+
+### 设计记录
+
+- 新增 `EmbeddingProvider` 协议，统一 `embed_texts(texts)`、`dimension`、`name`。
+- `HashEmbeddingProvider` 封装原有 bigram + blake2b hash embedding，维度保持 384。
+- `SiliconFlowEmbeddingProvider` 调用 OpenAI-compatible `/embeddings`，默认模型 `BAAI/bge-m3`，维度 1024，批量上限 32，超时 30s，失败重试 1 次。
+- Chroma collection 按 provider 隔离：
+  - hash: `visioncraft_memory_hash`
+  - siliconflow bge-m3: `visioncraft_memory_sf_bge-m3`
+- 写入与查询改为显式传 `embeddings=` / `query_embeddings=`，避免远程失败后 1024 维与 384 维混入同一 collection。
+- `siliconflow` 模式 key 缺失或调用失败时，进程内降级到 hash provider，并记录 warning。
+- hybrid rerank 保留，权重由 `HYBRID_LEXICAL_WEIGHT` / `HYBRID_VECTOR_WEIGHT` 控制；未配置时 hash 默认 0.8/0.2，siliconflow 默认 0.3/0.7。
+
+### 新增配置
+
+```text
+EMBEDDING_PROVIDER=hash
+EMBEDDING_MODEL=BAAI/bge-m3
+HYBRID_LEXICAL_WEIGHT=0.8
+HYBRID_VECTOR_WEIGHT=0.2
+```
+
+### 语法回归
+
+命令：
+
+```powershell
+@'
+import ast
+from pathlib import Path
+for path in Path('backend').rglob('*.py'):
+    ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+print('backend python syntax ok')
+'@ | python -
+node --check frontend\js\api.js
+node --check frontend\js\app.js
+node --check frontend\js\render.js
+node --check frontend\js\state.js
+```
+
+关键输出：
+
+```text
+backend python syntax ok
+```
+
+### hash 模式验收
+
+命令：
+
+```powershell
+$env:EMBEDDING_PROVIDER='hash'
+@'
+from backend.providers.embedding_provider import get_embedding_provider, collection_name_for_provider
+from backend.services.project_service import list_projects
+from backend.services.memory_service import index_project_memory, search_project_memory, get_collection
+provider = get_embedding_provider()
+print('provider', provider.name, provider.dimension, collection_name_for_provider(provider))
+projects = list_projects(include_archived=True)
+p = projects[0]
+print('project', p['id'], p['title'], p['status'])
+indexed = index_project_memory(p['id'])
+print('indexed', indexed)
+collection = get_collection(provider)
+print('collection', collection.name)
+items = search_project_memory(p['id'], '角色 场景 关键线索', 5)
+for item in items:
+    md = item.get('metadata') or {}
+    print(md.get('label'), md.get('kind'), item.get('score'))
+'@ | python -
+```
+
+关键输出：
+
+```text
+provider hash 384 visioncraft_memory_hash
+indexed 28
+collection visioncraft_memory_hash
+paused project source_text 0.9741
+故事圣经 story_bible 0.9641
+Shot 1 First Frame asset:first-frame 0.8524
+```
+
+### 改造前同项目对照
+
+命令：
+
+```powershell
+$env:EMBEDDING_PROVIDER='hash'
+@'
+from backend.services.memory_service import index_project_memory, search_project_memory
+pid='project_3b379f2246'
+print('project', pid)
+print('indexed', index_project_memory(pid))
+items = search_project_memory(pid, '角色 场景 关键线索', 5)
+for item in items:
+    md=item.get('metadata') or {}
+    print(md.get('label'), md.get('kind'), item.get('score'))
+'@ | python -
+```
+
+关键输出：
+
+```text
+project project_3b379f2246
+indexed 29
+... scene 0.0043
+... asset:scene 0.0041
+... scene 0.0
+... scene 0.0
+... asset:scene 0.0
+```
+
+结论：同一项目、同一 query 的 hash top label 与基线一致。
+
+### siliconflow 缺 key 降级验收
+
+命令：
+
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+$env:SILICONFLOW_API_KEY=''
+@'
+from backend.providers.embedding_provider import get_embedding_provider, collection_name_for_provider
+from backend.services.project_service import list_projects
+from backend.services.memory_service import index_project_memory, search_project_memory
+provider = get_embedding_provider()
+print('provider_after_missing_key', provider.name, provider.dimension, collection_name_for_provider(provider))
+p = list_projects(include_archived=True)[0]
+print('indexed', index_project_memory(p['id']))
+items = search_project_memory(p['id'], '角色 场景 关键线索', 3)
+for item in items:
+    md = item.get('metadata') or {}
+    print(md.get('label'), md.get('kind'), item.get('score'))
+'@ | python -
+```
+
+关键输出：
+
+```text
+Falling back to hash embedding provider: SILICONFLOW_API_KEY is missing
+provider_after_missing_key hash 384 visioncraft_memory_hash
+indexed 28
+paused project source_text 0.9741
+故事圣经 story_bible 0.9641
+Shot 1 First Frame asset:first-frame 0.8524
+```
+
+### siliconflow live smoke
+
+命令：
+
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+Remove-Item Env:SILICONFLOW_API_KEY -ErrorAction SilentlyContinue
+@'
+import os
+from backend.config import init_environment
+init_environment()
+os.environ['EMBEDDING_PROVIDER'] = 'siliconflow'
+from backend.providers.embedding_provider import get_embedding_provider, embed_texts_with_fallback, collection_name_for_provider
+provider = get_embedding_provider()
+print('resolved_provider', provider.name, provider.dimension, collection_name_for_provider(provider))
+provider2, vectors = embed_texts_with_fallback(provider, ['皇帝在御书房审阅奏章', '君主站在宫殿窗前'])
+print('used_provider', provider2.name, provider2.dimension, len(vectors), len(vectors[0]) if vectors else 0)
+print('fallback_used', provider2.name == 'hash')
+'@ | python -
+```
+
+关键输出：
+
+```text
+resolved_provider siliconflow:BAAI/bge-m3 1024 visioncraft_memory_sf_bge-m3
+used_provider hash 384 2 384
+fallback_used True
+Falling back to hash embedding provider: SiliconFlow embedding HTTP 403: {"code":30001,"message":"Sorry, your account balance is insufficient","data":null}
+```
+
+结论：SiliconFlow embedding 接口因余额不足返回 403，任务 1 live semantic 验收标记为 `PENDING_LIVE_KEY`。代码已验证会降级 hash，工作流不会因 embedding 失败中断。
+
+### PENDING_LIVE_KEY
+
+待 SiliconFlow 余额/key 可用后执行：
+
+```powershell
+$env:EMBEDDING_PROVIDER='siliconflow'
+$env:HYBRID_LEXICAL_WEIGHT='0.3'
+$env:HYBRID_VECTOR_WEIGHT='0.7'
+python eval\run_retrieval_eval.py --provider siliconflow --mode vector_only --k 2
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 2
+python eval\run_retrieval_eval.py --provider siliconflow --mode hybrid --k 5
+```
+
+### 遗留问题
+
+- 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。
+- embedding collection 会按 provider 分离；切换 provider 后需要手动调用 `/memory/index` 或运行评测脚本重建目标项目索引。

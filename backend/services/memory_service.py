@@ -1,37 +1,29 @@
-import hashlib
-import math
+import logging
+import os
 from typing import Iterable
 
 import chromadb
 
 from ..config import CHROMA_DIR
 from ..database import connect
+from ..providers.embedding_provider import (
+    EmbeddingProvider,
+    collection_name_for_provider,
+    embed_texts_with_fallback,
+    get_embedding_provider,
+    known_collection_names,
+)
 
 
-COLLECTION_NAME = "visioncraft_memory"
-EMBEDDING_DIM = 384
+logger = logging.getLogger(__name__)
 
 
-class HashEmbeddingFunction:
-    def name(self) -> str:
-        return "visioncraft_hash_embedding"
-
-    def __call__(self, input: list[str]) -> list[list[float]]:  # Chroma expects the parameter name `input`.
-        return [_embed_text(text) for text in input]
-
-    def embed_query(self, input: list[str]) -> list[list[float]]:
-        return self(input)
-
-    def embed_documents(self, input: list[str]) -> list[list[float]]:
-        return self(input)
-
-
-def get_collection():
+def get_collection(provider: EmbeddingProvider | None = None):
+    provider = provider or get_embedding_provider()
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=HashEmbeddingFunction(),
-        metadata={"hnsw:space": "cosine"},
+        name=collection_name_for_provider(provider),
+        metadata={"hnsw:space": "cosine", "embedding_name": provider.name, "embedding_dimension": provider.dimension},
     )
 
 
@@ -92,37 +84,53 @@ def index_project_memory(project_id: str) -> int:
 
     if not ids:
         return 0
-    collection = get_collection()
-    collection.add(ids=ids, documents=documents, metadatas=metadatas)
+    provider = get_embedding_provider()
+    provider, embeddings = embed_texts_with_fallback(provider, documents)
+    collection = get_collection(provider)
+    reset_project_memory_for_provider(project_id, provider)
+    collection.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
     return len(ids)
 
 
 def search_project_memory(project_id: str, query: str, limit: int = 6) -> list[dict]:
-    collection = get_collection()
+    provider = get_embedding_provider()
+    provider, query_embeddings = embed_texts_with_fallback(provider, [query])
+    collection = get_collection(provider)
     result = collection.query(
-        query_texts=[query],
+        query_embeddings=query_embeddings,
         n_results=max(1, min(limit * 3, 50)),
         where={"project_id": project_id},
         include=["documents", "metadatas", "distances"],
     )
+    if not (result.get("ids", [[]])[0]):
+        _warn_if_other_collection_has_project(project_id, collection_name_for_provider(provider))
     items = []
     ids = result.get("ids", [[]])[0]
     documents = result.get("documents", [[]])[0]
     metadatas = result.get("metadatas", [[]])[0]
     distances = result.get("distances", [[]])[0]
+    lexical_weight, vector_weight = _hybrid_weights(provider)
     for item_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
         vector_score = max(0.0, 1 - float(distance or 0))
         lexical_score = _lexical_score(query, document)
-        # 本地 hash embedding 较轻量，中文短查询需要提高字面重合权重。
+        # Hash embedding 较轻量，中文短查询需要提高字面重合权重；语义模型可通过配置提高向量权重。
         items.append(
             {
                 "id": item_id,
                 "document": document,
                 "metadata": metadata,
-                "score": round((lexical_score * 0.8) + (vector_score * 0.2), 4),
+                "score": round((lexical_score * lexical_weight) + (vector_score * vector_weight), 4),
             }
         )
     return sorted(items, key=lambda item: item["score"], reverse=True)[:limit]
+
+
+def reset_project_memory_for_provider(project_id: str, provider: EmbeddingProvider) -> None:
+    collection = get_collection(provider)
+    existing = collection.get(where={"project_id": project_id}, include=[])
+    ids = existing.get("ids") or []
+    if ids:
+        collection.delete(ids=ids)
 
 
 def build_shot_evidence(project_id: str, title: str, description: str, limit: int = 2) -> list[dict]:
@@ -161,19 +169,6 @@ def _chunk_text(text: str, size: int = 900, overlap: int = 120) -> Iterable[str]
     return chunks
 
 
-def _embed_text(text: str) -> list[float]:
-    vector = [0.0] * EMBEDDING_DIM
-    normalized = text.lower()
-    grams = [normalized[i : i + 2] for i in range(max(1, len(normalized) - 1))]
-    for gram in grams:
-        digest = hashlib.blake2b(gram.encode("utf-8", errors="ignore"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "little") % EMBEDDING_DIM
-        sign = 1 if digest[4] % 2 == 0 else -1
-        vector[bucket] += sign
-    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
-    return [value / norm for value in vector]
-
-
 def _lexical_score(query: str, document: str) -> float:
     query_chars = {char for char in query.lower() if not char.isspace()}
     if not query_chars:
@@ -186,3 +181,43 @@ def _lexical_score(query: str, document: str) -> float:
 def _compact_excerpt(text: str, limit: int = 140) -> str:
     compact = " ".join(str(text).split())
     return compact[:limit]
+
+
+def _hybrid_weights(provider: EmbeddingProvider) -> tuple[float, float]:
+    lexical_default, vector_default = (0.3, 0.7) if provider.name.startswith("siliconflow:") else (0.8, 0.2)
+    lexical = _float_env("HYBRID_LEXICAL_WEIGHT", lexical_default)
+    vector = _float_env("HYBRID_VECTOR_WEIGHT", vector_default)
+    total = lexical + vector
+    if total <= 0:
+        return lexical_default, vector_default
+    return lexical / total, vector / total
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _warn_if_other_collection_has_project(project_id: str, current_collection_name: str) -> None:
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    for name in dict.fromkeys(known_collection_names()):
+        if name == current_collection_name:
+            continue
+        try:
+            collection = client.get_collection(name)
+            existing = collection.get(where={"project_id": project_id}, include=[])
+        except Exception:
+            continue
+        if existing.get("ids"):
+            logger.warning(
+                "Memory collection %s has data for project %s, but active collection %s is empty. Rebuild the index.",
+                name,
+                project_id,
+                current_collection_name,
+            )
+            return
