@@ -13,7 +13,7 @@ from .providers.llm_provider import live_llm_available
 from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, VideoGenerateRequest
 from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
-from .services.job_service import create_job, get_job
+from .services.job_service import create_project_job_guarded, get_job, get_project_blocking_job, mark_orphaned_jobs_on_startup
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects, rollback_shot_version
@@ -35,6 +35,23 @@ app.add_middleware(
 )
 
 app.mount("/assets", StaticFiles(directory=PROJECTS_DIR), name="assets")
+
+
+@app.on_event("startup")
+def cleanup_orphaned_jobs() -> None:
+    mark_orphaned_jobs_on_startup()
+
+
+def _busy_response(active: dict, message: str = "project busy") -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": message,
+            "active_job_id": active.get("id"),
+            "active_job_type": active.get("type"),
+            "active_job_status": active.get("status"),
+        },
+    )
 
 
 @app.get("/api/health")
@@ -79,7 +96,9 @@ def delete_project_endpoint(project_id: str) -> dict:
 def run_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow", "Workflow queued")
+    job_id, active = create_project_job_guarded(project_id, "full_workflow", "Workflow queued", block_paused=True)
+    if active:
+        return _busy_response(active, "project busy; resume paused workflow or wait for the active job")
     background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -91,6 +110,9 @@ def resume_project_endpoint(project_id: str, background_tasks: BackgroundTasks) 
     checkpoint = get_paused_checkpoint(project_id)
     if not checkpoint:
         raise HTTPException(status_code=400, detail="No paused workflow checkpoint")
+    active = get_project_blocking_job(project_id)
+    if active:
+        return _busy_response(active)
     job_id = checkpoint["job_id"]
     background_tasks.add_task(resume_langgraph_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "resuming"}
@@ -100,7 +122,9 @@ def resume_project_endpoint(project_id: str, background_tasks: BackgroundTasks) 
 def retry_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow_retry", "Workflow retry queued")
+    job_id, active = create_project_job_guarded(project_id, "full_workflow_retry", "Workflow retry queued", block_paused=True)
+    if active:
+        return _busy_response(active, "project busy; resume paused workflow or wait for the active job")
     background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -188,7 +212,9 @@ def generate_video_endpoint(
         raise HTTPException(status_code=404, detail="Project not found")
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
-    job_id = create_job(project_id, "video_generation", "Video generation queued")
+    job_id, active = create_project_job_guarded(project_id, "video_generation", "Video generation queued")
+    if active:
+        return _busy_response(active)
     background_tasks.add_task(generate_shot_video, project_id, shot_id, job_id, (payload or VideoGenerateRequest()).video_mode)
     return {"job_id": job_id, "status": "queued"}
 
@@ -200,7 +226,9 @@ def safe_retry_video_endpoint(project_id: str, shot_id: str, background_tasks: B
         raise HTTPException(status_code=404, detail="Project not found")
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
-    job_id = create_job(project_id, "video_safety_retry", "Safe video retry queued")
+    job_id, active = create_project_job_guarded(project_id, "video_safety_retry", "Safe video retry queued")
+    if active:
+        return _busy_response(active)
     background_tasks.add_task(safe_retry_shot_video, project_id, shot_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -212,7 +240,9 @@ def generate_all_videos_endpoint(project_id: str, background_tasks: BackgroundTa
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.get("shots"):
         raise HTTPException(status_code=400, detail="No shots available")
-    job_id = create_job(project_id, "batch_video_generation", "Batch video generation queued")
+    job_id, active = create_project_job_guarded(project_id, "batch_video_generation", "Batch video generation queued")
+    if active:
+        return _busy_response(active)
     background_tasks.add_task(generate_project_videos, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -222,7 +252,9 @@ def refresh_video_tasks_endpoint(project_id: str, background_tasks: BackgroundTa
     project = get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "video_task_refresh", "Seedance cloud task refresh queued")
+    job_id, active = create_project_job_guarded(project_id, "video_task_refresh", "Seedance cloud task refresh queued")
+    if active:
+        return _busy_response(active)
     background_tasks.add_task(refresh_project_video_tasks, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -234,7 +266,9 @@ def assemble_video_endpoint(project_id: str, background_tasks: BackgroundTasks) 
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.get("shots"):
         raise HTTPException(status_code=400, detail="No shots available")
-    job_id = create_job(project_id, "sequence_assembly", "Sequence assembly queued")
+    job_id, active = create_project_job_guarded(project_id, "sequence_assembly", "Sequence assembly queued")
+    if active:
+        return _busy_response(active)
     background_tasks.add_task(assemble_project_video, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 

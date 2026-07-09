@@ -7,17 +7,25 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const text = await response.text();
     let message = text || `Request failed: ${response.status}`;
+    let parsed = null;
     try {
-      const parsed = JSON.parse(text);
+      parsed = JSON.parse(text);
       if (Array.isArray(parsed.detail)) {
         message = parsed.detail.map((item) => `${item.loc?.join(".")}: ${item.msg}`).join("; ");
+      } else if (response.status === 409 && parsed.detail === "project busy") {
+        message = `项目已有任务在运行（${parsed.active_job_type || "unknown"} / ${parsed.active_job_status || "active"}）`;
+      } else if (response.status === 409 && String(parsed.detail || "").startsWith("project busy")) {
+        message = `项目已有任务在运行，请等待当前任务完成，或先恢复暂停中的流程。`;
       } else if (parsed.detail) {
         message = parsed.detail;
       }
     } catch {
       // Keep raw text.
     }
-    throw new Error(message);
+    const error = new Error(String(message));
+    error.status = response.status;
+    error.payload = parsed;
+    throw error;
   }
   return response.json();
 }
