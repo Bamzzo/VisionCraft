@@ -244,6 +244,22 @@ WARNING: Package(s) not found: pytest
 
 没有新增失败项。
 
+## 产品验收
+
+使用 mock/fallback 环境启动临时后端，避免消耗模型额度，完成了一次端到端产品验收：
+
+| 验收项 | 结果 |
+| --- | --- |
+| 创建项目 | 200，项目进入 `draft` |
+| 启动 workflow | 200，返回 `job_id` |
+| 重复点击 run | 409，返回 active job 信息 |
+| review mode 暂停 | 项目进入 `review_pending`，job 为 `paused` |
+| resume | 200，恢复后进入 `ready_for_review` |
+| memory search | 200，返回 `source_text`、`story_bible`、`asset:first-frame` |
+| 临时项目清理 | 删除成功 |
+
+这次验收覆盖了前后端 API 联动、BackgroundTasks job 创建、防重入锁、LangGraph 暂停恢复、自定义 checkpoint 和 ChromaDB 检索。
+
 ## PENDING 清单
 
 当前没有未完成的 live embedding 评测项。SiliconFlow 补跑已完成，`eval/results.md` 中最新三条 live 记录均为：

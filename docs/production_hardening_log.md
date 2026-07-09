@@ -611,6 +611,37 @@ provider=siliconflow active_provider=siliconflow:BAAI/bge-m3 mode=hybrid k=5 cas
 - 同义改写类 recall@5 从 `0.8500` 提升到 `1.0000`。
 - k=2 的 recall 受多 expected label 用例影响，应同时引用 hit_rate@k。
 
+## 产品验收：工作流、防重入、暂停恢复、memory search
+
+### 验收环境
+
+- 临时后端端口：`8125`
+- `PYTHON_DOTENV_DISABLED=1`
+- `VISIONCRAFT_PROVIDER_MODE=mock`
+- live provider key 在临时进程内置空，避免验收消耗模型额度
+
+### 验收输出
+
+```text
+create_project 200 project_d2161ea165 draft direct
+run_first 200 {'job_id': 'job_3c1362e128', 'status': 'queued'}
+run_second 409 {'detail': 'project busy; resume paused workflow or wait for the active job', 'active_job_id': 'job_3c1362e128', 'active_job_type': 'full_workflow', 'active_job_status': 'running'}
+after_run review_pending paused Human review checkpoint reached. Submit feedback or resume workflow.
+resume 200 {'job_id': 'job_3c1362e128', 'status': 'resuming'}
+after_resume ready_for_review completed LangGraph storyboard package ready for review
+memory_search 200 3 ['source_text', 'story_bible', 'asset:first-frame']
+delete_project 200 {'deleted': True}
+```
+
+结论：
+
+- 本地项目创建成功。
+- 重复启动 workflow 返回 409，防重入锁生效。
+- review mode 能进入 `review_pending`，job 状态为 `paused`。
+- `/resume` 能恢复检查点并完成工作流。
+- memory search 返回项目记忆结果。
+- 临时验收项目已删除，临时后端已关闭。
+
 ### 遗留问题
 
 - 当前 live semantic recall 尚未验证，原因是 SiliconFlow 账户余额不足。
