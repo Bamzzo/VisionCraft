@@ -128,7 +128,7 @@ async function main() {
         const review = document.querySelector("#adaptationReview")?.innerText || "";
         return (
           status === "awaiting_storyline_review" &&
-          review.includes("选择此故事线") &&
+          review.includes("选择故事线") &&
           (review.includes("中等文本：先选择故事线") || review.includes("选择故事线"))
         );
       },
@@ -147,7 +147,7 @@ async function main() {
       () => {
         const status = document.querySelector("#projectStatus")?.textContent?.trim();
         const review = document.querySelector("#adaptationReview")?.innerText || "";
-        return status === "awaiting_storyline_review" && review.includes("选择此故事线");
+        return status === "awaiting_storyline_review" && review.includes("选择故事线");
       },
       null,
       { timeout: 10000 }
