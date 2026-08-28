@@ -706,6 +706,16 @@ async function onAdaptationClick(event) {
     trigger.disabled = true;
     if (action === "select-option") {
       state.project = await api.selectAdaptationOption(state.project.id, trigger.dataset.optionId);
+    } else if (action === "select-storyline") {
+      state.project = await api.selectStoryline(state.project.id, trigger.dataset.storylineId);
+    } else if (action === "save-medium-scope") {
+      state.project = await api.saveMediumScope(state.project.id, collectMediumScopePayload());
+    } else if (action === "recommend-scope") {
+      state.project = await api.recommendMediumScope(state.project.id);
+    } else if (action === "confirm-medium-scope") {
+      state.project = await api.confirmMediumScope(state.project.id, collectMediumScopePayload());
+    } else if (action === "regen-medium") {
+      state.project = await api.regenerateMedium(state.project.id, trigger.dataset.stage);
     } else if (action === "confirm-scope") {
       state.project = await api.confirmScope(state.project.id, trigger.dataset.optionId);
     } else if (action === "save-bible") {
@@ -726,6 +736,14 @@ async function onAdaptationClick(event) {
   } finally {
     trigger.disabled = false;
   }
+}
+
+function collectMediumScopePayload() {
+  const eventIds = [...document.querySelectorAll("[data-event-check]:checked")].map((input) => input.value);
+  return {
+    event_ids: eventIds,
+    user_note: document.getElementById("scopeUserNote")?.value || "",
+  };
 }
 
 function collectBiblePayload() {

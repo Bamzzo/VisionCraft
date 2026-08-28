@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS story_bibles (
   option_id TEXT,
   source TEXT NOT NULL DEFAULT 'mock_planner',
   review_status TEXT NOT NULL DEFAULT 'draft',
+  scope_id TEXT,
   created_at TEXT,
   updated_at TEXT NOT NULL
 );
@@ -265,6 +266,7 @@ CREATE TABLE IF NOT EXISTS adaptation_options (
   source_end INTEGER,
   selected INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT 'mock_planner',
+  scope_id TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -287,6 +289,7 @@ CREATE TABLE IF NOT EXISTS storyboard_drafts (
   source_end INTEGER,
   source_type TEXT NOT NULL DEFAULT 'auto_draft',
   review_status TEXT NOT NULL DEFAULT 'draft',
+  scope_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -301,6 +304,90 @@ CREATE TABLE IF NOT EXISTS review_records (
   target_version TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS source_chunks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chunk_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  start_offset INTEGER NOT NULL,
+  end_offset INTEGER NOT NULL,
+  char_count INTEGER NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  characters_json TEXT NOT NULL DEFAULT '[]',
+  places_json TEXT NOT NULL DEFAULT '[]',
+  conflict_terms_json TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'mock_segmenter',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_chunks_project ON source_chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_project_index ON source_chunks(project_id, chunk_index);
+
+CREATE TABLE IF NOT EXISTS story_events (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  event_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  characters_json TEXT NOT NULL DEFAULT '[]',
+  places_json TEXT NOT NULL DEFAULT '[]',
+  goal TEXT NOT NULL DEFAULT '',
+  conflict TEXT NOT NULL DEFAULT '',
+  outcome TEXT NOT NULL DEFAULT '',
+  chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+  source_excerpt TEXT NOT NULL DEFAULT '',
+  source_start INTEGER,
+  source_end INTEGER,
+  importance REAL NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'mock_event_extractor',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_story_events_project ON story_events(project_id);
+CREATE INDEX IF NOT EXISTS idx_story_events_project_index ON story_events(project_id, event_index);
+
+CREATE TABLE IF NOT EXISTS storylines (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  storyline_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  rationale TEXT NOT NULL DEFAULT '',
+  protagonist TEXT NOT NULL DEFAULT '',
+  protagonist_goal TEXT NOT NULL DEFAULT '',
+  conflict TEXT NOT NULL DEFAULT '',
+  turning_point TEXT NOT NULL DEFAULT '',
+  ending_orientation TEXT NOT NULL DEFAULT '',
+  event_ids_json TEXT NOT NULL DEFAULT '[]',
+  chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+  source_excerpt TEXT NOT NULL DEFAULT '',
+  suggested_duration_seconds INTEGER NOT NULL DEFAULT 45,
+  suggested_shot_count INTEGER NOT NULL DEFAULT 5,
+  selected INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'mock_storyline_planner',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_storylines_project ON storylines(project_id);
+
+CREATE TABLE IF NOT EXISTS adaptation_scopes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  storyline_id TEXT,
+  event_ids_json TEXT NOT NULL DEFAULT '[]',
+  chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+  scoped_text TEXT NOT NULL DEFAULT '',
+  start_offset INTEGER,
+  end_offset INTEGER,
+  review_status TEXT NOT NULL DEFAULT 'draft',
+  user_note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'user_scope',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_adaptation_scopes_project ON adaptation_scopes(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptation_scopes_project_unique ON adaptation_scopes(project_id);
 
 CREATE TABLE IF NOT EXISTS provider_capabilities (
   id TEXT PRIMARY KEY,

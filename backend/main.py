@@ -17,6 +17,9 @@ from .schemas import (
     FeedbackCreate,
     KeyframeRedrawRequest,
     KeyframeSelectRequest,
+    MediumRegenerateRequest,
+    MediumScopeSaveRequest,
+    MediumStorylineSelectRequest,
     ProjectCreate,
     ShotDraftUpdate,
     StoryboardSaveRequest,
@@ -36,6 +39,16 @@ from .services.adaptation_service import (
     save_story_bible_draft,
     save_storyboard_drafts,
     select_adaptation_option,
+)
+from .services.medium_text_service import (
+    MediumTextError,
+    apply_recommended_scope,
+    confirm_adaptation_scope,
+    medium_text_state,
+    regenerate_medium,
+    run_medium_analysis,
+    save_adaptation_scope,
+    select_storyline,
 )
 from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
@@ -218,6 +231,11 @@ def _raise_adaptation(exc: AdaptationError) -> None:
     raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
+def _raise_medium(exc: MediumTextError) -> None:
+    status = 404 if exc.code in {"PROJECT_NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
 @app.get("/api/projects/{project_id}/adaptation")
 def get_adaptation_endpoint(project_id: str) -> dict:
     try:
@@ -296,6 +314,83 @@ def regenerate_adaptation_endpoint(project_id: str, payload: AdaptationRegenerat
         return regenerate_stage(project_id, payload.stage)
     except AdaptationError as exc:
         _raise_adaptation(exc)
+
+
+@app.get("/api/projects/{project_id}/medium-text")
+def get_medium_text_endpoint(project_id: str) -> dict:
+    try:
+        return medium_text_state(project_id)
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/analyze")
+def analyze_medium_text_endpoint(project_id: str) -> dict:
+    try:
+        return run_medium_analysis(project_id, regenerate=True)
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/storylines/{storyline_id}/select")
+def select_storyline_endpoint(project_id: str, storyline_id: str) -> dict:
+    try:
+        return select_storyline(project_id, storyline_id)
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/storylines/select")
+def select_storyline_body_endpoint(project_id: str, payload: MediumStorylineSelectRequest) -> dict:
+    try:
+        return select_storyline(project_id, payload.storyline_id)
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.put("/api/projects/{project_id}/medium-text/scope")
+def save_medium_scope_endpoint(project_id: str, payload: MediumScopeSaveRequest) -> dict:
+    try:
+        return save_adaptation_scope(
+            project_id,
+            storyline_id=payload.storyline_id,
+            event_ids=payload.event_ids,
+            chunk_ids=payload.chunk_ids,
+            user_note=payload.user_note,
+        )
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/scope/recommend")
+def recommend_medium_scope_endpoint(project_id: str) -> dict:
+    try:
+        return apply_recommended_scope(project_id)
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/scope/confirm")
+def confirm_medium_scope_endpoint(project_id: str, payload: MediumScopeSaveRequest | None = None) -> dict:
+    try:
+        data = payload.model_dump(exclude_unset=True) if payload else {}
+        return confirm_adaptation_scope(
+            project_id,
+            storyline_id=data.get("storyline_id"),
+            event_ids=data.get("event_ids"),
+            chunk_ids=data.get("chunk_ids"),
+            user_note=data.get("user_note"),
+        )
+    except MediumTextError as exc:
+        _raise_medium(exc)
+
+
+@app.post("/api/projects/{project_id}/medium-text/regenerate")
+def regenerate_medium_endpoint(project_id: str, payload: MediumRegenerateRequest) -> dict:
+    try:
+        return regenerate_medium(project_id, payload.stage)
+    except MediumTextError as exc:
+        _raise_medium(exc)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/feedback")

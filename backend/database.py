@@ -96,6 +96,10 @@ def init_db() -> None:
         _ensure_job_events(conn)
         _ensure_shot_drafts(conn)
         _ensure_adaptation_tables(conn)
+        _ensure_medium_text_tables(conn)
+        _ensure_column(conn, "adaptation_options", "scope_id", "TEXT")
+        _ensure_column(conn, "story_bibles", "scope_id", "TEXT")
+        _ensure_column(conn, "storyboard_drafts", "scope_id", "TEXT")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -269,3 +273,86 @@ def _ensure_adaptation_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_adaptation_options_project ON adaptation_options(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_storyboard_drafts_project ON storyboard_drafts(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_review_records_project ON review_records(project_id)")
+
+
+def _ensure_medium_text_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS source_chunks (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          chunk_index INTEGER NOT NULL,
+          text TEXT NOT NULL,
+          start_offset INTEGER NOT NULL,
+          end_offset INTEGER NOT NULL,
+          char_count INTEGER NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          characters_json TEXT NOT NULL DEFAULT '[]',
+          places_json TEXT NOT NULL DEFAULT '[]',
+          conflict_terms_json TEXT NOT NULL DEFAULT '[]',
+          source TEXT NOT NULL DEFAULT 'mock_segmenter',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_chunks_project ON source_chunks(project_id);
+        CREATE INDEX IF NOT EXISTS idx_source_chunks_project_index ON source_chunks(project_id, chunk_index);
+        CREATE TABLE IF NOT EXISTS story_events (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          event_index INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          characters_json TEXT NOT NULL DEFAULT '[]',
+          places_json TEXT NOT NULL DEFAULT '[]',
+          goal TEXT NOT NULL DEFAULT '',
+          conflict TEXT NOT NULL DEFAULT '',
+          outcome TEXT NOT NULL DEFAULT '',
+          chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+          source_excerpt TEXT NOT NULL DEFAULT '',
+          source_start INTEGER,
+          source_end INTEGER,
+          importance REAL NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'mock_event_extractor',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_story_events_project ON story_events(project_id);
+        CREATE INDEX IF NOT EXISTS idx_story_events_project_index ON story_events(project_id, event_index);
+        CREATE TABLE IF NOT EXISTS storylines (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          storyline_index INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          rationale TEXT NOT NULL DEFAULT '',
+          protagonist TEXT NOT NULL DEFAULT '',
+          protagonist_goal TEXT NOT NULL DEFAULT '',
+          conflict TEXT NOT NULL DEFAULT '',
+          turning_point TEXT NOT NULL DEFAULT '',
+          ending_orientation TEXT NOT NULL DEFAULT '',
+          event_ids_json TEXT NOT NULL DEFAULT '[]',
+          chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+          source_excerpt TEXT NOT NULL DEFAULT '',
+          suggested_duration_seconds INTEGER NOT NULL DEFAULT 45,
+          suggested_shot_count INTEGER NOT NULL DEFAULT 5,
+          selected INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'mock_storyline_planner',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_storylines_project ON storylines(project_id);
+        CREATE TABLE IF NOT EXISTS adaptation_scopes (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          storyline_id TEXT,
+          event_ids_json TEXT NOT NULL DEFAULT '[]',
+          chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+          scoped_text TEXT NOT NULL DEFAULT '',
+          start_offset INTEGER,
+          end_offset INTEGER,
+          review_status TEXT NOT NULL DEFAULT 'draft',
+          user_note TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'user_scope',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_adaptation_scopes_project ON adaptation_scopes(project_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptation_scopes_project_unique ON adaptation_scopes(project_id);
+        """
+    )

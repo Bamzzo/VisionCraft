@@ -157,4 +157,29 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ stage }),
     }),
+  getMediumText: (projectId) => request(`/api/projects/${projectId}/medium-text`),
+  analyzeMediumText: (projectId) =>
+    request(`/api/projects/${projectId}/medium-text/analyze`, { method: "POST" }),
+  selectStoryline: (projectId, storylineId) =>
+    request(`/api/projects/${projectId}/medium-text/storylines/${storylineId}/select`, { method: "POST" }),
+  saveMediumScope: (projectId, payload) =>
+    request(`/api/projects/${projectId}/medium-text/scope`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  recommendMediumScope: (projectId) =>
+    request(`/api/projects/${projectId}/medium-text/scope/recommend`, { method: "POST" }),
+  confirmMediumScope: (projectId, payload = {}) =>
+    request(`/api/projects/${projectId}/medium-text/scope/confirm`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  regenerateMedium: (projectId, stage) =>
+    request(`/api/projects/${projectId}/medium-text/regenerate`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ stage }),
+    }),
 };

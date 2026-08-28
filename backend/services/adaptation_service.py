@@ -48,7 +48,23 @@ PRODUCTION_OK = {"production_ready", "ready_for_review", "review_pending", "vide
 
 def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dict:
     project = _require_project(project_id)
+    from ..workflow.medium_text_planner import text_scale
+    from .medium_text_service import MediumTextError, ensure_implicit_short_scope, run_medium_analysis
+
+    scale = text_scale(project["source_text"])
+    if scale == "long":
+        raise AdaptationError(
+            "TEXT_TOO_LONG",
+            "当前文本超过 10,000 字。P5-B 章节检索尚未实现，请先截取不超过 10,000 字，或使用短文本直接改编。",
+        )
     job_id = job_id or create_job(project_id, "adaptation_workflow", "文本理解已排队")
+    if scale == "medium":
+        try:
+            state = run_medium_analysis(project_id, job_id)
+        except MediumTextError as exc:
+            raise AdaptationError(exc.code, str(exc)) from exc
+        return {"job_id": job_id, "status": state.get("status"), "project": state}
+    ensure_implicit_short_scope(project)
     update_job(job_id, "running", 8, "文本理解：正在抽取段落、人物与冲突依据", stage="understand_text")
     payload = _generate_options(project)
     update_project_status(project_id, "awaiting_scope_review")
@@ -60,6 +76,22 @@ def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dic
     )
     update_job(job_id, "paused", 28, "改编方案已就绪，等待选择故事范围", stage="awaiting_scope_review")
     return {"job_id": job_id, "status": "awaiting_scope_review", "options": payload}
+
+
+def generate_options_from_context(project_id: str, job_id: str | None = None) -> list[dict]:
+    project = _require_project(project_id)
+    job_id = job_id or create_job(project_id, "adaptation_workflow", "改编方案生成已排队")
+    update_job(job_id, "running", 22, "正在根据已确认范围生成改编候选方案", stage="plan_adaptations")
+    payload = _generate_options(project)
+    update_project_status(project_id, "awaiting_scope_review")
+    save_workflow_checkpoint(
+        project_id,
+        job_id,
+        "scope_review",
+        {"project_id": project_id, "job_id": job_id, "node": "scope_review", "stage": "awaiting_scope_review"},
+    )
+    update_job(job_id, "paused", 28, "改编方案已就绪，等待选择故事范围", stage="awaiting_scope_review")
+    return payload
 
 
 def list_adaptation_options(project_id: str) -> list[dict]:
@@ -235,13 +267,26 @@ def confirm_storyboard(project_id: str, items: list[dict] | None = None, job_id:
 
 def regenerate_stage(project_id: str, stage: str, job_id: str | None = None) -> dict:
     project = _require_project(project_id)
+    if stage in {"analysis", "storyline"}:
+        from .medium_text_service import MediumTextError, regenerate_medium
+
+        try:
+            return regenerate_medium(project_id, stage, job_id)
+        except MediumTextError as exc:
+            raise AdaptationError(exc.code, str(exc)) from exc
     if stage not in {"scope", "bible", "storyboard"}:
         raise AdaptationError("INVALID_STAGE", "只能对范围、Story Bible 或分镜执行修改后重生成。")
     job_id = job_id or create_job(project_id, f"adaptation_regen_{stage}", f"{_stage_label(stage)}修改后重生成已排队")
     if stage == "scope":
         update_job(job_id, "running", 12, "失效下游 Story Bible 与分镜草案，保留已有镜头版本与资产", stage="regenerate_scope")
         _invalidate_bible_and_storyboard(project_id)
-        start_adaptation_workflow(project_id, job_id)
+        from ..workflow.medium_text_planner import text_scale
+        from .medium_text_service import load_confirmed_scope
+
+        if text_scale(project["source_text"]) == "medium" and load_confirmed_scope(project_id):
+            generate_options_from_context(project_id, job_id)
+        else:
+            start_adaptation_workflow(project_id, job_id)
         _record_review(project_id, "scope", "regenerate", "修改后重生成改编方案", None)
     elif stage == "bible":
         if not project.get("selected_option_id"):
@@ -290,6 +335,7 @@ def assert_batch_generation_allowed(project: dict) -> None:
     if status in {
         "created",
         "draft",
+        "awaiting_storyline_review",
         "adaptation_options_ready",
         "awaiting_scope_review",
         "story_bible_ready",
@@ -303,22 +349,57 @@ def assert_batch_generation_allowed(project: dict) -> None:
         )
 
 
+def planner_source_text(project: dict) -> str:
+    from .medium_text_service import load_confirmed_scope
+
+    scope = load_confirmed_scope(project["id"])
+    if scope and (scope.get("scoped_text") or "").strip():
+        return scope["scoped_text"]
+    return project["source_text"]
+
+
+def _active_scope_id(project_id: str) -> str | None:
+    from .medium_text_service import load_confirmed_scope
+
+    scope = load_confirmed_scope(project_id)
+    return scope.get("id") if scope else None
+
+
+def _remap_excerpt(full_text: str, excerpt: str, start, end) -> tuple[str, int | None, int | None]:
+    quote = excerpt or ""
+    if quote and quote in full_text:
+        index = full_text.find(quote)
+        return quote, index, index + len(quote)
+    try:
+        start_i = int(start) if start is not None else None
+        end_i = int(end) if end is not None else None
+    except (TypeError, ValueError):
+        return quote, None, None
+    return quote, start_i, end_i
+
+
 def _generate_options(project: dict) -> list[dict]:
     now = utc_now()
-    planned = plan_adaptations(project["title"], project["source_text"], project.get("style") or "", int(project.get("duration_seconds") or 5))
+    context = planner_source_text(project)
+    full = project["source_text"]
+    scope_id = _active_scope_id(project["id"])
+    planned = plan_adaptations(project["title"], context, project.get("style") or "", int(project.get("duration_seconds") or 5))
     with connect() as conn:
         conn.execute("DELETE FROM adaptation_options WHERE project_id = ?", (project["id"],))
         conn.execute("UPDATE projects SET selected_option_id = NULL, updated_at = ? WHERE id = ?", (now, project["id"]))
         rows = []
         for item in planned:
+            excerpt, start, end = _remap_excerpt(full, item.get("source_excerpt") or "", item.get("source_start"), item.get("source_end"))
+            if excerpt and excerpt not in context:
+                continue
             option_id = f"opt_{uuid.uuid4().hex[:10]}"
             conn.execute(
                 """
                 INSERT INTO adaptation_options
                 (id, project_id, option_index, title, rationale, protagonist_goal, conflict, ending_orientation,
                  suggested_duration_seconds, suggested_shot_count, source_excerpt, source_start, source_end,
-                 selected, source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                 selected, source, created_at, scope_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (
                     option_id,
@@ -331,20 +412,23 @@ def _generate_options(project: dict) -> list[dict]:
                     item["ending_orientation"],
                     item["suggested_duration_seconds"],
                     item["suggested_shot_count"],
-                    item["source_excerpt"],
-                    item["source_start"],
-                    item["source_end"],
+                    excerpt,
+                    start,
+                    end,
                     item["source"],
                     now,
+                    scope_id,
                 ),
             )
-            rows.append({**item, "id": option_id, "project_id": project["id"], "selected": 0})
+            rows.append({**item, "id": option_id, "project_id": project["id"], "selected": 0, "source_excerpt": excerpt, "source_start": start, "source_end": end, "scope_id": scope_id})
+    if not rows:
+        raise AdaptationError("SCOPE_EMPTY", "选定范围内无法生成改编方案。请重新选择事件范围后确认。")
     update_project_status(project["id"], "adaptation_options_ready")
     return rows
 
 
 def _write_bible(project: dict, option: dict, preserve_user_fields: bool = True) -> None:
-    planned = plan_story_bible(project["title"], project["source_text"], project.get("style") or "", option)
+    planned = plan_story_bible(project["title"], planner_source_text(project), project.get("style") or "", option)
     current = _load_bible(project["id"]) if preserve_user_fields else None
     merged = _merge_bible(current, planned) if current else planned
     if not preserve_user_fields:
@@ -352,23 +436,30 @@ def _write_bible(project: dict, option: dict, preserve_user_fields: bool = True)
     merged["option_id"] = option["id"]
     merged["review_status"] = "draft"
     merged["source"] = "mock_planner"
+    merged["scope_id"] = option.get("scope_id") or _active_scope_id(project["id"])
     _upsert_bible_row(project["id"], merged)
     _sync_bible_cards(project["id"], merged)
 
 
 def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
-    shots = plan_storyboard(project["title"], project["source_text"], project.get("style") or "", option, bible)
+    context = planner_source_text(project)
+    full = project["source_text"]
+    scope_id = option.get("scope_id") or _active_scope_id(project["id"])
+    shots = plan_storyboard(project["title"], context, project.get("style") or "", option, bible)
     now = utc_now()
     _clear_storyboard(project["id"])
     with connect() as conn:
         for item in shots:
+            excerpt, start, end = _remap_excerpt(full, item.get("source_excerpt") or "", item.get("source_start"), item.get("source_end"))
+            if excerpt and excerpt not in context:
+                continue
             conn.execute(
                 """
                 INSERT INTO storyboard_drafts
                 (id, project_id, shot_index, title, narrative_purpose, characters, scene, action_text, camera_motion,
                  duration_seconds, visual_prompt, bible_character, bible_scene, source_excerpt, source_start, source_end,
-                 source_type, review_status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_type, review_status, created_at, updated_at, scope_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"sb_{uuid.uuid4().hex[:10]}",
@@ -384,13 +475,14 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
                     item.get("visual_prompt") or "",
                     item.get("bible_character"),
                     item.get("bible_scene"),
-                    item.get("source_excerpt") or "",
-                    item.get("source_start"),
-                    item.get("source_end"),
+                    excerpt,
+                    start,
+                    end,
                     "auto_draft",
                     "draft",
                     now,
                     now,
+                    scope_id,
                 ),
             )
     update_project_status(project["id"], "storyboard_draft_ready")
@@ -690,6 +782,7 @@ def _upsert_bible_row(project_id: str, bible: dict) -> None:
             bible.get("option_id"),
             bible.get("source") or "mock_planner",
             bible.get("review_status") or "draft",
+            bible.get("scope_id"),
             now,
             project_id,
         )
@@ -699,7 +792,7 @@ def _upsert_bible_row(project_id: str, bible: dict) -> None:
                 UPDATE story_bibles SET
                   summary=?, worldview=?, style_tags=?, themes=?, logline=?, adaptation_summary=?, emotion_curve=?,
                   protagonist=?, protagonist_goal=?, obstacle=?, character_cards_json=?, scene_cards_json=?,
-                  visual_style=?, consistency_constraints=?, option_id=?, source=?, review_status=?, updated_at=?
+                  visual_style=?, consistency_constraints=?, option_id=?, source=?, review_status=?, scope_id=?, updated_at=?
                 WHERE project_id=?
                 """,
                 values,
@@ -710,8 +803,8 @@ def _upsert_bible_row(project_id: str, bible: dict) -> None:
                 INSERT INTO story_bibles
                 (summary, worldview, style_tags, themes, logline, adaptation_summary, emotion_curve, protagonist,
                  protagonist_goal, obstacle, character_cards_json, scene_cards_json, visual_style,
-                 consistency_constraints, option_id, source, review_status, updated_at, project_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 consistency_constraints, option_id, source, review_status, scope_id, updated_at, project_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (*values, now),
             )

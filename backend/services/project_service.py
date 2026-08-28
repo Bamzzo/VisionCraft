@@ -210,7 +210,9 @@ def get_project(project_id: str) -> dict:
 
     result["job_events"] = get_recent_job_events(project_id, limit=40)
     result["active_jobs"] = list_active_jobs(project_id)
-    return result
+    from .medium_text_service import attach_medium_text
+
+    return attach_medium_text(result)
 
 
 _DRAFT_COMPARE_FIELDS = (

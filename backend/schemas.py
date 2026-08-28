@@ -82,7 +82,22 @@ class StoryboardSaveRequest(BaseModel):
 
 
 class AdaptationRegenerateRequest(BaseModel):
-    stage: Literal["scope", "bible", "storyboard"]
+    stage: Literal["scope", "bible", "storyboard", "analysis", "storyline"]
+
+
+class MediumStorylineSelectRequest(BaseModel):
+    storyline_id: str = Field(min_length=3, max_length=40)
+
+
+class MediumScopeSaveRequest(BaseModel):
+    storyline_id: str | None = Field(default=None, max_length=40)
+    event_ids: list[str] | None = None
+    chunk_ids: list[str] | None = None
+    user_note: str | None = Field(default=None, max_length=400)
+
+
+class MediumRegenerateRequest(BaseModel):
+    stage: Literal["analysis", "storyline"] = "analysis"
 
 
 class DemoCleanupRequest(BaseModel):

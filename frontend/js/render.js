@@ -1,10 +1,10 @@
-import { agents, currentVersion, latestVersion, selectedShot, state } from "./state.js";
+import { currentVersion, latestVersion, selectedShot, state, workflowSteps } from "./state.js";
 
 const el = (id) => document.getElementById(id);
 
 function statusClass(status) {
   if (["completed", "ready_for_review", "keyframes_ready", "passed", "video_ready", "production_ready"].includes(status)) return "success";
-  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "adaptation_options_ready", "story_bible_ready", "storyboard_draft_ready"].includes(status)) return "warning";
+  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote", "awaiting_storyline_review", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "adaptation_options_ready", "story_bible_ready", "storyboard_draft_ready"].includes(status)) return "warning";
   if (["video_running", "video_waiting_remote"].includes(status)) return "warning";
   if (["failed", "video_failed", "video_invalid"].includes(status)) return "danger";
   return "neutral";
@@ -171,12 +171,13 @@ function renderProjectStatus() {
 
 function renderAgentFlow() {
   const status = state.project?.status || "created";
-  const currentIndex = Math.max(0, agents.findIndex((step) => (step.statuses || []).includes(status)));
+  const steps = workflowSteps(state.project);
+  const currentIndex = Math.max(0, steps.findIndex((step) => (step.statuses || []).includes(status)));
   const reachedProduction = ["production_ready", "ready_for_review", "review_pending", "video_ready", "completed"].includes(status);
-  el("adaptationSteps").innerHTML = agents
+  el("adaptationSteps").innerHTML = steps
     .map((agent, index) => {
-      const active = reachedProduction ? index === agents.length - 1 : index === currentIndex;
-      const done = reachedProduction ? index < agents.length - 1 : index < currentIndex;
+      const active = reachedProduction ? index === steps.length - 1 : index === currentIndex;
+      const done = reachedProduction ? index < steps.length - 1 : index < currentIndex;
       const className = done ? "done" : active ? "running" : "";
       return `<div class="agent-node ${className}">
         <strong>${agent.label}</strong>
@@ -231,19 +232,77 @@ function renderAdaptationReview() {
   const project = state.project;
   if (!project) {
     box.className = "adaptation-review empty-state";
-    box.textContent = "创建项目并启动改编流程后，在这里选择范围、确认 Story Bible 与分镜。";
+    box.textContent = "创建项目并启动改编流程后，在这里选择故事线、确认范围、Story Bible 与分镜。";
     return;
   }
   const status = project.status || "created";
   const options = project.adaptation_options || [];
   const bible = project.story_bible;
   const drafts = project.storyboard_drafts || [];
+  const medium = project.text_scale === "medium";
   const production = ["production_ready", "ready_for_review", "video_ready"].includes(status);
+  const scaleLine = `<p class="muted-text">${escapeHtml(project.text_scale_label || "")} · ${escapeHtml(String((project.source_text || "").length))} 字</p>`;
   box.className = "adaptation-review";
-  if (["created", "draft"].includes(status) && !options.length) {
-    box.innerHTML = `<p class="muted-text">点击「启动改编流程」生成 2～3 个候选改编方案。本次使用本地确定性改编器，不调用付费模型。</p>`;
+  if (["created", "draft"].includes(status) && !options.length && !(project.storylines || []).length) {
+    box.innerHTML = `${scaleLine}<p class="muted-text">点击「启动改编流程」。短文本会直接给出改编方案；中等文本会先拆分并让你选择故事线。本次使用本地确定性规则，不调用付费模型。</p>`;
     return;
   }
+  const selectedLine = (project.storylines || []).find((item) => item.selected);
+  const scope = project.adaptation_scope;
+  const selectedEventIds = new Set(scope?.event_ids || selectedLine?.event_ids || []);
+  const storylineCards = (project.storylines || [])
+    .map(
+      (item) => `
+      <article class="option-card ${item.selected ? "active" : ""}">
+        <div class="section-title">
+          <h3>${escapeHtml(item.title)}</h3>
+          ${item.selected ? `<span class="tag">已选</span>` : ""}
+        </div>
+        <p><strong>主角：</strong>${escapeHtml(item.protagonist || "")}</p>
+        <p><strong>目标：</strong>${escapeHtml(item.protagonist_goal || "")}</p>
+        <p><strong>冲突：</strong>${escapeHtml(item.conflict || "")}</p>
+        <p><strong>覆盖片段：</strong>${escapeHtml(String((item.chunk_ids || []).length))} 块 · 事件 ${escapeHtml(String((item.event_ids || []).length))} 个</p>
+        <p><strong>节奏建议：</strong>${escapeHtml(String(item.suggested_duration_seconds))} 秒 · ${escapeHtml(String(item.suggested_shot_count))} 镜</p>
+        <p><strong>推荐理由：</strong>${escapeHtml(item.rationale || "")}</p>
+        <blockquote>引用：「${escapeHtml(item.source_excerpt || "")}」</blockquote>
+        <button class="secondary-btn mini-btn" data-adapt="select-storyline" data-storyline-id="${escapeHtml(item.id)}">选择此故事线</button>
+      </article>`
+    )
+    .join("");
+  const eventChecks = selectedLine
+    ? (project.story_events || [])
+        .filter((event) => (selectedLine.event_ids || []).includes(event.id) || selectedEventIds.has(event.id))
+        .concat((project.story_events || []).filter((event) => !(selectedLine.event_ids || []).includes(event.id) && selectedEventIds.has(event.id)))
+        .filter((event, index, arr) => arr.findIndex((item) => item.id === event.id) === index)
+        .map(
+          (event) => `
+          <label class="prompt-block">
+            <input type="checkbox" data-event-check value="${escapeHtml(event.id)}" ${selectedEventIds.has(event.id) ? "checked" : ""} />
+            <strong>${escapeHtml(event.title)}</strong>
+            <p>${escapeHtml(event.summary || "")}</p>
+            <p class="muted-text">原文：「${escapeHtml(event.source_excerpt || "")}」 · 偏移 ${escapeHtml(String(event.source_start))}–${escapeHtml(String(event.source_end))}</p>
+          </label>`
+        )
+        .join("")
+    : "";
+  const scopedPreview = scope?.scoped_text
+    ? `<blockquote>系统将把以下选中范围交给后续改编（共 ${escapeHtml(String(scope.scoped_text.length))} 字，偏移 ${escapeHtml(String(scope.start_offset))}–${escapeHtml(String(scope.end_offset))}）：「${escapeHtml(scope.scoped_text.slice(0, 280))}${scope.scoped_text.length > 280 ? "…" : ""}」</blockquote>`
+    : `<p class="muted-text">选择故事线并勾选事件后，这里会显示实际交给改编的原文。</p>`;
+  const storylinePanel = medium
+    ? `<div class="prompt-block">
+        <strong>选择故事线与范围</strong>
+        ${storylineCards || `<p class="muted-text">启动改编后将出现 2～3 条候选故事线。</p>`}
+        ${selectedLine ? `<div><p>组成事件（可勾选/取消少量事件）：</p>${eventChecks}${scopedPreview}
+          <label>修改说明<input id="scopeUserNote" value="${escapeHtml(scope?.user_note || "")}" /></label>
+          <div class="button-row compact-row">
+            <button class="secondary-btn mini-btn" data-adapt="recommend-scope">按推荐范围继续</button>
+            <button class="secondary-btn mini-btn" data-adapt="save-medium-scope">保存范围</button>
+            <button class="primary-btn mini-btn" data-adapt="confirm-medium-scope">确认范围并进入改编</button>
+            <button class="secondary-btn mini-btn" data-adapt="regen-medium" data-stage="analysis">修改后重生成分析</button>
+          </div></div>` : ""}
+      </div>`
+    : "";
+  const showP4Options = !medium || ["awaiting_scope_review", "adaptation_options_ready"].includes(status);
   const optionCards = options
     .map(
       (item) => `
@@ -333,8 +392,10 @@ function renderAdaptationReview() {
         </div></div>`
     : "";
   box.innerHTML = `
-    <p class="muted-text">当前步骤：${escapeHtml(status)}。刷新后会恢复审核状态、已选方案与已保存内容。</p>
-    ${["awaiting_scope_review", "adaptation_options_ready"].includes(status) || (!production && options.length && !drafts.length && status !== "awaiting_bible_review" && status !== "awaiting_storyboard_review") ? optionCards : ""}
+    ${scaleLine}
+    <p class="muted-text">当前步骤：${escapeHtml(status)}。刷新后会恢复已选故事线、事件范围与审核状态。</p>
+    ${status === "awaiting_storyline_review" || (medium && (project.storylines || []).length && !production) ? storylinePanel : ""}
+    ${showP4Options && (["awaiting_scope_review", "adaptation_options_ready"].includes(status) || (!production && options.length && !drafts.length && status !== "awaiting_bible_review" && status !== "awaiting_storyboard_review" && status !== "awaiting_storyline_review")) ? optionCards : ""}
     ${["awaiting_bible_review", "story_bible_ready", "awaiting_storyboard_review", "storyboard_draft_ready", "production_ready"].includes(status) || bible ? bibleForm : ""}
     ${["awaiting_storyboard_review", "storyboard_draft_ready", "production_ready"].includes(status) || drafts.length ? boardBlock : ""}
     ${options.length ? `<button class="secondary-btn mini-btn" data-adapt="regen" data-stage="scope">修改后重生成改编方案</button>` : ""}
