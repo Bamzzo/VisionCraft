@@ -189,7 +189,16 @@ def generate_video_endpoint(
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
     job_id = create_job(project_id, "video_generation", "Video generation queued")
-    background_tasks.add_task(generate_shot_video, project_id, shot_id, job_id, (payload or VideoGenerateRequest()).video_mode)
+    request_payload = payload or VideoGenerateRequest()
+    background_tasks.add_task(
+        generate_shot_video,
+        project_id,
+        shot_id,
+        job_id,
+        request_payload.video_mode,
+        request_payload.provider,
+        request_payload.model,
+    )
     return {"job_id": job_id, "status": "queued"}
 
 

@@ -32,6 +32,8 @@ class VideoAssetRequest:
     audio_prompt: str = ""
     video_mode: str = "t2v"
     job_id: str | None = None
+    provider_override: str | None = None
+    model_override: str | None = None
 
 
 @dataclass
@@ -48,8 +50,8 @@ class VideoGenerationResult:
 
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
     failure_reasons: list[str] = []
-    provider = os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow").lower()
-    providers = [provider] if provider in {"siliconflow", "ark", "volc"} else ["siliconflow", "ark"]
+    provider = (request.provider_override or os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow")).lower()
+    providers = [provider] if provider in {"siliconflow", "ark", "volc", "dashscope", "minimax"} else ["siliconflow", "ark"]
     if provider == "siliconflow":
         providers.append("ark")
 
@@ -62,6 +64,12 @@ def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
             if candidate in {"ark", "volc"} and _ark_api_key():
                 attempted = True
                 return _generate_ark_video(request)
+            if candidate == "dashscope" and _dashscope_api_key():
+                attempted = True
+                return _generate_dashscope_video(request)
+            if candidate == "minimax" and _minimax_api_key():
+                attempted = True
+                return _generate_minimax_video(request)
         except Exception as exc:
             failure_reasons.append(f"{candidate}: {_compact_error(exc)}")
     if not attempted:
@@ -97,13 +105,17 @@ def refresh_remote_video_task(video_task_id: str) -> VideoGenerationResult:
     )
     if task["provider"] in {"ark", "volc"}:
         return _refresh_ark_video(request, dict(task))
+    if task["provider"] == "dashscope":
+        return _refresh_dashscope_video(request, dict(task))
+    if task["provider"] == "minimax":
+        return _refresh_minimax_video(request, dict(task))
     raise RuntimeError(f"Refresh is not implemented for provider: {task['provider']}")
 
 
 def _generate_siliconflow_video(request: VideoAssetRequest) -> VideoGenerationResult:
     api_key = os.environ["SILICONFLOW_API_KEY"]
     base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/")
-    model = os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
+    model = request.model_override or os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
     image_size = os.getenv("SILICONFLOW_VIDEO_SIZE", "1280x720")
     poll_seconds = int(os.getenv("SILICONFLOW_VIDEO_POLL_SECONDS", "180"))
     prompt = _build_video_prompt(request)
@@ -134,11 +146,14 @@ def _generate_siliconflow_video(request: VideoAssetRequest) -> VideoGenerationRe
     raise RuntimeError(f"Video generation timeout, last status={last_status}")
 
 
-def _post_json(url: str, api_key: str, payload: dict) -> dict:
+def _post_json(url: str, api_key: str, payload: dict, extra_headers: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     http_request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -163,12 +178,135 @@ def _get_json(url: str, api_key: str) -> dict:
         raise RuntimeError(f"Video API HTTP {exc.code}: {detail}") from exc
 
 
+def _dashscope_api_key() -> str:
+    return os.getenv("DASHSCOPE_API_KEY", "")
+
+
+def _minimax_api_key() -> str:
+    return os.getenv("MINIMAX_API_KEY", "")
+
+
+def _generate_dashscope_video(request: VideoAssetRequest) -> VideoGenerationResult:
+    api_key = _dashscope_api_key()
+    base_url = os.getenv("DASHSCOPE_API_HOST", "https://dashscope.aliyuncs.com").rstrip("/")
+    mode = (request.video_mode or "t2v").lower()
+    default_model = os.getenv("DASHSCOPE_I2V_MODEL", "wan2.7-i2v") if mode in {"i2v", "keyframes"} else os.getenv("DASHSCOPE_T2V_MODEL", "wan2.7-t2v")
+    model = request.model_override or default_model
+    prompt = _build_video_prompt(request)
+    media = _dashscope_media_items(request, model) if mode in {"i2v", "keyframes"} else []
+    payload = {"model": model, "input": {"prompt": prompt, **({"media": media} if media else {})}, "parameters": {"resolution": os.getenv("DASHSCOPE_VIDEO_RESOLUTION", "720P"), "duration": max(2, request.duration_seconds), "watermark": False}}
+    submit = _post_json(base_url + "/api/v1/services/aigc/video-generation/video-synthesis", api_key, payload, {"X-DashScope-Async": "enable"})
+    task_id = (submit.get("output") or {}).get("task_id") or submit.get("task_id")
+    if not task_id:
+        raise RuntimeError(f"DashScope video submit returned no task id: {submit}")
+    local_task_id = _upsert_video_task(request, "dashscope", model, task_id, "running", "submitted", prompt, payload, submit)
+    return _poll_dashscope_video(request, local_task_id, task_id, model, prompt, base_url, api_key)
+
+
+def _poll_dashscope_video(request, local_task_id, task_id, model, prompt, base_url, api_key):
+    deadline = time.time() + int(os.getenv("DASHSCOPE_VIDEO_POLL_SECONDS", "180"))
+    last = {}
+    while time.time() < deadline:
+        last = _get_json(base_url + f"/api/v1/tasks/{task_id}", api_key)
+        status = str((last.get("output") or {}).get("task_status") or last.get("task_status") or "").lower()
+        if status in {"succeeded", "success", "completed"}:
+            url = _find_video_url(last)
+            if not url:
+                raise RuntimeError(f"DashScope video succeeded but returned no video URL: {last}")
+            path = _download_and_record_video(request, url, prompt, f"provider:dashscope:{model}")
+            _update_video_task(local_task_id, "completed", status, last, url, path, None, None)
+            return VideoGenerationResult("completed", path, "dashscope", model, task_id, status, local_task_id)
+        if status in {"failed", "cancelled", "canceled", "expired"}:
+            code, message = _extract_error(last)
+            _update_video_task(local_task_id, "failed", status, last, error_code=code, error_message=message)
+            raise RuntimeError(message)
+        _update_video_task(local_task_id, "running", status or "running", last)
+        time.sleep(int(os.getenv("DASHSCOPE_VIDEO_POLL_INTERVAL", "5")))
+    _update_video_task(local_task_id, "pending_remote", "running", last, error_code="REMOTE_STILL_RUNNING", error_message="DashScope cloud task is still running.")
+    return VideoGenerationResult("pending_remote", provider="dashscope", model=model, remote_task_id=task_id, cloud_status="running", task_id=local_task_id, message="DashScope cloud task is still running.")
+
+
+def _refresh_dashscope_video(request: VideoAssetRequest, task: dict) -> VideoGenerationResult:
+    base_url = os.getenv("DASHSCOPE_API_HOST", "https://dashscope.aliyuncs.com").rstrip("/")
+    return _poll_dashscope_video(request, task["id"], task["remote_task_id"], task["model"], task["prompt"] or _build_video_prompt(request), base_url, _dashscope_api_key())
+
+
+def _dashscope_media_items(request: VideoAssetRequest, model: str) -> list[dict]:
+    if not request.first_frame_path:
+        raise MediaTransferError("MISSING_FIRST_FRAME", "I2V/keyframes mode requires a first-frame asset.")
+    refs = [prepare_image_reference(request.project_id, request.first_frame_path, target_provider="dashscope", target_model=model, role="first_frame")]
+    if (request.video_mode or "").lower() == "keyframes":
+        if not request.last_frame_path:
+            raise MediaTransferError("MISSING_LAST_FRAME", "Keyframes mode requires a last-frame asset.")
+        refs.append(prepare_image_reference(request.project_id, request.last_frame_path, target_provider="dashscope", target_model=model, role="last_frame"))
+    return [{"type": ref.role, "url": ref.url} for ref in refs if ref]
+
+
+def _generate_minimax_video(request: VideoAssetRequest) -> VideoGenerationResult:
+    base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
+    model = request.model_override or os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
+    prompt = _build_video_prompt(request)
+    payload = {"model": model, "content": _minimax_content_items(request, model, prompt), "resolution": os.getenv("MINIMAX_VIDEO_RESOLUTION", "768P"), "duration": max(4, request.duration_seconds)}
+    submit = _post_json(base_url + "/v2/video_generation", _minimax_api_key(), payload)
+    task_id = str(submit.get("task_id") or (submit.get("data") or {}).get("task_id") or "")
+    if not task_id:
+        raise RuntimeError(f"MiniMax video submit returned no task id: {submit}")
+    local_task_id = _upsert_video_task(request, "minimax", model, task_id, "running", "submitted", prompt, payload, submit)
+    return _poll_minimax_video(request, local_task_id, task_id, model, prompt, base_url, _minimax_api_key())
+
+
+def _poll_minimax_video(request, local_task_id, task_id, model, prompt, base_url, api_key):
+    deadline = time.time() + int(os.getenv("MINIMAX_VIDEO_POLL_SECONDS", "180"))
+    last = {}
+    while time.time() < deadline:
+        last = _get_json(base_url + f"/v2/query/video_generation/{task_id}", api_key)
+        task = last.get("task") or last.get("data") or last
+        status = str(task.get("status") or "").lower()
+        if status in {"succeeded", "success", "completed"}:
+            url = _find_video_url(last)
+            if not url:
+                raise RuntimeError(f"MiniMax video succeeded but returned no video URL: {last}")
+            path = _download_and_record_video(request, url, prompt, f"provider:minimax:{model}")
+            _update_video_task(local_task_id, "completed", status, last, url, path, None, None)
+            return VideoGenerationResult("completed", path, "minimax", model, task_id, status, local_task_id)
+        if status in {"failed", "error", "cancelled", "canceled", "expired"}:
+            code, message = _extract_error(last)
+            _update_video_task(local_task_id, "failed", status, last, error_code=code, error_message=message)
+            raise RuntimeError(message)
+        _update_video_task(local_task_id, "running", status or "running", last)
+        time.sleep(int(os.getenv("MINIMAX_VIDEO_POLL_INTERVAL", "5")))
+    _update_video_task(local_task_id, "pending_remote", "running", last, error_code="REMOTE_STILL_RUNNING", error_message="MiniMax cloud task is still running.")
+    return VideoGenerationResult("pending_remote", provider="minimax", model=model, remote_task_id=task_id, cloud_status="running", task_id=local_task_id, message="MiniMax cloud task is still running.")
+
+
+def _refresh_minimax_video(request: VideoAssetRequest, task: dict) -> VideoGenerationResult:
+    base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
+    return _poll_minimax_video(request, task["id"], task["remote_task_id"], task["model"], task["prompt"] or _build_video_prompt(request), base_url, _minimax_api_key())
+
+
+def _minimax_content_items(request: VideoAssetRequest, model: str, prompt: str) -> list[dict]:
+    content = [{"type": "text", "text": prompt}]
+    mode = (request.video_mode or "t2v").lower()
+    if mode not in {"i2v", "keyframes"}:
+        return content
+    if not request.first_frame_path:
+        raise MediaTransferError("MISSING_FIRST_FRAME", "I2V/keyframes mode requires a first-frame asset.")
+    first = prepare_image_reference(request.project_id, request.first_frame_path, target_provider="minimax", target_model=model, role="first_frame")
+    content.append({"type": "image_url", "image_url": {"url": first.url}, "role": "first_frame"})
+    if mode == "keyframes":
+        if not request.last_frame_path:
+            raise MediaTransferError("MISSING_LAST_FRAME", "Keyframes mode requires a last-frame asset.")
+        last = prepare_image_reference(request.project_id, request.last_frame_path, target_provider="minimax", target_model=model, role="last_frame")
+        content.append({"type": "image_url", "image_url": {"url": last.url}, "role": "last_frame"})
+    return content
+
+
 def _generate_ark_video(request: VideoAssetRequest) -> VideoGenerationResult:
     api_key = _ark_api_key()
     if not api_key:
         raise RuntimeError("No Ark video API key configured")
     base_url = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-    model = os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128")
+    model = request.model_override or os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128")
     poll_seconds = int(os.getenv("VOLC_VIDEO_POLL_SECONDS", os.getenv("SILICONFLOW_VIDEO_POLL_SECONDS", "180")))
     prompt = _build_video_prompt(request)
     content = _ark_content_items(request, prompt)
@@ -545,7 +683,7 @@ def _ark_content_items(request: VideoAssetRequest, prompt: str) -> list[dict]:
         request.project_id,
         request.first_frame_path,
         target_provider="ark",
-        target_model=os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
+        target_model=request.model_override or os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
         role="first_frame",
     )
     last = (
@@ -553,7 +691,7 @@ def _ark_content_items(request: VideoAssetRequest, prompt: str) -> list[dict]:
             request.project_id,
             request.last_frame_path,
             target_provider="ark",
-            target_model=os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
+            target_model=request.model_override or os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
             role="last_frame",
         )
         if mode == "keyframes"

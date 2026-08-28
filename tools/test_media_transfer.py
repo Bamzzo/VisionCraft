@@ -15,6 +15,7 @@ from backend.config import PROJECTS_DIR, init_environment
 from backend.database import connect, init_db, utc_now
 from backend.services.asset_service import persist_binary_asset
 from backend.services.media_transfer_service import prepare_image_reference
+from backend.providers.video_provider import VideoAssetRequest, _dashscope_media_items, _minimax_content_items
 
 # Valid 1x1 PNG.  The test checks the transport contract, not image aesthetics.
 PNG_BYTES = bytes.fromhex(
@@ -47,6 +48,19 @@ def main() -> None:
         )
         assert reference is not None
         assert reference.transfer_mode == "data_url"
+        request = VideoAssetRequest(
+            project_id=project_id,
+            shot_id="shot_test",
+            version_id="version_test",
+            title="test",
+            description="test",
+            prompt="test",
+            first_frame_path=path,
+            duration_seconds=5,
+            video_mode="i2v",
+        )
+        assert _dashscope_media_items(request, "wan2.7-i2v")[0]["type"] == "first_frame"
+        assert _minimax_content_items(request, "MiniMax-H3", "test")[1]["role"] == "first_frame"
         assert reference.url.startswith("data:image/png;base64,")
         with connect() as conn:
             transfer = conn.execute(

@@ -20,6 +20,8 @@ class FeedbackCreate(BaseModel):
 
 class VideoGenerateRequest(BaseModel):
     video_mode: Literal["t2v", "i2v", "keyframes"] = "t2v"
+    provider: str | None = Field(default=None, max_length=40)
+    model: str | None = Field(default=None, max_length=120)
 
 
 class KeyframeSelectRequest(BaseModel):

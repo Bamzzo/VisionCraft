@@ -7,6 +7,8 @@ def get_provider_capabilities() -> dict:
     siliconflow_live = bool(os.getenv("SILICONFLOW_API_KEY"))
     ark_image_live = bool(os.getenv("VOLC_IMAGE_API_KEY") or os.getenv("VOLC_API_KEY"))
     ark_video_live = bool(os.getenv("VOLC_VIDEO_API_KEY") or os.getenv("VOLC_API_KEY"))
+    dashscope_video_live = bool(os.getenv("DASHSCOPE_API_KEY"))
+    minimax_video_live = bool(os.getenv("MINIMAX_API_KEY"))
     return {
         "llm": [
             {
@@ -55,6 +57,24 @@ def get_provider_capabilities() -> dict:
                 "supported_durations": [5],
                 "supported_resolutions": ["720p"],
             },
+            {
+                "id": "dashscope_wan",
+                "label": "阿里百炼 Wan",
+                "mode": "live-ready" if dashscope_video_live else "not-configured",
+                "supported_modes": ["t2v", "i2v", "keyframes"],
+                "supported_ratios": ["16:9", "9:16", "1:1"],
+                "supported_durations": [2, 5, 10, 15],
+                "supported_resolutions": ["720P", "1080P"],
+            },
+            {
+                "id": "minimax_h3",
+                "label": "MiniMax H3",
+                "mode": "live-ready" if minimax_video_live else "not-configured",
+                "supported_modes": ["t2v", "i2v", "keyframes"],
+                "supported_ratios": ["adaptive", "16:9", "9:16", "1:1"],
+                "supported_durations": [4, 6, 10, 15],
+                "supported_resolutions": ["768P", "1080P"],
+            },
         ],
     }
 
@@ -66,6 +86,8 @@ def get_provider_diagnostics() -> dict:
     video_provider = os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow")
     ark_image_key = bool(os.getenv("VOLC_IMAGE_API_KEY") or os.getenv("VOLC_API_KEY"))
     ark_video_key = bool(os.getenv("VOLC_VIDEO_API_KEY") or os.getenv("VOLC_API_KEY"))
+    dashscope_key = bool(os.getenv("DASHSCOPE_API_KEY"))
+    minimax_key = bool(os.getenv("MINIMAX_API_KEY"))
     image_configured = (
         siliconflow_key
         if image_provider == "siliconflow"
@@ -106,6 +128,12 @@ def get_provider_diagnostics() -> dict:
             "size": os.getenv("SILICONFLOW_VIDEO_SIZE", "1280x720"),
             "poll_seconds": int(os.getenv("VOLC_VIDEO_POLL_SECONDS", os.getenv("SILICONFLOW_VIDEO_POLL_SECONDS", "180"))),
             "fallback": "disabled: live video generation must succeed",
+            "available_providers": {
+                "ark": ark_video_key,
+                "dashscope": dashscope_key,
+                "minimax": minimax_key,
+                "siliconflow": siliconflow_key,
+            },
         },
         "tools": {
             "ffmpeg": bool(shutil.which("ffmpeg")),

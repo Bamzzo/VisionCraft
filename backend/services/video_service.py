@@ -10,7 +10,14 @@ from ..services.job_service import update_job
 from ..services.asset_service import public_asset_path
 
 
-def generate_shot_video(project_id: str, shot_id: str, job_id: str, video_mode: str = "t2v") -> None:
+def generate_shot_video(
+    project_id: str,
+    shot_id: str,
+    job_id: str,
+    video_mode: str = "t2v",
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
     update_job(job_id, "running", 8, "Preparing shot video generation")
     try:
         with connect() as conn:
@@ -61,6 +68,8 @@ def generate_shot_video(project_id: str, shot_id: str, job_id: str, video_mode: 
                 duration_seconds=project["duration_seconds"],
                 aspect_ratio=project["aspect_ratio"],
                 job_id=job_id,
+                provider_override=provider,
+                model_override=model,
             )
         )
         if video_path.status == "pending_remote":
