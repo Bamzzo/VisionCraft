@@ -250,35 +250,35 @@ def main() -> None:
     test_waiting_remote_refresh_queries_only()
     test_incremental_events_and_simulated_preview_update()
     test_duplicate_poll_events_are_collapsed()
-    test_sse_http_if_available()
+    test_sse_opening_and_http()
     print("PASS: P2 job center contract")
 
 
-def test_sse_http_if_available() -> None:
-    try:
-        from fastapi.testclient import TestClient
-        from backend.main import app
-    except Exception as exc:
-        print(f"SKIP: FastAPI SSE HTTP test ({exc.__class__.__name__})")
-        return
+def test_sse_opening_and_http() -> None:
+    from backend.services.job_service import collect_sse_opening
+
     project_id = _project("SSE HTTP")
     try:
         job_id = create_job(project_id, "video_generation", "已排队", shot_id="shot_sse")
         update_job(job_id, "running", 20, "正在校验首帧关键帧", stage="prepare", shot_id="shot_sse")
+        frames = "".join(collect_sse_opening(project_id, after_id=0))
+        assert "event: snapshot" in frames
+        assert "event: job.update" in frames
+        assert f'"project_id": "{project_id}"' in frames or f'"project_id":"{project_id}"' in frames
+        assert "id: " in frames
+        assert "progress" in frames
+        from fastapi.testclient import TestClient
+        from backend.main import app
+
         client = TestClient(app)
-        with client.stream("GET", f"/api/projects/{project_id}/events?after_id=0") as response:
-            assert response.status_code == 200
-            assert "text/event-stream" in response.headers.get("content-type", "")
-            buf = ""
-            for chunk in response.iter_text():
-                buf += chunk
-                if "event: job.update" in buf and "job_id" in buf and "progress" in buf:
-                    break
-                if len(buf) > 8000:
-                    break
-        assert "event: snapshot" in buf or "event: job.update" in buf
-        assert "job_id" in buf
-        print("PASS: SSE HTTP stream emits structured events")
+        response = client.get(f"/api/projects/{project_id}/events?once=true")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        body = response.text
+        assert "event: snapshot" in body
+        assert "event: job.update" in body
+        assert "id:" in body
+        print("PASS: finite SSE opening and HTTP once=true stream")
     finally:
         with connect() as conn:
             conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))

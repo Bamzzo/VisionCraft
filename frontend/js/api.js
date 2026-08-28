@@ -76,6 +76,19 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify(typeof payload === "string" ? { video_mode: payload } : payload),
     }),
+  getShotEditor: (projectId, shotId) => request(`/api/projects/${projectId}/shots/${shotId}/editor`),
+  saveShotDraft: (projectId, shotId, payload) =>
+    request(`/api/projects/${projectId}/shots/${shotId}/draft`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  freezeShotVersion: (projectId, shotId, payload = {}) =>
+    request(`/api/projects/${projectId}/shots/${shotId}/versions`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
   safeRetryVideo: (projectId, shotId) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video/safe-retry`, {
       method: "POST",

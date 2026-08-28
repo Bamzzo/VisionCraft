@@ -43,9 +43,14 @@ def init_db() -> None:
         _ensure_column(conn, "projects", "review_mode", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "projects", "archived", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "shots", "rag_evidence", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "projects", "assembly_stale", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "shot_versions", "video_mode", "TEXT NOT NULL DEFAULT 't2v'")
         _ensure_column(conn, "shot_versions", "provider", "TEXT")
         _ensure_column(conn, "shot_versions", "model", "TEXT")
+        _ensure_column(conn, "shot_versions", "camera_motion", "TEXT")
+        _ensure_column(conn, "shot_versions", "duration_seconds", "INTEGER")
+        _ensure_column(conn, "shot_versions", "reference_frame_path", "TEXT")
+        _ensure_column(conn, "shot_versions", "change_summary", "TEXT")
         _ensure_column(conn, "assets", "mime_type", "TEXT")
         _ensure_column(conn, "assets", "byte_size", "INTEGER")
         _ensure_column(conn, "assets", "sha256", "TEXT")
@@ -58,6 +63,7 @@ def init_db() -> None:
         _ensure_video_tasks(conn)
         _ensure_media_transfers(conn)
         _ensure_job_events(conn)
+        _ensure_shot_drafts(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -139,3 +145,27 @@ def _ensure_job_events(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_project_id ON job_events(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_created_at ON job_events(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_project_id_id ON job_events(project_id, id)")
+
+
+def _ensure_shot_drafts(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shot_drafts (
+          shot_id TEXT PRIMARY KEY REFERENCES shots(id) ON DELETE CASCADE,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          description TEXT,
+          camera_motion TEXT,
+          visual_prompt TEXT,
+          negative_prompt TEXT,
+          audio_prompt TEXT,
+          video_mode TEXT,
+          provider TEXT,
+          model TEXT,
+          duration_seconds INTEGER,
+          first_frame_path TEXT,
+          last_frame_path TEXT,
+          reference_frame_path TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )

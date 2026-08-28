@@ -15,6 +15,8 @@ export const state = {
   timelineOpen: false,
   remoteRefreshTimer: null,
   refreshInFlight: false,
+  observerToken: 0,
+  observedProjectId: null,
 };
 
 export const agents = [

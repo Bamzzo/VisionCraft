@@ -19,6 +19,7 @@ def prepare_shot_video_generation(
     model: str | None = None,
     duration_seconds: int | None = None,
     version_id: str | None = None,
+    allow_fork: bool = True,
 ) -> dict:
     with connect() as conn:
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -31,6 +32,8 @@ def prepare_shot_video_generation(
         ).fetchone()
         if not version:
             raise RuntimeError("Current shot version not found")
+        if version["shot_id"] != shot_id:
+            raise RuntimeError("指定版本不属于该镜头")
         task_count = conn.execute(
             "SELECT COUNT(*) AS n FROM video_tasks WHERE version_id = ?",
             (version["id"],),
@@ -54,11 +57,19 @@ def prepare_shot_video_generation(
         and (version["model"] or "") == plan["model"]
     )
     already_targeted = bool(version["provider"] or version["model"])
-    should_fork = bool(version["video_path"]) or task_count > 0 or (already_targeted and not same_spec)
+    should_fork = allow_fork and (bool(version["video_path"]) or task_count > 0 or (already_targeted and not same_spec))
     if should_fork:
         version = _fork_generation_version(project_id, shot, dict(version), plan)
-    else:
+    elif allow_fork:
         version = _stamp_generation_version(dict(version), plan)
+    else:
+        now = utc_now()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE shots SET status = ?, updated_at = ? WHERE id = ?",
+                ("video_running", now, shot_id),
+            )
+        version = dict(version)
     return {
         **plan,
         "project": dict(project),
@@ -77,6 +88,7 @@ def generate_shot_video(
     model: str | None = None,
     duration_seconds: int | None = None,
     version_id: str | None = None,
+    allow_fork: bool = True,
 ) -> None:
     update_job(job_id, "running", 8, "正在校验镜头生成参数", shot_id=shot_id, stage="prepare")
     try:
@@ -88,6 +100,7 @@ def generate_shot_video(
             model=model,
             duration_seconds=duration_seconds,
             version_id=version_id,
+            allow_fork=allow_fork,
         )
         project = prepared["project"]
         shot = prepared["shot"]

@@ -10,13 +10,21 @@ from .config import FRONTEND_DIR, PROJECTS_DIR, init_environment
 from .database import connect, init_db
 from .providers.capabilities import CapabilityError, get_provider_capabilities, get_provider_diagnostics
 from .providers.llm_provider import live_llm_available
-from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, VideoGenerateRequest
+from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, ShotDraftUpdate, VideoGenerateRequest
 from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
-from .services.job_service import create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
+from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
-from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects, rollback_shot_version
+from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects
+from .services.shot_edit_service import (
+    ShotEditError,
+    freeze_shot_version,
+    get_shot_editor,
+    prepare_version_for_generation,
+    rollback_shot_to_version,
+    save_shot_draft,
+)
 from .services.video_service import assemble_project_video, generate_project_videos, generate_shot_video, prepare_shot_video_generation, refresh_project_video_tasks, safe_retry_shot_video
 from .services.checkpoint_service import get_paused_checkpoint
 from .workflow.langgraph_workflow import resume_langgraph_workflow, run_langgraph_workflow
@@ -131,6 +139,7 @@ def list_project_job_events(
 async def project_events(
     project_id: str,
     after_id: int = Query(default=0, ge=0),
+    once: bool = Query(default=False),
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     if not _project_exists(project_id):
@@ -141,16 +150,19 @@ async def project_events(
 
     async def event_stream():
         last_id = cursor
-        snapshot_sent = False
+        for frame in collect_sse_opening(project_id, after_id=last_id):
+            yield frame
+            if frame.startswith("id:"):
+                try:
+                    last_id = max(last_id, int(frame.split("\n", 1)[0].split(":", 1)[1].strip()))
+                except ValueError:
+                    pass
+        if once:
+            return
         for _ in range(3600):
             if not _project_exists(project_id):
                 yield "event: error\ndata: {\"message\":\"项目不存在\"}\n\n"
                 return
-            if not snapshot_sent:
-                jobs = list_active_jobs(project_id)
-                payload = json.dumps({"project_id": project_id, "jobs": jobs}, ensure_ascii=False)
-                yield f"event: snapshot\ndata: {payload}\n\n"
-                snapshot_sent = True
             events = get_job_events(project_id, after_id=last_id)
             if events:
                 for event in events:
@@ -167,6 +179,11 @@ async def project_events(
     )
 
 
+def _raise_shot_edit(exc: ShotEditError) -> None:
+    status = 404 if exc.code in {"PROJECT_NOT_FOUND", "SHOT_NOT_FOUND", "VERSION_NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
 @app.post("/api/projects/{project_id}/shots/{shot_id}/feedback")
 def feedback_endpoint(project_id: str, shot_id: str, payload: FeedbackCreate) -> dict:
     if not get_project(project_id):
@@ -176,10 +193,42 @@ def feedback_endpoint(project_id: str, shot_id: str, payload: FeedbackCreate) ->
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/versions/{version_id}/rollback")
 def rollback_version_endpoint(project_id: str, shot_id: str, version_id: str) -> dict:
-    project = rollback_shot_version(project_id, shot_id, version_id)
+    try:
+        rollback_shot_to_version(project_id, shot_id, version_id)
+    except ShotEditError as exc:
+        _raise_shot_edit(exc)
+    project = get_project(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Shot version not found")
+        raise HTTPException(status_code=404, detail="找不到可回滚的镜头版本。")
     return project
+
+
+@app.get("/api/projects/{project_id}/shots/{shot_id}/editor")
+def shot_editor_endpoint(project_id: str, shot_id: str) -> dict:
+    try:
+        return get_shot_editor(project_id, shot_id)
+    except ShotEditError as exc:
+        _raise_shot_edit(exc)
+
+
+@app.put("/api/projects/{project_id}/shots/{shot_id}/draft")
+def save_shot_draft_endpoint(project_id: str, shot_id: str, payload: ShotDraftUpdate) -> dict:
+    try:
+        return save_shot_draft(project_id, shot_id, payload.model_dump(exclude_unset=True))
+    except ShotEditError as exc:
+        _raise_shot_edit(exc)
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/versions")
+def freeze_shot_version_endpoint(project_id: str, shot_id: str, payload: ShotDraftUpdate | None = None) -> dict:
+    try:
+        return freeze_shot_version(
+            project_id,
+            shot_id,
+            payload.model_dump(exclude_unset=True) if payload else None,
+        )
+    except ShotEditError as exc:
+        _raise_shot_edit(exc)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/keyframes/select")
@@ -214,16 +263,26 @@ def generate_video_endpoint(
         raise HTTPException(status_code=404, detail="Project not found")
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
-    request_payload = payload or VideoGenerateRequest()
+    fields = payload.model_dump(exclude_unset=True) if payload else {}
     try:
+        frozen = prepare_version_for_generation(
+            project_id,
+            shot_id,
+            fields,
+            fields.get("version_id"),
+        )
         prepared = prepare_shot_video_generation(
             project_id,
             shot_id,
-            video_mode=request_payload.video_mode,
-            provider=request_payload.provider,
-            model=request_payload.model,
-            duration_seconds=request_payload.duration_seconds,
+            video_mode=frozen.get("video_mode") or "t2v",
+            provider=frozen.get("provider"),
+            model=frozen.get("model"),
+            duration_seconds=frozen.get("duration_seconds"),
+            version_id=frozen["id"],
+            allow_fork=False,
         )
+    except ShotEditError as exc:
+        _raise_shot_edit(exc)
     except CapabilityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -244,6 +303,7 @@ def generate_video_endpoint(
         prepared["model"],
         prepared["duration_seconds"],
         prepared["version_id"],
+        False,
     )
     return {
         "job_id": job_id,

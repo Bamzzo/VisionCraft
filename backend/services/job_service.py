@@ -274,6 +274,15 @@ def format_sse(event: dict, event_name: str | None = None) -> str:
     return f"id: {event['id']}\nevent: {name}\ndata: {payload}\n\n"
 
 
+def collect_sse_opening(project_id: str, after_id: int = 0) -> list[str]:
+    """Finite SSE frames: current snapshot plus events after after_id. Safe for tests."""
+    jobs = list_active_jobs(project_id)
+    snapshot = json.dumps({"project_id": project_id, "jobs": jobs}, ensure_ascii=False)
+    frames = [f"event: snapshot\ndata: {snapshot}\n\n"]
+    frames.extend(format_sse(event) for event in get_job_events(project_id, after_id=after_id))
+    return frames
+
+
 def redact_text(value: str | None) -> str:
     if not value:
         return ""

@@ -1,4 +1,11 @@
 import { api } from "./api.js";
+import {
+  beginObservation,
+  isLiveSession,
+  rememberJobEvent,
+  shouldWatchProject,
+  stopObservation,
+} from "./jobObserver.js";
 import { renderAll, renderCapabilities, renderFeedbackResult, currentVideoDraftPayload } from "./render.js";
 import { selectedShot, state } from "./state.js";
 
@@ -24,6 +31,7 @@ function bindEvents() {
   el("memorySearchBtn").addEventListener("click", onSearchMemory);
   el("shotInspector").addEventListener("click", onInspectorClick);
   el("shotInspector").addEventListener("change", onInspectorChange);
+  el("shotInspector").addEventListener("input", onInspectorChange);
   el("generateAllVideosBtn").addEventListener("click", onGenerateAllVideos);
   el("assembleProjectBtn").addEventListener("click", onAssembleProject);
   el("resumeWorkflowBtn").addEventListener("click", onResumeWorkflow);
@@ -42,19 +50,29 @@ function bindEvents() {
   el("projectList").addEventListener("click", async (event) => {
     const item = event.target.closest("[data-project-id]");
     if (!item) return;
-    state.project = await api.getProject(item.dataset.projectId);
-    state.selectedShotId = state.project.shots?.[0]?.id || null;
-    state.memoryResults = [];
-    state.jobEvents = [];
-    state.lastEventId = 0;
-    state.shotProgress = {};
-    renderFeedbackResult(null);
-    restoreJobObservation();
-    renderAll();
+    const nextId = item.dataset.projectId;
+    if (state.project?.id === nextId) return;
+    await flushShotDraft();
+    const token = startSessionForProject(nextId);
+    try {
+      const project = await api.getProject(nextId);
+      if (!isLiveSession(state, token, nextId)) return;
+      state.project = project;
+      state.selectedShotId = state.project.shots?.[0]?.id || null;
+      state.memoryResults = [];
+      state.videoDraft = null;
+      renderFeedbackResult(null);
+      restoreJobObservation();
+      renderAll();
+    } catch (error) {
+      if (isLiveSession(state, token, nextId)) showError(`加载项目失败：${error.message}`);
+    }
   });
-  el("shotGrid").addEventListener("click", (event) => {
+  el("shotGrid").addEventListener("click", async (event) => {
     const item = event.target.closest("[data-shot-id]");
     if (!item) return;
+    if (item.dataset.shotId === state.selectedShotId) return;
+    await flushShotDraft();
     state.selectedShotId = item.dataset.shotId;
     state.videoDraft = null;
     renderAll();
@@ -130,7 +148,9 @@ async function checkHealth() {
 async function loadProjects() {
   state.projects = await api.listProjects();
   if (!state.project && state.projects.length) {
+    const token = startSessionForProject(state.projects[0].id);
     state.project = await api.getProject(state.projects[0].id);
+    if (!isLiveSession(state, token, state.projects[0].id)) return;
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
   restoreJobObservation();
@@ -155,7 +175,10 @@ async function onCreateProject(event) {
     review_mode: el("reviewModeInput").checked,
   };
   try {
-    state.project = await api.createProject(payload);
+    await flushShotDraft();
+    const created = await api.createProject(payload);
+    startSessionForProject(created.id);
+    state.project = created;
     state.selectedShotId = null;
     await loadProjects();
     renderFeedbackResult(null);
@@ -177,6 +200,52 @@ async function onRunWorkflow() {
   }
 }
 
+function observerTimers() {
+  return {
+    setInterval: (fn, ms) => window.setInterval(fn, ms),
+    clearInterval: (id) => window.clearInterval(id),
+  };
+}
+
+function stopJobObservation() {
+  stopObservation(state, observerTimers());
+}
+
+function startSessionForProject(projectId) {
+  return beginObservation(state, projectId, observerTimers());
+}
+
+async function flushShotDraft() {
+  const shot = selectedShot();
+  if (!state.project || !shot || !state.videoDraft || state.videoDraft.shotId !== shot.id) return;
+  if (!state.videoDraft.dirty && !collectInspectorDraft()) return;
+  try {
+    const payload = collectInspectorDraft() || state.videoDraft;
+    if (typeof api.saveShotDraft === "function") {
+      await api.saveShotDraft(state.project.id, shot.id, payload);
+    }
+  } catch (error) {
+    console.warn("自动保存镜头草稿失败", error);
+  }
+}
+
+function collectInspectorDraft() {
+  const description = document.getElementById("shotDescriptionInput");
+  if (!description && !document.getElementById("videoModeSelect")) return null;
+  return {
+    description: description?.value,
+    camera_motion: document.getElementById("shotCameraInput")?.value,
+    visual_prompt: document.getElementById("shotVisualPromptInput")?.value,
+    video_mode: document.getElementById("videoModeSelect")?.value,
+    provider: document.getElementById("videoProviderSelect")?.value,
+    model: document.getElementById("videoModelSelect")?.value,
+    duration_seconds: Number(document.getElementById("videoDurationSelect")?.value || state.project?.duration_seconds || 5),
+    first_frame_path: document.getElementById("firstFrameSelect")?.value || null,
+    last_frame_path: document.getElementById("lastFrameSelect")?.value || null,
+    reference_frame_path: document.getElementById("referenceFrameSelect")?.value || null,
+  };
+}
+
 function attachEvents() {
   if (!state.project) return;
   startEventStream();
@@ -185,13 +254,16 @@ function attachEvents() {
 
 function startEventStream() {
   if (!state.project) return;
+  const token = state.observerToken;
+  const projectId = state.project.id;
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
   }
-  const source = new EventSource(`/api/projects/${state.project.id}/events?after_id=${state.lastEventId || 0}`);
+  const source = new EventSource(`/api/projects/${projectId}/events?after_id=${state.lastEventId || 0}`);
   state.eventSource = source;
   const onEvent = async (event) => {
+    if (!isLiveSession(state, token, projectId) || state.eventSource !== source) return;
     state.sseConnected = true;
     stopEventPolling();
     if (!event.data) return;
@@ -201,18 +273,19 @@ function startEventStream() {
     } catch {
       return;
     }
-    if (event.type === "snapshot" || payload.jobs) {
+    if (event.type === "snapshot" || Array.isArray(payload.jobs)) {
       applyJobSnapshot(payload);
       renderAll();
       return;
     }
-    await applyJobEvent(payload);
+    await applyJobEvent(payload, { token, projectId });
   };
   ["snapshot", "job.update", "asset.ready", "job.failed", "project.refresh_required"].forEach((type) => {
     source.addEventListener(type, onEvent);
   });
   source.onmessage = onEvent;
   source.onerror = () => {
+    if (!isLiveSession(state, token, projectId) || state.eventSource !== source) return;
     state.sseConnected = false;
     source.close();
     if (state.eventSource === source) state.eventSource = null;
@@ -237,24 +310,33 @@ async function pollJobEvents() {
     stopEventPolling();
     return;
   }
+  const token = state.observerToken;
+  const projectId = state.project.id;
   try {
-    const snapshot = await api.jobEvents(state.project.id, state.lastEventId || 0);
+    const snapshot = await api.jobEvents(projectId, state.lastEventId || 0);
+    if (!isLiveSession(state, token, projectId)) return;
     applyJobSnapshot(snapshot);
     for (const event of snapshot.events || []) {
-      await applyJobEvent(event, { skipRender: true });
+      await applyJobEvent(event, { skipRender: true, token, projectId });
     }
     renderAll();
-    if (!hasActiveJob(state.project) && !snapshot.has_waiting_remote) {
+    if (!shouldWatchProject(state.project).watch) {
       stopEventPolling();
       stopRemoteRefreshWatch();
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+      state.sseConnected = false;
     }
   } catch (error) {
-    console.warn("任务事件轮询失败", error);
+    if (isLiveSession(state, token, projectId)) console.warn("任务事件轮询失败", error);
   }
 }
 
 function applyJobSnapshot(payload) {
   if (!state.project || !payload) return;
+  if (payload.project_id && payload.project_id !== state.project.id) return;
   if (payload.jobs) {
     state.project.active_jobs = payload.jobs;
     const byId = new Map((state.project.jobs || []).map((job) => [job.id, job]));
@@ -264,15 +346,11 @@ function applyJobSnapshot(payload) {
 }
 
 async function applyJobEvent(event, options = {}) {
-  if (!event || event.id == null) return;
-  const eventId = Number(event.id);
-  if (Number.isFinite(eventId)) {
-    if (state.jobEvents.some((item) => Number(item.id) === eventId)) return;
-    state.lastEventId = Math.max(state.lastEventId, eventId);
-  }
-  state.jobEvents = [...state.jobEvents, event].sort((a, b) => Number(a.id) - Number(b.id));
-  if (event.shot_id) state.shotProgress[event.shot_id] = event;
-  if (state.project) {
+  const token = options.token ?? state.observerToken;
+  const projectId = options.projectId || event?.project_id || state.project?.id;
+  const result = rememberJobEvent(state, event, token);
+  if (!result.applied) return;
+  if (state.project && event.job_id) {
     const jobs = [...(state.project.jobs || [])];
     const index = jobs.findIndex((job) => job.id === event.job_id);
     const snapshot = {
@@ -291,7 +369,7 @@ async function applyJobEvent(event, options = {}) {
   }
   const shouldRefreshProject = ["asset.ready", "project.refresh_required", "job.failed"].includes(event.event_type);
   if (shouldRefreshProject) {
-    await refreshProject({ preserveObservation: true });
+    await refreshProject({ preserveObservation: true, token, projectId });
     return;
   }
   if (!options.skipRender) renderAll();
@@ -309,67 +387,69 @@ function stopRemoteRefreshWatch() {
 }
 
 async function maybeRefreshRemoteTasks() {
-  if (!state.project || state.refreshInFlight || !hasWaitingRemote(state.project)) return;
+  if (!state.project || state.refreshInFlight || !shouldWatchProject(state.project).waiting) return;
+  const token = state.observerToken;
+  const projectId = state.project.id;
   const refreshBusy = (state.project.jobs || []).some(
     (job) => job.type === "video_task_refresh" && ["queued", "running"].includes(job.status)
   );
   if (refreshBusy) return;
   try {
     state.refreshInFlight = true;
-    await api.refreshVideoTasks(state.project.id);
+    await api.refreshVideoTasks(projectId);
   } catch (error) {
-    console.warn("云端任务回查失败", error);
+    if (isLiveSession(state, token, projectId)) console.warn("云端任务回查失败", error);
   } finally {
-    state.refreshInFlight = false;
+    if (isLiveSession(state, token, projectId)) state.refreshInFlight = false;
+    else state.refreshInFlight = false;
   }
 }
 
-function hasActiveJob(project) {
-  const jobs = project?.active_jobs?.length ? project.active_jobs : project?.jobs || [];
-  return jobs.some((job) => ["queued", "running", "waiting_remote", "paused"].includes(job.status));
-}
-
-function hasWaitingRemote(project) {
-  if ((project?.active_jobs || []).some((job) => job.status === "waiting_remote")) return true;
-  return (project?.shots || []).some(
-    (shot) =>
-      ["video_waiting_remote", "video_running"].includes(shot.status) ||
-      ["running", "pending_remote"].includes(shot.active_video_task?.status)
-  );
-}
-
 function restoreJobObservation() {
-  if (!state.project) return;
+  if (!state.project) {
+    stopJobObservation();
+    return;
+  }
   const events = state.project.job_events || [];
   state.jobEvents = events;
   state.lastEventId = events.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
+  state.shotProgress = {};
   events.forEach((event) => {
     if (event.shot_id) state.shotProgress[event.shot_id] = event;
   });
-  if (hasActiveJob(state.project) || hasWaitingRemote(state.project)) {
+  if (shouldWatchProject(state.project).watch) {
     attachEvents();
+  } else {
+    stopEventPolling();
+    stopRemoteRefreshWatch();
+    if (state.eventSource) {
+      state.eventSource.close();
+      state.eventSource = null;
+    }
+    state.sseConnected = false;
   }
 }
 
 async function refreshProject(options = {}) {
   if (!state.project) return;
-  state.project = await api.getProject(state.project.id);
+  const token = options.token ?? state.observerToken;
+  const projectId = options.projectId || state.project.id;
+  const project = await api.getProject(projectId);
+  if (state.project?.id !== projectId || (token != null && Number(state.observerToken) !== Number(token))) {
+    return;
+  }
+  state.project = project;
   state.diagnostics = await api.diagnostics();
+  if (state.project?.id !== projectId) return;
   if (!state.selectedShotId) {
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
   state.projects = await api.listProjects();
+  if (state.project?.id !== projectId) return;
   const incoming = state.project.job_events || [];
-  incoming.forEach((event) => {
-    if (!state.jobEvents.some((item) => Number(item.id) === Number(event.id))) {
-      state.jobEvents.push(event);
-    }
-    if (event.shot_id) state.shotProgress[event.shot_id] = event;
-    state.lastEventId = Math.max(state.lastEventId, Number(event.id) || 0);
-  });
-  state.jobEvents.sort((a, b) => Number(a.id) - Number(b.id));
+  incoming.forEach((event) => rememberJobEvent(state, event, state.observerToken));
   renderAll();
-  if (!options.preserveObservation && (hasActiveJob(state.project) || hasWaitingRemote(state.project))) {
+  if (!options.preserveObservation && shouldWatchProject(state.project).watch) {
     attachEvents();
   }
 }
@@ -402,22 +482,32 @@ async function onSearchMemory() {
 
 function onInspectorChange(event) {
   const target = event.target;
-  if (!target || !["videoModeSelect", "videoProviderSelect", "videoModelSelect", "videoDurationSelect"].includes(target.id)) {
-    return;
-  }
+  const ids = [
+    "videoModeSelect",
+    "videoProviderSelect",
+    "videoModelSelect",
+    "videoDurationSelect",
+    "shotDescriptionInput",
+    "shotCameraInput",
+    "shotVisualPromptInput",
+    "firstFrameSelect",
+    "lastFrameSelect",
+    "referenceFrameSelect",
+  ];
+  if (!target || !ids.includes(target.id)) return;
   const shot = selectedShot();
   if (!shot) return;
+  const collected = collectInspectorDraft();
   state.videoDraft = {
+    ...(state.videoDraft || {}),
+    ...collected,
     shotId: shot.id,
-    video_mode: document.getElementById("videoModeSelect")?.value || "t2v",
-    provider: document.getElementById("videoProviderSelect")?.value || "",
-    model: document.getElementById("videoModelSelect")?.value || "",
-    duration_seconds: Number(document.getElementById("videoDurationSelect")?.value || state.project?.duration_seconds || 5),
+    dirty: true,
   };
   if (target.id === "videoModeSelect" || target.id === "videoProviderSelect") {
     state.videoDraft.model = "";
+    renderAll();
   }
-  renderAll();
 }
 
 async function onInspectorClick(event) {
@@ -437,6 +527,14 @@ async function onInspectorClick(event) {
     await onSafeRetryVideo(trigger);
     return;
   }
+  if (trigger.dataset.action === "save-shot-draft") {
+    await onSaveShotDraft(trigger);
+    return;
+  }
+  if (trigger.dataset.action === "freeze-shot-version") {
+    await onFreezeShotVersion(trigger);
+    return;
+  }
   if (trigger.dataset.action === "apply-keyframes") {
     await onApplyKeyframes(trigger);
     return;
@@ -452,7 +550,7 @@ async function onInspectorClick(event) {
     trigger.textContent = "视频任务已提交";
     const result = await api.generateVideo(state.project.id, shot.id, currentVideoDraftPayload());
     attachEvents();
-    el("jobMessage").textContent = `视频任务 ${result.job_id} 已入队`;
+    el("jobMessage").textContent = `镜头 ${shot.title} 视频任务 ${result.job_id} 已入队（版本 ${result.version_id}）`;
     await refreshProject();
   } catch (error) {
     showError(`视频生成失败：${error.message}`);
@@ -474,6 +572,37 @@ async function onSafeRetryVideo(trigger) {
   }
 }
 
+async function onSaveShotDraft(trigger) {
+  const shot = selectedShot();
+  if (!state.project || !shot) return;
+  try {
+    trigger.disabled = true;
+    trigger.textContent = "正在保存草稿";
+    await api.saveShotDraft(state.project.id, shot.id, collectInspectorDraft() || currentVideoDraftPayload());
+    if (state.videoDraft) state.videoDraft.dirty = false;
+    await refreshProject({ preserveObservation: true });
+  } catch (error) {
+    showError(`保存镜头草稿失败：${error.message}`);
+  }
+}
+
+async function onFreezeShotVersion(trigger) {
+  const shot = selectedShot();
+  if (!state.project || !shot) return;
+  try {
+    trigger.disabled = true;
+    trigger.textContent = "正在冻结版本";
+    const result = await api.freezeShotVersion(state.project.id, shot.id, collectInspectorDraft() || currentVideoDraftPayload());
+    if (state.videoDraft) state.videoDraft.dirty = false;
+    el("jobMessage").textContent = result.created
+      ? `已创建镜头版本 v${result.version_number}`
+      : result.reason || "没有实质修改，未创建新版本";
+    await refreshProject({ preserveObservation: true });
+  } catch (error) {
+    showError(`创建镜头版本失败：${error.message}`);
+  }
+}
+
 async function onApplyKeyframes(trigger) {
   const shot = selectedShot();
   if (!state.project || !shot) return;
@@ -486,10 +615,11 @@ async function onApplyKeyframes(trigger) {
   try {
     trigger.disabled = true;
     trigger.textContent = "正在应用关键帧";
-    await api.selectKeyframes(state.project.id, shot.id, {
+    await api.saveShotDraft(state.project.id, shot.id, {
       first_frame_path: firstFramePath || null,
       last_frame_path: lastFramePath || null,
     });
+    if (state.videoDraft) state.videoDraft.dirty = false;
     await refreshProject();
   } catch (error) {
     showError(`关键帧选择失败：${error.message}`);
@@ -607,15 +737,13 @@ async function onDeleteProject() {
   if (!state.project) return;
   const ok = window.confirm(`确认删除项目「${state.project.title}」及其本地资产吗？`);
   if (!ok) return;
-  try {
+    try {
     await api.deleteProject(state.project.id);
+    stopJobObservation();
+    startSessionForProject(null);
     state.project = null;
     state.selectedShotId = null;
     state.memoryResults = [];
-    state.eventSource?.close();
-    state.eventSource = null;
-    stopEventPolling();
-    stopRemoteRefreshWatch();
     await loadProjects();
     renderFeedbackResult(null);
     renderAll();

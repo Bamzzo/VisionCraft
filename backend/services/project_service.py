@@ -115,6 +115,10 @@ def get_project(project_id: str) -> dict:
         assets = conn.execute(
             "SELECT * FROM assets WHERE project_id = ? ORDER BY created_at", (project_id,)
         ).fetchall()
+        drafts = conn.execute(
+            "SELECT * FROM shot_drafts WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
         feedback = conn.execute(
             "SELECT * FROM feedback_records WHERE project_id = ? ORDER BY created_at DESC",
             (project_id,),
@@ -156,6 +160,7 @@ def get_project(project_id: str) -> dict:
     video_task_items = [_row_to_dict(row) for row in video_tasks]
     for task in video_task_items:
         video_tasks_by_shot.setdefault(task["shot_id"], []).append(task)
+    drafts_by_shot = {_row_to_dict(row)["shot_id"]: _row_to_dict(row) for row in drafts}
     versions_by_shot: dict[str, list[dict]] = {}
     for row in versions:
         item = _row_to_dict(row)
@@ -171,6 +176,9 @@ def get_project(project_id: str) -> dict:
         shot["versions"] = versions_by_shot.get(shot["id"], [])
         shot["video_tasks"] = video_tasks_by_shot.get(shot["id"], [])
         shot["active_video_task"] = _active_video_task(shot["video_tasks"])
+        current = next((item for item in shot["versions"] if item["id"] == shot["current_version_id"]), None)
+        shot["draft"] = drafts_by_shot.get(shot["id"])
+        shot["has_unsaved_changes"] = _draft_differs(shot["draft"], current)
         result["shots"].append(shot)
     result["assets"] = [_row_to_dict(row) for row in assets]
     result["feedback_records"] = [_row_to_dict(row) for row in feedback]
@@ -182,6 +190,31 @@ def get_project(project_id: str) -> dict:
     result["job_events"] = get_recent_job_events(project_id, limit=40)
     result["active_jobs"] = list_active_jobs(project_id)
     return result
+
+
+_DRAFT_COMPARE_FIELDS = (
+    "description",
+    "camera_motion",
+    "visual_prompt",
+    "negative_prompt",
+    "audio_prompt",
+    "video_mode",
+    "provider",
+    "model",
+    "duration_seconds",
+    "first_frame_path",
+    "last_frame_path",
+    "reference_frame_path",
+)
+
+
+def _draft_differs(draft: dict | None, version: dict | None) -> bool:
+    if not draft or not version:
+        return False
+    for key in _DRAFT_COMPARE_FIELDS:
+        if str(draft.get(key) or "") != str(version.get(key) or ""):
+            return True
+    return False
 
 
 def _normalize_shot(row: Any) -> dict:
@@ -223,6 +256,7 @@ def clear_generated_project_data(project_id: str) -> None:
                 if child.is_file():
                     child.unlink()
     with connect() as conn:
+        conn.execute("DELETE FROM shot_drafts WHERE project_id = ?", (project_id,))
         conn.execute(
             """
             DELETE FROM shot_versions
@@ -394,11 +428,12 @@ def rollback_shot_version(project_id: str, shot_id: str, version_id: str) -> dic
         if not shot or not version:
             return {}
         status = "video_ready" if version["video_path"] else "keyframes_ready"
+        camera = (version["camera_motion"] if "camera_motion" in version.keys() and version["camera_motion"] else shot["camera_motion"]) or ""
         conn.execute(
             """
             UPDATE shots
             SET description = ?, visual_prompt = ?, negative_prompt = ?, audio_prompt = ?,
-                status = ?, current_version_id = ?, updated_at = ?
+                camera_motion = ?, status = ?, current_version_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -406,6 +441,7 @@ def rollback_shot_version(project_id: str, shot_id: str, version_id: str) -> dic
                 version["visual_prompt"],
                 version["negative_prompt"],
                 version["audio_prompt"],
+                camera,
                 status,
                 version_id,
                 now,

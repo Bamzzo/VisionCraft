@@ -328,9 +328,16 @@ function renderInspector() {
   const constraint = evaluateVideoDraft(shot, version, draft);
   const providerOptions = videoProviderOptions(draft.video_mode);
   const modelOptions = videoModelOptions(draft.provider, draft.video_mode);
+  const unsaved = Boolean(shot.has_unsaved_changes || draft.dirty);
+  const currentLabel = version ? `当前版本 v${version.version_number}` : "尚未冻结版本";
+  const videoStatusLabel = version?.video_path
+    ? realVideo
+      ? "当前版本视频可预览"
+      : "当前版本视频不可用"
+    : "此版本尚未生成视频";
   // 关键帧候选只来自项目资产，后端才能校验归属并记录版本。
   const optionHtml = (currentPath) =>
-    [`<option value="">不修改</option>`]
+    [`<option value="">未选择</option>`]
       .concat(
         candidates.map((asset) => {
           const selected = asset.file_path === currentPath ? "selected" : "";
@@ -356,21 +363,36 @@ function renderInspector() {
         ${diagnosis.canSafeRetry ? `<button class="secondary-btn full-width" data-action="safe-retry-video">安全改写并重试</button>` : ""}
       </div>`
     : "";
-  const resultCard = version
-    ? `<div class="prompt-block result-card">
-        <strong>当前生成结果</strong>
+  const resultCard = `<div class="prompt-block result-card">
+        <strong>镜头版本状态</strong>
         <div class="tag-row">
-          <span class="tag">${escapeHtml(version.provider || task?.provider || "未选择 Provider")}</span>
-          <span class="tag">${escapeHtml(version.model || task?.model || "未选择模型")}</span>
-          <span class="tag">${escapeHtml(version.video_mode || "t2v")}</span>
-          <span class="tag">v${escapeHtml(version.version_number)}</span>
+          <span class="tag">${escapeHtml(currentLabel)}</span>
+          <span class="tag">${unsaved ? "有未保存修改" : "草稿已同步"}</span>
+          <span class="tag">${escapeHtml(draft.provider || "未选择 Provider")}</span>
+          <span class="tag">${escapeHtml(draft.model || "未选择模型")}</span>
+          <span class="tag">${escapeHtml(draft.video_mode || "t2v")}</span>
+          <span class="tag">${escapeHtml(String(draft.duration_seconds || state.project?.duration_seconds || 5))}s</span>
         </div>
-        <p class="muted-text">来源关键帧：${escapeHtml(frameStatusLabel(version))}</p>
+        <p class="muted-text">首帧/尾帧/参考图：${escapeHtml(frameStatusLabel(draft))}</p>
+        <p class="muted-text">${escapeHtml(videoStatusLabel)}</p>
+        ${state.project?.assembly_stale ? `<p class="muted-text">成片已过期，需要重新合成（不会自动执行）。</p>` : ""}
         ${shotProgressHtml(shot)}
-      </div>`
-    : "";
+      </div>`;
   const keyframeControl = `<div class="prompt-block keyframe-control">
-      <strong>镜头生成设置</strong>
+      <strong>镜头编辑草稿</strong>
+      <p class="muted-text">编辑只写入草稿。点击「基于当前草稿生成新版本」后才会冻结不可变版本；历史版本不会被覆盖。</p>
+      <label>
+        自然语言描述
+        <textarea id="shotDescriptionInput" rows="3">${escapeHtml(draft.description || "")}</textarea>
+      </label>
+      <label>
+        动作 / 运镜
+        <input id="shotCameraInput" value="${escapeHtml(draft.camera_motion || "")}" />
+      </label>
+      <label>
+        视觉提示词
+        <textarea id="shotVisualPromptInput" rows="3">${escapeHtml(draft.visual_prompt || "")}</textarea>
+      </label>
       <div class="form-grid">
         <label>
           生成模式
@@ -411,27 +433,33 @@ function renderInspector() {
       </div>
       <p class="muted-text" id="videoCapabilityHint">${escapeHtml(constraint.hint)}</p>
       <label>
-        首帧资产 ${version?.first_frame_path ? "· 已就绪" : "· 缺失"}
-        <select id="firstFrameSelect">${optionHtml(version?.first_frame_path)}</select>
+        首帧资产 ${draft.first_frame_path ? "· 已选" : "· 未选"}
+        <select id="firstFrameSelect">${optionHtml(draft.first_frame_path)}</select>
       </label>
       <label>
-        尾帧资产 ${version?.last_frame_path ? "· 已就绪" : "· 缺失"}
-        <select id="lastFrameSelect">${optionHtml(version?.last_frame_path)}</select>
+        尾帧资产 ${draft.last_frame_path ? "· 已选" : "· 未选"}
+        <select id="lastFrameSelect">${optionHtml(draft.last_frame_path)}</select>
+      </label>
+      <label>
+        参考图 ${draft.reference_frame_path ? "· 已选" : "· 未选"}
+        <select id="referenceFrameSelect">${optionHtml(draft.reference_frame_path)}</select>
       </label>
       <div class="button-row compact-row">
-        <button class="secondary-btn mini-btn" data-action="apply-keyframes">应用</button>
+        <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存镜头草稿</button>
+        <button class="secondary-btn mini-btn" data-action="freeze-shot-version">基于当前草稿生成新版本</button>
+        <button class="secondary-btn mini-btn" data-action="apply-keyframes">写入关键帧到草稿</button>
         <button class="secondary-btn mini-btn" data-action="redraw-keyframe" data-target="first">重绘首帧</button>
         <button class="secondary-btn mini-btn" data-action="redraw-keyframe" data-target="last">重绘尾帧</button>
       </div>
     </div>`;
-  const generateButton = `<button class="secondary-btn full-width" data-action="generate-video" ${constraint.ok ? "" : "disabled"} title="${escapeHtml(constraint.reason || "")}">${constraint.ok ? "生成视频片段" : constraint.reason}</button>`;
+  const generateButton = `<button class="secondary-btn full-width" data-action="generate-video" ${constraint.ok ? "" : "disabled"} title="${escapeHtml(constraint.reason || "")}">${constraint.ok ? "仅重生成此镜头" : constraint.reason}</button>`;
   const videoPreview = version?.video_path
     ? realVideo
       ? `<div class="video-shell"><video class="video-preview" src="${escapeHtml(version.video_path)}" controls playsinline></video>${renderMediaBadge(videoAsset || version.video_path)}</div>${generateButton}`
       : `<div class="video-placeholder danger-placeholder">该片段是静帧占位视频，不能作为正式视频或成片素材。请重新生成真实视频。</div>${generateButton}`
     : waitingRemote
-    ? `<div class="video-placeholder">云端仍在生成。正在回查同一云端任务，不会重复提交或重复计费。</div><button class="secondary-btn full-width" data-action="refresh-video-tasks">立即刷新云端任务</button>`
-    : generateButton;
+    ? `<div class="video-placeholder">云端仍在生成。正在回查同一云端任务，不会重复提交或重复计费。</div><button class="secondary-btn full-width" data-action="refresh-video-tasks">立即刷新云端任务</button>${generateButton}`
+    : `<div class="video-placeholder">${escapeHtml(videoStatusLabel)}</div>${generateButton}`;
   const evidence = shot.rag_evidence || [];
   const evidenceBlock = evidence.length
     ? `<div class="prompt-block"><strong>RAG 证据</strong>${evidence
@@ -446,18 +474,21 @@ function renderInspector() {
       (item) => `
       <div class="version-item ${item.id === shot.current_version_id ? "active" : ""}">
         <div>
-          <strong>v${item.version_number}</strong>
-          <span class="muted-text">${escapeHtml(item.provider || "未记录")} · ${escapeHtml(item.model || item.video_mode || "关键帧")}</span>
+          <strong>v${item.version_number}${item.id === shot.current_version_id ? " · 当前" : ""}</strong>
+          <span class="muted-text">${escapeHtml(item.created_at || "")}</span>
+          <p class="muted-text">${escapeHtml(item.change_summary || item.provider || item.video_mode || "历史版本")}</p>
+          <span class="muted-text">${escapeHtml(item.provider || "未记录")} · ${escapeHtml(item.model || "未记录")} · ${escapeHtml(item.video_mode || "t2v")} · ${escapeHtml(String(item.duration_seconds || "-"))}s</span>
+          <p class="muted-text">关键帧：${escapeHtml(frameStatusLabel(item))}</p>
         </div>
-        <span class="tag">${item.video_path ? "含视频" : item.video_mode || "草稿"}</span>
-        <button class="secondary-btn mini-btn" data-action="rollback-version" data-version-id="${escapeHtml(item.id)}" ${item.id === shot.current_version_id ? "disabled" : ""}>回滚</button>
+        <span class="tag">${item.video_path ? "含视频" : "此版本尚未生成视频"}</span>
+        <button class="secondary-btn mini-btn" data-action="rollback-version" data-version-id="${escapeHtml(item.id)}" ${item.id === shot.current_version_id ? "disabled" : ""}>切换/回滚至此版本</button>
       </div>`
     )
     .join("");
   el("shotInspector").innerHTML = `
     <div class="inspector-preview-grid">
-      <div class="shot-preview">${renderAssetMedia(version?.first_frame_path, "first frame", assetForPath(version?.first_frame_path))}</div>
-      <div class="shot-preview">${renderAssetMedia(version?.last_frame_path, "last frame", assetForPath(version?.last_frame_path))}</div>
+      <div class="shot-preview">${renderAssetMedia(draft.first_frame_path || version?.first_frame_path, "first frame", assetForPath(draft.first_frame_path || version?.first_frame_path))}</div>
+      <div class="shot-preview">${renderAssetMedia(draft.last_frame_path || version?.last_frame_path, "last frame", assetForPath(draft.last_frame_path || version?.last_frame_path))}</div>
     </div>
     ${resultCard}
     ${keyframeControl}
@@ -466,12 +497,9 @@ function renderInspector() {
     ${diagnosisBlock}
     <div>
       <h3>${escapeHtml(shot.title)}</h3>
-      <p class="shot-description">${escapeHtml(shot.description)}</p>
     </div>
-    <div class="prompt-block"><strong>Visual Prompt</strong><br />${escapeHtml(shot.visual_prompt)}</div>
-    <div class="prompt-block"><strong>Audio Prompt</strong><br />${escapeHtml(shot.audio_prompt)}</div>
     ${evidenceBlock}
-    <div class="prompt-block version-list"><strong>版本历史</strong>${versions}</div>
+    <div class="prompt-block version-list"><strong>版本历史</strong>${versions || "<p class='muted-text'>暂无版本</p>"}</div>
   `;
 }
 
@@ -710,13 +738,30 @@ export function renderFeedbackResult(result) {
 }
 
 export function currentVideoDraftPayload() {
-  const draft = state.videoDraft;
-  if (!draft) return { video_mode: "t2v" };
+  const collected = typeof document !== "undefined" ? {
+    description: document.getElementById("shotDescriptionInput")?.value,
+    camera_motion: document.getElementById("shotCameraInput")?.value,
+    visual_prompt: document.getElementById("shotVisualPromptInput")?.value,
+    video_mode: document.getElementById("videoModeSelect")?.value,
+    provider: document.getElementById("videoProviderSelect")?.value,
+    model: document.getElementById("videoModelSelect")?.value,
+    duration_seconds: Number(document.getElementById("videoDurationSelect")?.value || state.videoDraft?.duration_seconds || state.project?.duration_seconds || 5),
+    first_frame_path: document.getElementById("firstFrameSelect")?.value || null,
+    last_frame_path: document.getElementById("lastFrameSelect")?.value || null,
+    reference_frame_path: document.getElementById("referenceFrameSelect")?.value || null,
+  } : {};
+  const draft = state.videoDraft || {};
   return {
-    video_mode: draft.video_mode,
-    provider: draft.provider,
-    model: draft.model,
-    duration_seconds: Number(draft.duration_seconds),
+    description: collected.description ?? draft.description,
+    camera_motion: collected.camera_motion ?? draft.camera_motion,
+    visual_prompt: collected.visual_prompt ?? draft.visual_prompt,
+    video_mode: collected.video_mode || draft.video_mode || "t2v",
+    provider: collected.provider || draft.provider,
+    model: collected.model || draft.model,
+    duration_seconds: Number(collected.duration_seconds || draft.duration_seconds || 5),
+    first_frame_path: collected.first_frame_path || draft.first_frame_path || null,
+    last_frame_path: collected.last_frame_path || draft.last_frame_path || null,
+    reference_frame_path: collected.reference_frame_path || draft.reference_frame_path || null,
   };
 }
 
@@ -747,37 +792,46 @@ function videoModelOptions(providerId, videoMode) {
   return (provider?.models || []).filter((item) => (item.supported_modes || []).includes(videoMode));
 }
 
-function frameStatusLabel(version) {
-  const first = version?.first_frame_path ? "首帧已选" : "无首帧";
-  const last = version?.last_frame_path ? "尾帧已选" : "无尾帧";
-  return `${first} · ${last}`;
+function frameStatusLabel(source) {
+  const first = source?.first_frame_path ? "首帧已选" : "无首帧";
+  const last = source?.last_frame_path ? "尾帧已选" : "无尾帧";
+  const reference = source?.reference_frame_path ? "参考图已选" : "无参考图";
+  return `${first} · ${last} · ${reference}`;
 }
 
 function syncVideoDraft(shot, version) {
+  const persisted = shot.draft || {};
   const defaultProvider = state.capabilities?.default_video_provider || videoProviders().find((item) => item.mode === "live-ready")?.id || videoProviders()[0]?.id;
   const existing = state.videoDraft?.shotId === shot.id ? state.videoDraft : null;
-  const videoMode = existing?.video_mode || version?.video_mode || "t2v";
-  let provider = existing?.provider || version?.provider || defaultProvider;
+  const videoMode = existing?.video_mode || persisted.video_mode || version?.video_mode || "t2v";
+  let provider = existing?.provider || persisted.provider || version?.provider || defaultProvider;
   const providers = videoProviderOptions(videoMode).filter((item) => !item.disabled);
   if (!providers.some((item) => item.id === provider)) {
     provider = providers[0]?.id || defaultProvider;
   }
   const models = videoModelOptions(provider, videoMode);
-  let model = existing?.model || version?.model || findVideoProvider(provider)?.default_model;
+  let model = existing?.model || persisted.model || version?.model || findVideoProvider(provider)?.default_model;
   if (!models.some((item) => item.id === model)) {
     model = models[0]?.id || "";
   }
   const durations = findVideoProvider(provider)?.supported_durations || [state.project?.duration_seconds || 5];
-  let duration = Number(existing?.duration_seconds || state.project?.duration_seconds || durations[0]);
+  let duration = Number(existing?.duration_seconds || persisted.duration_seconds || version?.duration_seconds || state.project?.duration_seconds || durations[0]);
   if (!durations.map(Number).includes(duration)) {
     duration = durations[0];
   }
   state.videoDraft = {
     shotId: shot.id,
+    dirty: Boolean(existing?.dirty),
+    description: existing?.description ?? persisted.description ?? version?.description ?? shot.description ?? "",
+    camera_motion: existing?.camera_motion ?? persisted.camera_motion ?? version?.camera_motion ?? shot.camera_motion ?? "",
+    visual_prompt: existing?.visual_prompt ?? persisted.visual_prompt ?? version?.visual_prompt ?? shot.visual_prompt ?? "",
     video_mode: videoMode,
     provider,
     model,
     duration_seconds: duration,
+    first_frame_path: existing?.first_frame_path ?? persisted.first_frame_path ?? version?.first_frame_path ?? null,
+    last_frame_path: existing?.last_frame_path ?? persisted.last_frame_path ?? version?.last_frame_path ?? null,
+    reference_frame_path: existing?.reference_frame_path ?? persisted.reference_frame_path ?? version?.reference_frame_path ?? null,
   };
   return state.videoDraft;
 }
@@ -789,8 +843,8 @@ function evaluateVideoDraft(shot, version, draft) {
   const durations = provider?.supported_durations || [];
   const ratios = provider?.supported_ratios || [];
   const projectRatio = state.project?.aspect_ratio;
-  const firstReady = Boolean(version?.first_frame_path);
-  const lastReady = Boolean(version?.last_frame_path);
+  const firstReady = Boolean(draft.first_frame_path || version?.first_frame_path);
+  const lastReady = Boolean(draft.last_frame_path || version?.last_frame_path);
   const resolution = models.find((item) => item.id === draft.model)?.default_resolution || provider?.default_resolution || "未声明";
   const hintParts = [
     provider ? `${provider.label}` : "未选择 Provider",
@@ -798,7 +852,7 @@ function evaluateVideoDraft(shot, version, draft) {
     `分辨率 ${resolution}`,
     `支持时长 ${(durations || []).join("/") || "?"}s`,
     `比例 ${(ratios || []).join("/") || "?"}`,
-    frameStatusLabel(version),
+    frameStatusLabel(draft),
   ];
   const hint = hintParts.join(" · ");
   if (!provider) {

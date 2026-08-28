@@ -23,6 +23,28 @@ class VideoGenerateRequest(BaseModel):
     provider: str | None = Field(default=None, max_length=40)
     model: str | None = Field(default=None, max_length=120)
     duration_seconds: int | None = Field(default=None, ge=1, le=30)
+    version_id: str | None = Field(default=None, max_length=40)
+    description: str | None = Field(default=None, max_length=2000)
+    camera_motion: str | None = Field(default=None, max_length=240)
+    visual_prompt: str | None = Field(default=None, max_length=4000)
+    first_frame_path: str | None = None
+    last_frame_path: str | None = None
+    reference_frame_path: str | None = None
+
+
+class ShotDraftUpdate(BaseModel):
+    description: str | None = Field(default=None, max_length=2000)
+    camera_motion: str | None = Field(default=None, max_length=240)
+    visual_prompt: str | None = Field(default=None, max_length=4000)
+    negative_prompt: str | None = Field(default=None, max_length=2000)
+    audio_prompt: str | None = Field(default=None, max_length=2000)
+    video_mode: Literal["t2v", "i2v", "keyframes"] | None = None
+    provider: str | None = Field(default=None, max_length=40)
+    model: str | None = Field(default=None, max_length=120)
+    duration_seconds: int | None = Field(default=None, ge=1, le=30)
+    first_frame_path: str | None = None
+    last_frame_path: str | None = None
+    reference_frame_path: str | None = None
 
 
 class KeyframeSelectRequest(BaseModel):

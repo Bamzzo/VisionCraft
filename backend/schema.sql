@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS projects (
   requested_shot_count INTEGER,
   review_mode INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
+  assembly_stale INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL,
   routing_mode TEXT NOT NULL DEFAULT 'direct',
   created_at TEXT NOT NULL,
@@ -89,8 +90,30 @@ CREATE TABLE IF NOT EXISTS shot_versions (
   video_mode TEXT NOT NULL DEFAULT 't2v',
   provider TEXT,
   model TEXT,
+  camera_motion TEXT,
+  duration_seconds INTEGER,
+  reference_frame_path TEXT,
+  change_summary TEXT,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shot_drafts (
+  shot_id TEXT PRIMARY KEY REFERENCES shots(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  description TEXT,
+  camera_motion TEXT,
+  visual_prompt TEXT,
+  negative_prompt TEXT,
+  audio_prompt TEXT,
+  video_mode TEXT,
+  provider TEXT,
+  model TEXT,
+  duration_seconds INTEGER,
+  first_frame_path TEXT,
+  last_frame_path TEXT,
+  reference_frame_path TEXT,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS assets (
