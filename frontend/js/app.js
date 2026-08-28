@@ -191,13 +191,41 @@ async function onCreateProject(event) {
 
 async function onRunWorkflow() {
   if (!state.project) return;
+  const projectId = state.project.id;
+  const token = state.observerToken;
   try {
-    const result = await api.runProject(state.project.id);
-    attachEvents();
+    const result = await api.runProject(projectId);
+    if (!isLiveSession(state, token, projectId)) return;
+    // 同步顺序：入队提示 → 立刻拉项目详情 → 若后台尚未写完审核状态则短轮询 GET。
+    // 不能先 attachEvents 再放弃刷新：SSE 的 snapshot 只带 jobs，paused 也不会发 refresh_required。
     el("jobMessage").textContent = `改编任务 ${result.job_id} 已入队`;
-    await refreshProject({ preserveObservation: true });
+    renderAll();
+    await refreshProject({ token, projectId, preserveObservation: true });
+    await waitForAdaptationSurface({ token, projectId });
+    if (!isLiveSession(state, token, projectId)) return;
+    restoreJobObservation();
+    renderAll();
   } catch (error) {
-    showError(`启动失败：${error.message}`);
+    if (isLiveSession(state, token, projectId)) showError(`启动失败：${error.message}`);
+  }
+}
+
+function adaptationSurfaceReady(project) {
+  if (!project) return false;
+  if (project.status === "failed") return true;
+  if ((project.adaptation_options || []).length > 0) return true;
+  if ((project.storylines || []).length > 0) return true;
+  return Boolean(project.status && !["created", "draft"].includes(project.status));
+}
+
+async function waitForAdaptationSurface({ token, projectId, timeoutMs = 10000 }) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!isLiveSession(state, token, projectId)) return;
+    if (adaptationSurfaceReady(state.project) && state.project?.id === projectId) return;
+    await new Promise((resolve) => window.setTimeout(resolve, 280));
+    if (!isLiveSession(state, token, projectId)) return;
+    await refreshProject({ token, projectId, preserveObservation: true });
   }
 }
 
@@ -274,7 +302,7 @@ function startEventStream() {
     } catch {
       return;
     }
-    if (event.type === "snapshot" || Array.isArray(payload.jobs)) {
+    if (event.type === "snapshot" || (payload && Array.isArray(payload.jobs) && !payload.event_type)) {
       applyJobSnapshot(payload);
       renderAll();
       return;
@@ -368,7 +396,10 @@ async function applyJobEvent(event, options = {}) {
     else jobs.unshift(snapshot);
     state.project.jobs = jobs;
   }
-  const shouldRefreshProject = ["asset.ready", "project.refresh_required", "job.failed"].includes(event.event_type);
+  const shouldRefreshProject =
+    ["asset.ready", "project.refresh_required", "job.failed"].includes(event.event_type) ||
+    (event.event_type === "job.update" && ["paused", "completed"].includes(event.status)) ||
+    String(event.stage || "").startsWith("awaiting_");
   if (shouldRefreshProject) {
     await refreshProject({ preserveObservation: true, token, projectId });
     return;
@@ -435,22 +466,32 @@ async function refreshProject(options = {}) {
   if (!state.project) return;
   const token = options.token ?? state.observerToken;
   const projectId = options.projectId || state.project.id;
+  if (!isLiveSession(state, token, projectId)) return;
   const project = await api.getProject(projectId);
-  if (state.project?.id !== projectId || (token != null && Number(state.observerToken) !== Number(token))) {
-    return;
-  }
+  if (!isLiveSession(state, token, projectId) || state.project?.id !== projectId) return;
   state.project = project;
-  state.diagnostics = await api.diagnostics();
-  if (state.project?.id !== projectId) return;
   if (!state.selectedShotId) {
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
-  state.projects = await api.listProjects();
-  if (state.project?.id !== projectId) return;
   const incoming = state.project.job_events || [];
-  incoming.forEach((event) => rememberJobEvent(state, event, state.observerToken));
+  incoming.forEach((event) => rememberJobEvent(state, event, token));
   renderAll();
-  if (!options.preserveObservation && shouldWatchProject(state.project).watch) {
+  try {
+    const diagnostics = await api.diagnostics();
+    if (isLiveSession(state, token, projectId)) state.diagnostics = diagnostics;
+    const projects = await api.listProjects();
+    if (isLiveSession(state, token, projectId) && state.project?.id === projectId) {
+      state.projects = projects;
+      renderAll();
+    }
+  } catch (error) {
+    if (isLiveSession(state, token, projectId)) console.warn("刷新附属状态失败", error);
+  }
+  if (!isLiveSession(state, token, projectId) || state.project?.id !== projectId) return;
+  const watch = shouldWatchProject(state.project).watch;
+  if (!options.preserveObservation && watch) {
+    attachEvents();
+  } else if (options.preserveObservation && watch && !state.eventSource) {
     attachEvents();
   }
 }

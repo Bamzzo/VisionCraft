@@ -244,7 +244,11 @@ function renderAdaptationReview() {
   const scaleLine = `<p class="muted-text">${escapeHtml(project.text_scale_label || "")} · ${escapeHtml(String((project.source_text || "").length))} 字</p>`;
   box.className = "adaptation-review";
   if (["created", "draft"].includes(status) && !options.length && !(project.storylines || []).length) {
-    box.innerHTML = `${scaleLine}<p class="muted-text">点击「启动改编流程」。短文本会直接给出改编方案；中等文本会先拆分并让你选择故事线。本次使用本地确定性规则，不调用付费模型。</p>`;
+    const jobs = project.active_jobs?.length ? project.active_jobs : project.jobs || [];
+    const analyzing = jobs.some((job) => ["queued", "running", "paused"].includes(job.status));
+    box.innerHTML = analyzing
+      ? `${scaleLine}<p class="muted-text">改编任务已启动，正在同步审核状态与候选结果…</p>`
+      : `${scaleLine}<p class="muted-text">点击「启动改编流程」。短文本会直接给出改编方案；中等文本会先拆分并让你选择故事线。本次使用本地确定性规则，不调用付费模型。</p>`;
     return;
   }
   const selectedLine = (project.storylines || []).find((item) => item.selected);
