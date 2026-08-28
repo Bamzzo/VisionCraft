@@ -22,10 +22,12 @@ from backend.services.adaptation_service import (
     list_adaptation_options,
     regenerate_stage,
     save_story_bible_draft,
+    save_storyboard_drafts,
     select_adaptation_option,
     start_adaptation_workflow,
 )
 from backend.services.project_service import get_project
+from backend.services.shot_edit_service import get_shot_editor, prepare_version_for_generation
 
 
 SAMPLE = (
@@ -167,6 +169,94 @@ def test_regen_bible_keeps_p3_versions() -> None:
         _cleanup(project_id)
 
 
+def test_confirm_storyboard_forks_existing_p3_version() -> None:
+    project_id = _project()
+    shot_id = f"shot_{uuid.uuid4().hex[:8]}"
+    old_version_id = f"version_{uuid.uuid4().hex[:8]}"
+    now = utc_now()
+    try:
+        with connect() as conn:
+            conn.execute(
+                """INSERT INTO shots
+                (id, project_id, shot_index, title, description, characters, scene, camera_motion,
+                 visual_prompt, negative_prompt, audio_prompt, status, retry_count, current_version_id, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?, '[]', '旧场景', '固定全景', ?, '', '', 'video_ready', 0, ?, ?, ?)""",
+                (shot_id, project_id, "旧镜头", "旧P3描述", "旧视觉提示", old_version_id, now, now),
+            )
+            conn.execute(
+                """INSERT INTO shot_versions
+                (id, shot_id, version_number, description, visual_prompt, negative_prompt, audio_prompt,
+                 first_frame_path, last_frame_path, video_path, video_mode, created_by, created_at, camera_motion, duration_seconds)
+                VALUES (?, ?, 1, ?, ?, '', '', NULL, NULL, ?, 't2v', 'p3_seed', ?, '固定全景', 5)""",
+                (old_version_id, shot_id, "旧P3描述", "旧视觉提示", "/assets/demo/old-p3.mp4", now),
+            )
+            conn.execute(
+                """INSERT INTO assets (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
+                VALUES (?, ?, 'video', '旧P3视频', 'old', 'old', '/assets/demo/old-p3.mp4', 'provider:ark:old', ?)""",
+                (f"asset_{uuid.uuid4().hex[:8]}", project_id, now),
+            )
+        start_adaptation_workflow(project_id)
+        option = list_adaptation_options(project_id)[0]
+        select_adaptation_option(project_id, option["id"])
+        confirm_scope(project_id, option["id"])
+        confirm_bible(project_id)
+        drafts = get_project(project_id)["storyboard_drafts"]
+        first = next(item for item in drafts if int(item["shot_index"]) == 1)
+        save_storyboard_drafts(
+            project_id,
+            [
+                {
+                    "id": first["id"],
+                    "action_text": "确认后的新动作",
+                    "camera_motion": "缓慢推进",
+                    "visual_prompt": "确认后的新视觉提示",
+                    "duration_seconds": 5,
+                }
+            ],
+        )
+        confirm_storyboard(project_id)
+        with connect() as conn:
+            shot = conn.execute(
+                "SELECT id, project_id, current_version_id, description, camera_motion, visual_prompt FROM shots WHERE id = ? AND project_id = ?",
+                (shot_id, project_id),
+            ).fetchone()
+            versions = conn.execute(
+                "SELECT * FROM shot_versions WHERE shot_id = ? ORDER BY version_number",
+                (shot_id,),
+            ).fetchall()
+            old = conn.execute("SELECT * FROM shot_versions WHERE id = ?", (old_version_id,)).fetchone()
+            assets = conn.execute(
+                "SELECT COUNT(*) AS n FROM assets WHERE project_id = ? AND file_path = ?",
+                (project_id, "/assets/demo/old-p3.mp4"),
+            ).fetchone()
+            tasks = conn.execute("SELECT COUNT(*) AS n FROM video_tasks WHERE project_id = ?", (project_id,)).fetchone()
+        assert shot["project_id"] == project_id
+        assert len(versions) == 2
+        assert shot["current_version_id"] != old_version_id
+        new = next(item for item in versions if item["id"] == shot["current_version_id"])
+        assert new["description"] == "确认后的新动作"
+        assert new["camera_motion"] == "缓慢推进"
+        assert new["visual_prompt"] == "确认后的新视觉提示"
+        assert new["video_path"] is None
+        assert new["first_frame_path"] is None
+        assert new["created_by"] == "storyboard_confirm"
+        assert new["change_summary"] == "确认分镜生成的新版本"
+        assert shot["description"] == new["description"]
+        assert shot["visual_prompt"] == new["visual_prompt"]
+        assert old["description"] == "旧P3描述"
+        assert old["video_path"] == "/assets/demo/old-p3.mp4"
+        assert assets["n"] == 1
+        assert tasks["n"] == 0
+        editor = get_shot_editor(project_id, shot_id)
+        assert editor["current_version"]["id"] == new["id"]
+        prepared = prepare_version_for_generation(project_id, shot_id, None, new["id"])
+        assert prepared["id"] == new["id"]
+        assert prepared["description"] == "确认后的新动作"
+        print("PASS: 确认分镜会为已有 P3 镜头新建不可变版本并切换当前指针")
+    finally:
+        _cleanup(project_id)
+
+
 def test_confirm_storyboard_and_refresh_state() -> None:
     project_id = _project()
     try:
@@ -253,6 +343,7 @@ def main() -> None:
     test_bible_save_confirm_and_partial_merge()
     test_storyboard_requires_confirmed_bible_and_has_evidence()
     test_regen_bible_keeps_p3_versions()
+    test_confirm_storyboard_forks_existing_p3_version()
     test_confirm_storyboard_and_refresh_state()
     test_cross_project_rejected()
     test_http_smoke()

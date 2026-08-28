@@ -398,6 +398,7 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
 
 def _promote_storyboard(project_id: str, drafts: list[dict]) -> None:
     now = utc_now()
+    forked_existing = False
     with connect() as conn:
         existing = conn.execute(
             "SELECT * FROM shots WHERE project_id = ? ORDER BY shot_index",
@@ -406,52 +407,25 @@ def _promote_storyboard(project_id: str, drafts: list[dict]) -> None:
         by_index = {int(row["shot_index"]): dict(row) for row in existing}
         for draft in drafts:
             index = int(draft["shot_index"])
-            characters = draft.get("characters")
-            if isinstance(characters, str):
-                characters = from_json(characters, [])
-            rag = [
-                {
-                    "kind": "adaptation",
-                    "label": "改编依据",
-                    "excerpt": draft.get("source_excerpt") or "",
-                    "score": 1,
-                    "start": draft.get("source_start"),
-                    "end": draft.get("source_end"),
-                }
-            ]
+            payload = _storyboard_shot_payload(draft)
             if index in by_index:
                 shot = by_index[index]
-                conn.execute(
-                    """
-                    UPDATE shots SET title=?, description=?, characters=?, scene=?, camera_motion=?, visual_prompt=?,
-                      rag_evidence=?, narrative_purpose=?, action_text=?, duration_seconds=?, bible_character=?,
-                      bible_scene=?, source_excerpt=?, source_start=?, source_end=?, source_type=?, review_status=?,
-                      updated_at=?
-                    WHERE id=? AND project_id=?
-                    """,
-                    (
-                        draft["title"],
-                        draft.get("action_text") or draft.get("narrative_purpose") or "",
-                        to_json(characters),
-                        draft.get("scene") or "",
-                        draft.get("camera_motion") or "",
-                        draft.get("visual_prompt") or "",
-                        to_json(rag),
-                        draft.get("narrative_purpose") or "",
-                        draft.get("action_text") or "",
-                        int(draft.get("duration_seconds") or 5),
-                        draft.get("bible_character"),
-                        draft.get("bible_scene"),
-                        draft.get("source_excerpt") or "",
-                        draft.get("source_start"),
-                        draft.get("source_end"),
-                        "human_edit" if draft.get("source_type") == "human_edit" else "auto_draft",
-                        "confirmed",
-                        now,
-                        shot["id"],
-                        project_id,
-                    ),
+                owned = conn.execute(
+                    "SELECT id FROM shots WHERE id = ? AND project_id = ?",
+                    (shot["id"], project_id),
+                ).fetchone()
+                if not owned or shot.get("project_id") != project_id:
+                    raise AdaptationError("SHOT_MISMATCH", "镜头与项目关系不匹配，无法确认分镜。")
+                version_id = _insert_confirmed_version(
+                    conn,
+                    shot["id"],
+                    payload,
+                    now,
+                    change_summary="确认分镜生成的新版本",
                 )
+                _update_promoted_shot(conn, project_id, shot["id"], draft, payload, version_id, now)
+                _upsert_promoted_draft(conn, project_id, shot["id"], payload, now)
+                forked_existing = True
             else:
                 shot_id = f"shot_{uuid.uuid4().hex[:10]}"
                 version_id = f"version_{uuid.uuid4().hex[:10]}"
@@ -469,23 +443,23 @@ def _promote_storyboard(project_id: str, drafts: list[dict]) -> None:
                         project_id,
                         index,
                         draft["title"],
-                        draft.get("action_text") or draft.get("narrative_purpose") or "",
-                        to_json(characters),
-                        draft.get("scene") or "",
-                        draft.get("camera_motion") or "",
-                        draft.get("visual_prompt") or "",
+                        payload["description"],
+                        to_json(payload["characters"]),
+                        payload["scene"],
+                        payload["camera_motion"],
+                        payload["visual_prompt"],
                         "",
                         "",
-                        to_json(rag),
-                        draft.get("narrative_purpose") or "",
-                        draft.get("action_text") or "",
-                        int(draft.get("duration_seconds") or 5),
-                        draft.get("bible_character"),
-                        draft.get("bible_scene"),
-                        draft.get("source_excerpt") or "",
-                        draft.get("source_start"),
-                        draft.get("source_end"),
-                        "auto_draft",
+                        to_json(payload["rag"]),
+                        payload["narrative_purpose"],
+                        payload["action_text"],
+                        payload["duration_seconds"],
+                        payload["bible_character"],
+                        payload["bible_scene"],
+                        payload["source_excerpt"],
+                        payload["source_start"],
+                        payload["source_end"],
+                        payload["source_type"],
                         "confirmed",
                         "production_ready",
                         version_id,
@@ -493,25 +467,177 @@ def _promote_storyboard(project_id: str, drafts: list[dict]) -> None:
                         now,
                     ),
                 )
-                conn.execute(
-                    """
-                    INSERT INTO shot_versions
-                    (id, shot_id, version_number, description, visual_prompt, negative_prompt, audio_prompt,
-                     first_frame_path, last_frame_path, video_path, video_mode, created_by, created_at,
-                     camera_motion, duration_seconds, change_summary)
-                    VALUES (?, ?, 1, ?, ?, '', '', NULL, NULL, NULL, 't2v', 'storyboard_confirm', ?, ?, ?, ?)
-                    """,
-                    (
-                        version_id,
-                        shot_id,
-                        draft.get("action_text") or "",
-                        draft.get("visual_prompt") or "",
-                        now,
-                        draft.get("camera_motion") or "",
-                        int(draft.get("duration_seconds") or 5),
-                        "分镜确认冻结的初始版本",
-                    ),
+                _insert_confirmed_version(
+                    conn,
+                    shot_id,
+                    payload,
+                    now,
+                    version_id=version_id,
+                    version_number=1,
+                    change_summary="分镜确认冻结的初始版本",
                 )
+                _upsert_promoted_draft(conn, project_id, shot_id, payload, now)
+        if forked_existing:
+            conn.execute(
+                "UPDATE projects SET assembly_stale = 1, updated_at = ? WHERE id = ?",
+                (now, project_id),
+            )
+
+
+def _storyboard_shot_payload(draft: dict) -> dict:
+    characters = draft.get("characters")
+    if isinstance(characters, str):
+        characters = from_json(characters, [])
+    description = draft.get("action_text") or draft.get("narrative_purpose") or ""
+    return {
+        "description": description,
+        "action_text": draft.get("action_text") or "",
+        "narrative_purpose": draft.get("narrative_purpose") or "",
+        "characters": characters or [],
+        "scene": draft.get("scene") or "",
+        "camera_motion": draft.get("camera_motion") or "",
+        "visual_prompt": draft.get("visual_prompt") or "",
+        "duration_seconds": int(draft.get("duration_seconds") or 5),
+        "video_mode": draft.get("video_mode") or "t2v",
+        "provider": draft.get("provider"),
+        "model": draft.get("model"),
+        "bible_character": draft.get("bible_character"),
+        "bible_scene": draft.get("bible_scene"),
+        "source_excerpt": draft.get("source_excerpt") or "",
+        "source_start": draft.get("source_start"),
+        "source_end": draft.get("source_end"),
+        "source_type": "human_edit" if draft.get("source_type") == "human_edit" else "auto_draft",
+        "rag": [
+            {
+                "kind": "adaptation",
+                "label": "改编依据",
+                "excerpt": draft.get("source_excerpt") or "",
+                "score": 1,
+                "start": draft.get("source_start"),
+                "end": draft.get("source_end"),
+            }
+        ],
+    }
+
+
+def _insert_confirmed_version(
+    conn,
+    shot_id: str,
+    payload: dict,
+    now: str,
+    *,
+    version_id: str | None = None,
+    version_number: int | None = None,
+    change_summary: str,
+) -> str:
+    version_id = version_id or f"version_{uuid.uuid4().hex[:10]}"
+    if version_number is None:
+        version_number = conn.execute(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 AS n FROM shot_versions WHERE shot_id = ?",
+            (shot_id,),
+        ).fetchone()["n"]
+    conn.execute(
+        """
+        INSERT INTO shot_versions
+        (id, shot_id, version_number, description, visual_prompt, negative_prompt, audio_prompt,
+         first_frame_path, last_frame_path, video_path, video_mode, provider, model, created_by, created_at,
+         camera_motion, duration_seconds, reference_frame_path, change_summary)
+        VALUES (?, ?, ?, ?, ?, '', '', NULL, NULL, NULL, ?, ?, ?, 'storyboard_confirm', ?, ?, ?, NULL, ?)
+        """,
+        (
+            version_id,
+            shot_id,
+            version_number,
+            payload["description"],
+            payload["visual_prompt"],
+            payload["video_mode"],
+            payload.get("provider"),
+            payload.get("model"),
+            now,
+            payload["camera_motion"],
+            payload["duration_seconds"],
+            change_summary,
+        ),
+    )
+    return version_id
+
+
+def _update_promoted_shot(conn, project_id: str, shot_id: str, draft: dict, payload: dict, version_id: str, now: str) -> None:
+    conn.execute(
+        """
+        UPDATE shots SET title=?, description=?, characters=?, scene=?, camera_motion=?, visual_prompt=?,
+          rag_evidence=?, narrative_purpose=?, action_text=?, duration_seconds=?, bible_character=?,
+          bible_scene=?, source_excerpt=?, source_start=?, source_end=?, source_type=?, review_status=?,
+          current_version_id=?, updated_at=?
+        WHERE id=? AND project_id=?
+        """,
+        (
+            draft["title"],
+            payload["description"],
+            to_json(payload["characters"]),
+            payload["scene"],
+            payload["camera_motion"],
+            payload["visual_prompt"],
+            to_json(payload["rag"]),
+            payload["narrative_purpose"],
+            payload["action_text"],
+            payload["duration_seconds"],
+            payload["bible_character"],
+            payload["bible_scene"],
+            payload["source_excerpt"],
+            payload["source_start"],
+            payload["source_end"],
+            payload["source_type"],
+            "confirmed",
+            version_id,
+            now,
+            shot_id,
+            project_id,
+        ),
+    )
+    changed = conn.execute("SELECT changes() AS n").fetchone()["n"]
+    if int(changed or 0) != 1:
+        raise AdaptationError("SHOT_MISMATCH", "未能更新属于当前项目的镜头，确认分镜已中止。")
+
+
+def _upsert_promoted_draft(conn, project_id: str, shot_id: str, payload: dict, now: str) -> None:
+    existing = conn.execute("SELECT shot_id FROM shot_drafts WHERE shot_id = ? AND project_id = ?", (shot_id, project_id)).fetchone()
+    values = (
+        payload["description"],
+        payload["camera_motion"],
+        payload["visual_prompt"],
+        "",
+        "",
+        payload["video_mode"],
+        payload.get("provider"),
+        payload.get("model"),
+        payload["duration_seconds"],
+        None,
+        None,
+        None,
+        now,
+    )
+    if existing:
+        conn.execute(
+            """
+            UPDATE shot_drafts SET
+              description=?, camera_motion=?, visual_prompt=?, negative_prompt=?, audio_prompt=?,
+              video_mode=?, provider=?, model=?, duration_seconds=?, first_frame_path=?, last_frame_path=?,
+              reference_frame_path=?, updated_at=?
+            WHERE shot_id=? AND project_id=?
+            """,
+            (*values, shot_id, project_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO shot_drafts
+            (shot_id, project_id, description, camera_motion, visual_prompt, negative_prompt, audio_prompt,
+             video_mode, provider, model, duration_seconds, first_frame_path, last_frame_path, reference_frame_path, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (shot_id, project_id, *values),
+        )
 
 
 def _invalidate_bible_and_storyboard(project_id: str) -> None:
