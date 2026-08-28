@@ -10,7 +10,33 @@ from .config import FRONTEND_DIR, PROJECTS_DIR, init_environment
 from .database import connect, init_db
 from .providers.capabilities import CapabilityError, get_provider_capabilities, get_provider_diagnostics
 from .providers.llm_provider import live_llm_available
-from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, ShotDraftUpdate, VideoGenerateRequest
+from .schemas import (
+    AdaptationRegenerateRequest,
+    AdaptationSelectRequest,
+    DemoCleanupRequest,
+    FeedbackCreate,
+    KeyframeRedrawRequest,
+    KeyframeSelectRequest,
+    ProjectCreate,
+    ShotDraftUpdate,
+    StoryboardSaveRequest,
+    StoryBibleUpdate,
+    VideoGenerateRequest,
+)
+from .services.adaptation_service import (
+    AdaptationError,
+    assert_batch_generation_allowed,
+    confirm_bible,
+    confirm_scope,
+    confirm_storyboard,
+    generate_storyboard,
+    get_adaptation_state,
+    list_adaptation_options,
+    regenerate_stage,
+    save_story_bible_draft,
+    save_storyboard_drafts,
+    select_adaptation_option,
+)
 from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
 from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
@@ -27,6 +53,7 @@ from .services.shot_edit_service import (
 )
 from .services.video_service import assemble_project_video, generate_project_videos, generate_shot_video, prepare_shot_video_generation, refresh_project_video_tasks, safe_retry_shot_video
 from .services.checkpoint_service import get_paused_checkpoint
+from .workflow.adaptation_workflow import run_adaptation_workflow
 from .workflow.langgraph_workflow import resume_langgraph_workflow, run_langgraph_workflow
 
 
@@ -87,8 +114,8 @@ def delete_project_endpoint(project_id: str) -> dict:
 def run_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow", "改编流程已排队")
-    background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
+    job_id = create_job(project_id, "adaptation_workflow", "改编流程已排队")
+    background_tasks.add_task(run_adaptation_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -98,18 +125,20 @@ def resume_project_endpoint(project_id: str, background_tasks: BackgroundTasks) 
         raise HTTPException(status_code=404, detail="Project not found")
     checkpoint = get_paused_checkpoint(project_id)
     if not checkpoint:
-        raise HTTPException(status_code=400, detail="No paused workflow checkpoint")
-    job_id = checkpoint["job_id"]
-    background_tasks.add_task(resume_langgraph_workflow, project_id, job_id)
-    return {"job_id": job_id, "status": "resuming"}
+        raise HTTPException(status_code=400, detail="没有可恢复的审核检查点。请从当前审核步骤确认，或重新启动改编流程。")
+    if checkpoint.get("node") == "quality_gate":
+        job_id = checkpoint["job_id"]
+        background_tasks.add_task(resume_langgraph_workflow, project_id, job_id)
+        return {"job_id": job_id, "status": "resuming"}
+    raise HTTPException(status_code=400, detail="当前停在改编审核步骤。请在审核面板确认范围、Story Bible 或分镜，而不是使用旧版恢复。")
 
 
 @app.post("/api/projects/{project_id}/retry")
 def retry_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow_retry", "改编流程重试已排队")
-    background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
+    job_id = create_job(project_id, "adaptation_regen_scope", "改编范围重生成已排队")
+    background_tasks.add_task(regenerate_stage, project_id, "scope", job_id)
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -182,6 +211,91 @@ async def project_events(
 def _raise_shot_edit(exc: ShotEditError) -> None:
     status = 404 if exc.code in {"PROJECT_NOT_FOUND", "SHOT_NOT_FOUND", "VERSION_NOT_FOUND"} else 400
     raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+def _raise_adaptation(exc: AdaptationError) -> None:
+    status = 404 if exc.code in {"PROJECT_NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/adaptation")
+def get_adaptation_endpoint(project_id: str) -> dict:
+    try:
+        return get_adaptation_state(project_id)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.get("/api/projects/{project_id}/adaptation/options")
+def list_adaptation_options_endpoint(project_id: str) -> dict:
+    try:
+        return {"items": list_adaptation_options(project_id)}
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/options/{option_id}/select")
+def select_adaptation_option_endpoint(project_id: str, option_id: str) -> dict:
+    try:
+        return select_adaptation_option(project_id, option_id)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/scope/confirm")
+def confirm_scope_endpoint(project_id: str, payload: AdaptationSelectRequest | None = None) -> dict:
+    try:
+        return confirm_scope(project_id, payload.option_id if payload else None)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.put("/api/projects/{project_id}/adaptation/bible")
+def save_bible_endpoint(project_id: str, payload: StoryBibleUpdate) -> dict:
+    try:
+        return save_story_bible_draft(project_id, payload.model_dump(exclude_unset=True))
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/bible/confirm")
+def confirm_bible_endpoint(project_id: str, payload: StoryBibleUpdate | None = None) -> dict:
+    try:
+        return confirm_bible(project_id, payload.model_dump(exclude_unset=True) if payload else None)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/storyboard")
+def generate_storyboard_endpoint(project_id: str) -> dict:
+    try:
+        return generate_storyboard(project_id)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.put("/api/projects/{project_id}/adaptation/storyboard")
+def save_storyboard_endpoint(project_id: str, payload: StoryboardSaveRequest) -> dict:
+    try:
+        return save_storyboard_drafts(project_id, payload.shots)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/storyboard/confirm")
+def confirm_storyboard_endpoint(project_id: str, payload: StoryboardSaveRequest | None = None) -> dict:
+    try:
+        return confirm_storyboard(project_id, payload.shots if payload else None)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
+
+
+@app.post("/api/projects/{project_id}/adaptation/regenerate")
+def regenerate_adaptation_endpoint(project_id: str, payload: AdaptationRegenerateRequest) -> dict:
+    try:
+        return regenerate_stage(project_id, payload.stage)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/feedback")
@@ -332,8 +446,12 @@ def generate_all_videos_endpoint(project_id: str, background_tasks: BackgroundTa
     project = get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        assert_batch_generation_allowed(project)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
     if not project.get("shots"):
-        raise HTTPException(status_code=400, detail="No shots available")
+        raise HTTPException(status_code=400, detail="没有可生成的制作镜头。请先确认分镜。")
     job_id = create_job(project_id, "batch_video_generation", "批量视频生成已排队")
     background_tasks.add_task(generate_project_videos, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS projects (
   review_mode INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
   assembly_stale INTEGER NOT NULL DEFAULT 0,
+  selected_option_id TEXT,
   status TEXT NOT NULL,
   routing_mode TEXT NOT NULL DEFAULT 'direct',
   created_at TEXT NOT NULL,
@@ -22,6 +23,20 @@ CREATE TABLE IF NOT EXISTS story_bibles (
   worldview TEXT NOT NULL,
   style_tags TEXT NOT NULL,
   themes TEXT NOT NULL,
+  logline TEXT,
+  adaptation_summary TEXT,
+  emotion_curve TEXT,
+  protagonist TEXT,
+  protagonist_goal TEXT,
+  obstacle TEXT,
+  character_cards_json TEXT NOT NULL DEFAULT '[]',
+  scene_cards_json TEXT NOT NULL DEFAULT '[]',
+  visual_style TEXT,
+  consistency_constraints TEXT,
+  option_id TEXT,
+  source TEXT NOT NULL DEFAULT 'mock_planner',
+  review_status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -69,6 +84,16 @@ CREATE TABLE IF NOT EXISTS shots (
   negative_prompt TEXT NOT NULL,
   audio_prompt TEXT NOT NULL,
   rag_evidence TEXT NOT NULL DEFAULT '[]',
+  narrative_purpose TEXT,
+  action_text TEXT,
+  duration_seconds INTEGER,
+  bible_character TEXT,
+  bible_scene TEXT,
+  source_excerpt TEXT,
+  source_start INTEGER,
+  source_end INTEGER,
+  source_type TEXT,
+  review_status TEXT,
   status TEXT NOT NULL,
   retry_count INTEGER NOT NULL DEFAULT 0,
   current_version_id TEXT,
@@ -222,6 +247,59 @@ CREATE TABLE IF NOT EXISTS workflow_checkpoints (
   state_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS adaptation_options (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  option_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  protagonist_goal TEXT NOT NULL,
+  conflict TEXT NOT NULL,
+  ending_orientation TEXT NOT NULL,
+  suggested_duration_seconds INTEGER NOT NULL,
+  suggested_shot_count INTEGER NOT NULL,
+  source_excerpt TEXT NOT NULL,
+  source_start INTEGER,
+  source_end INTEGER,
+  selected INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'mock_planner',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS storyboard_drafts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  shot_index INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  narrative_purpose TEXT NOT NULL DEFAULT '',
+  characters TEXT NOT NULL DEFAULT '[]',
+  scene TEXT NOT NULL DEFAULT '',
+  action_text TEXT NOT NULL DEFAULT '',
+  camera_motion TEXT NOT NULL DEFAULT '',
+  duration_seconds INTEGER NOT NULL DEFAULT 5,
+  visual_prompt TEXT NOT NULL DEFAULT '',
+  bible_character TEXT,
+  bible_scene TEXT,
+  source_excerpt TEXT NOT NULL DEFAULT '',
+  source_start INTEGER,
+  source_end INTEGER,
+  source_type TEXT NOT NULL DEFAULT 'auto_draft',
+  review_status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS review_records (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  action TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  target_id TEXT,
+  target_version TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS provider_capabilities (

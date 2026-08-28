@@ -56,6 +56,35 @@ class KeyframeRedrawRequest(BaseModel):
     target: Literal["first", "last", "both"] = "both"
 
 
+class AdaptationSelectRequest(BaseModel):
+    option_id: str = Field(min_length=3, max_length=40)
+
+
+class StoryBibleUpdate(BaseModel):
+    logline: str | None = Field(default=None, max_length=400)
+    adaptation_summary: str | None = Field(default=None, max_length=4000)
+    summary: str | None = Field(default=None, max_length=4000)
+    worldview: str | None = Field(default=None, max_length=4000)
+    emotion_curve: str | None = Field(default=None, max_length=400)
+    protagonist: str | None = Field(default=None, max_length=80)
+    protagonist_goal: str | None = Field(default=None, max_length=400)
+    obstacle: str | None = Field(default=None, max_length=400)
+    visual_style: str | None = Field(default=None, max_length=240)
+    consistency_constraints: str | None = Field(default=None, max_length=2000)
+    themes: list[str] | None = None
+    style_tags: list[str] | None = None
+    character_cards: list[dict] | None = None
+    scene_cards: list[dict] | None = None
+
+
+class StoryboardSaveRequest(BaseModel):
+    shots: list[dict] = Field(default_factory=list)
+
+
+class AdaptationRegenerateRequest(BaseModel):
+    stage: Literal["scope", "bible", "storyboard"]
+
+
 class DemoCleanupRequest(BaseModel):
     keep_project_id: str | None = None
     archive_failed: bool = True

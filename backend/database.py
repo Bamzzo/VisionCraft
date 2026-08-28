@@ -60,10 +60,42 @@ def init_db() -> None:
         _ensure_column(conn, "assets", "source_model", "TEXT")
         _ensure_column(conn, "jobs", "stage", "TEXT")
         _ensure_column(conn, "jobs", "shot_id", "TEXT")
+        _ensure_column(conn, "projects", "selected_option_id", "TEXT")
+        for column, ddl in (
+            ("logline", "TEXT"),
+            ("adaptation_summary", "TEXT"),
+            ("emotion_curve", "TEXT"),
+            ("protagonist", "TEXT"),
+            ("protagonist_goal", "TEXT"),
+            ("obstacle", "TEXT"),
+            ("character_cards_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("scene_cards_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("visual_style", "TEXT"),
+            ("consistency_constraints", "TEXT"),
+            ("option_id", "TEXT"),
+            ("source", "TEXT NOT NULL DEFAULT 'mock_planner'"),
+            ("review_status", "TEXT NOT NULL DEFAULT 'draft'"),
+            ("created_at", "TEXT"),
+        ):
+            _ensure_column(conn, "story_bibles", column, ddl)
+        for column, ddl in (
+            ("narrative_purpose", "TEXT"),
+            ("action_text", "TEXT"),
+            ("duration_seconds", "INTEGER"),
+            ("bible_character", "TEXT"),
+            ("bible_scene", "TEXT"),
+            ("source_excerpt", "TEXT"),
+            ("source_start", "INTEGER"),
+            ("source_end", "INTEGER"),
+            ("source_type", "TEXT"),
+            ("review_status", "TEXT"),
+        ):
+            _ensure_column(conn, "shots", column, ddl)
         _ensure_video_tasks(conn)
         _ensure_media_transfers(conn)
         _ensure_job_events(conn)
         _ensure_shot_drafts(conn)
+        _ensure_adaptation_tables(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -169,3 +201,71 @@ def _ensure_shot_drafts(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _ensure_adaptation_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS adaptation_options (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          option_index INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          rationale TEXT NOT NULL,
+          protagonist_goal TEXT NOT NULL,
+          conflict TEXT NOT NULL,
+          ending_orientation TEXT NOT NULL,
+          suggested_duration_seconds INTEGER NOT NULL,
+          suggested_shot_count INTEGER NOT NULL,
+          source_excerpt TEXT NOT NULL,
+          source_start INTEGER,
+          source_end INTEGER,
+          selected INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'mock_planner',
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS storyboard_drafts (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          shot_index INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          narrative_purpose TEXT NOT NULL DEFAULT '',
+          characters TEXT NOT NULL DEFAULT '[]',
+          scene TEXT NOT NULL DEFAULT '',
+          action_text TEXT NOT NULL DEFAULT '',
+          camera_motion TEXT NOT NULL DEFAULT '',
+          duration_seconds INTEGER NOT NULL DEFAULT 5,
+          visual_prompt TEXT NOT NULL DEFAULT '',
+          bible_character TEXT,
+          bible_scene TEXT,
+          source_excerpt TEXT NOT NULL DEFAULT '',
+          source_start INTEGER,
+          source_end INTEGER,
+          source_type TEXT NOT NULL DEFAULT 'auto_draft',
+          review_status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS review_records (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          stage TEXT NOT NULL,
+          action TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          target_id TEXT,
+          target_version TEXT,
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_adaptation_options_project ON adaptation_options(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_storyboard_drafts_project ON storyboard_drafts(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_review_records_project ON review_records(project_id)")

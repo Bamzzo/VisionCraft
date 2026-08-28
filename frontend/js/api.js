@@ -116,4 +116,45 @@ export const api = {
       body: JSON.stringify({ keep_project_id: keepProjectId }),
     }),
   searchMemory: (projectId, query) => request(`/api/projects/${projectId}/memory/search?q=${encodeURIComponent(query)}`),
+  getAdaptation: (projectId) => request(`/api/projects/${projectId}/adaptation`),
+  selectAdaptationOption: (projectId, optionId) =>
+    request(`/api/projects/${projectId}/adaptation/options/${optionId}/select`, { method: "POST" }),
+  confirmScope: (projectId, optionId) =>
+    request(`/api/projects/${projectId}/adaptation/scope/confirm`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ option_id: optionId }),
+    }),
+  saveBible: (projectId, payload) =>
+    request(`/api/projects/${projectId}/adaptation/bible`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  confirmBible: (projectId, payload = {}) =>
+    request(`/api/projects/${projectId}/adaptation/bible/confirm`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  generateStoryboard: (projectId) =>
+    request(`/api/projects/${projectId}/adaptation/storyboard`, { method: "POST" }),
+  saveStoryboard: (projectId, shots) =>
+    request(`/api/projects/${projectId}/adaptation/storyboard`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ shots }),
+    }),
+  confirmStoryboard: (projectId, shots) =>
+    request(`/api/projects/${projectId}/adaptation/storyboard/confirm`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(shots ? { shots } : {}),
+    }),
+  regenerateAdaptation: (projectId, stage) =>
+    request(`/api/projects/${projectId}/adaptation/regenerate`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ stage }),
+    }),
 };

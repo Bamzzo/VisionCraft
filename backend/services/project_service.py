@@ -57,7 +57,7 @@ def create_project(payload: ProjectCreate) -> dict:
                 payload.shot_count_mode,
                 payload.requested_shot_count,
                 1 if payload.review_mode else 0,
-                "draft",
+                "created",
                 routing_mode,
                 now,
                 now,
@@ -147,12 +147,26 @@ def get_project(project_id: str) -> dict:
             """,
             (project_id, "paused"),
         ).fetchone()
+        adaptation_options = conn.execute(
+            "SELECT * FROM adaptation_options WHERE project_id = ? ORDER BY option_index",
+            (project_id,),
+        ).fetchall()
+        storyboard_drafts = conn.execute(
+            "SELECT * FROM storyboard_drafts WHERE project_id = ? ORDER BY shot_index",
+            (project_id,),
+        ).fetchall()
+        review_records = conn.execute(
+            "SELECT * FROM review_records WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,),
+        ).fetchall()
 
     result = _row_to_dict(project)
     result["story_bible"] = _row_to_dict(bible) if bible else None
     if result["story_bible"]:
         result["story_bible"]["style_tags"] = from_json(result["story_bible"]["style_tags"], [])
         result["story_bible"]["themes"] = from_json(result["story_bible"]["themes"], [])
+        result["story_bible"]["character_cards"] = from_json(result["story_bible"].get("character_cards_json"), [])
+        result["story_bible"]["scene_cards"] = from_json(result["story_bible"].get("scene_cards_json"), [])
     result["characters"] = [_row_to_dict(row) for row in characters]
     result["scenes"] = [_row_to_dict(row) for row in scenes]
     result["global_constraints"] = [_row_to_dict(row) for row in constraints]
@@ -185,6 +199,13 @@ def get_project(project_id: str) -> dict:
     result["jobs"] = [_row_to_dict(row) for row in jobs]
     result["video_tasks"] = video_task_items
     result["checkpoint"] = _row_to_dict(checkpoint) if checkpoint else None
+    result["adaptation_options"] = [_row_to_dict(row) for row in adaptation_options]
+    result["storyboard_drafts"] = []
+    for row in storyboard_drafts:
+        item = _row_to_dict(row)
+        item["characters"] = from_json(item.get("characters"), [])
+        result["storyboard_drafts"].append(item)
+    result["review_records"] = [_row_to_dict(row) for row in review_records]
     from .job_service import get_recent_job_events, list_active_jobs
 
     result["job_events"] = get_recent_job_events(project_id, limit=40)

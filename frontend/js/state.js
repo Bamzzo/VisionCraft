@@ -20,12 +20,10 @@ export const state = {
 };
 
 export const agents = [
-  { name: "Narrative", label: "编剧", detail: "故事圣经 / 分镜初稿" },
-  { name: "Director", label: "导演", detail: "角色 / 场景 / 风格" },
-  { name: "Assets", label: "资产", detail: "基准图 / 关键帧" },
-  { name: "Critic", label: "监制", detail: "一致性质检" },
-  { name: "Action", label: "执行", detail: "视频片段生成" },
-  { name: "Assembly", label: "剪辑", detail: "封装 / 导出" },
+  { name: "scope", label: "1. 选择故事范围", statuses: ["adaptation_options_ready", "awaiting_scope_review"] },
+  { name: "bible", label: "2. 确认 Story Bible", statuses: ["story_bible_ready", "awaiting_bible_review"] },
+  { name: "storyboard", label: "3. 审核分镜", statuses: ["storyboard_draft_ready", "awaiting_storyboard_review"] },
+  { name: "production", label: "4. 制作镜头", statuses: ["production_ready", "ready_for_review", "video_ready"] },
 ];
 
 export function selectedShot() {

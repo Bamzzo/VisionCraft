@@ -3,8 +3,8 @@ import { agents, currentVersion, latestVersion, selectedShot, state } from "./st
 const el = (id) => document.getElementById(id);
 
 function statusClass(status) {
-  if (["completed", "ready_for_review", "keyframes_ready", "passed", "video_ready"].includes(status)) return "success";
-  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote"].includes(status)) return "warning";
+  if (["completed", "ready_for_review", "keyframes_ready", "passed", "video_ready", "production_ready"].includes(status)) return "success";
+  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "adaptation_options_ready", "story_bible_ready", "storyboard_draft_ready"].includes(status)) return "warning";
   if (["video_running", "video_waiting_remote"].includes(status)) return "warning";
   if (["failed", "video_failed", "video_invalid"].includes(status)) return "danger";
   return "neutral";
@@ -109,6 +109,7 @@ export function renderAll() {
   renderAgentFlow();
   renderAssetSummary();
   renderWorkflowControls();
+  renderAdaptationReview();
   renderStoryBible();
   renderProviderDiagnostics();
   renderShots();
@@ -169,14 +170,16 @@ function renderProjectStatus() {
 }
 
 function renderAgentFlow() {
-  const status = state.project?.status || "draft";
-  const doneCount = status === "ready_for_review" ? agents.length : status === "review_pending" ? 4 : status === "running" ? 3 : 0;
-  el("agentFlow").innerHTML = agents
+  const status = state.project?.status || "created";
+  const currentIndex = Math.max(0, agents.findIndex((step) => (step.statuses || []).includes(status)));
+  const reachedProduction = ["production_ready", "ready_for_review", "review_pending", "video_ready", "completed"].includes(status);
+  el("adaptationSteps").innerHTML = agents
     .map((agent, index) => {
-      const className = index < doneCount ? "done" : status === "running" && index === doneCount ? "running" : "";
+      const active = reachedProduction ? index === agents.length - 1 : index === currentIndex;
+      const done = reachedProduction ? index < agents.length - 1 : index < currentIndex;
+      const className = done ? "done" : active ? "running" : "";
       return `<div class="agent-node ${className}">
         <strong>${agent.label}</strong>
-        <small>${agent.detail}</small>
       </div>`;
     })
     .join("");
@@ -184,12 +187,12 @@ function renderAgentFlow() {
 
 function renderWorkflowControls() {
   const project = state.project;
-  const canResume = project?.status === "review_pending" && !!project?.checkpoint;
+  const canResume = project?.status === "review_pending" && project?.checkpoint?.node === "quality_gate";
   const canRetry = !!project && !["running"].includes(project.status);
   el("resumeWorkflowBtn").disabled = !canResume;
   el("retryWorkflowBtn").disabled = !canRetry;
-  el("resumeWorkflowBtn").title = canResume ? "从监制检查点继续执行" : "只有监制模式暂停后才能恢复";
-  el("retryWorkflowBtn").title = canRetry ? "重新运行完整 LangGraph 工作流" : "任务运行中";
+  el("resumeWorkflowBtn").title = canResume ? "从旧版监制检查点继续执行" : "P4 审核请在上方面板确认当前步骤";
+  el("retryWorkflowBtn").title = canRetry ? "重生成改编范围（保留已有镜头版本与资产）" : "任务运行中";
 }
 
 function renderAssetSummary() {
@@ -220,6 +223,121 @@ function renderAssetSummary() {
     <span><strong>${mockAssets}</strong> 占位</span>
     <span><strong>${assets.length}</strong> 总资产</span>
     <span><strong>${project.review_mode ? "开" : "关"}</strong> 监制模式</span>
+  `;
+}
+
+function renderAdaptationReview() {
+  const box = el("adaptationReview");
+  const project = state.project;
+  if (!project) {
+    box.className = "adaptation-review empty-state";
+    box.textContent = "创建项目并启动改编流程后，在这里选择范围、确认 Story Bible 与分镜。";
+    return;
+  }
+  const status = project.status || "created";
+  const options = project.adaptation_options || [];
+  const bible = project.story_bible;
+  const drafts = project.storyboard_drafts || [];
+  const production = ["production_ready", "ready_for_review", "video_ready"].includes(status);
+  box.className = "adaptation-review";
+  if (["created", "draft"].includes(status) && !options.length) {
+    box.innerHTML = `<p class="muted-text">点击「启动改编流程」生成 2～3 个候选改编方案。本次使用本地确定性改编器，不调用付费模型。</p>`;
+    return;
+  }
+  const optionCards = options
+    .map(
+      (item) => `
+      <article class="option-card ${item.selected ? "active" : ""}">
+        <div class="section-title">
+          <h3>${escapeHtml(item.title)}</h3>
+          ${item.selected ? `<span class="tag">已选</span>` : ""}
+        </div>
+        <p><strong>冲突：</strong>${escapeHtml(item.conflict)}</p>
+        <p><strong>时长建议：</strong>${escapeHtml(String(item.suggested_duration_seconds))}s · ${escapeHtml(String(item.suggested_shot_count))} 镜</p>
+        <p><strong>推荐理由：</strong>${escapeHtml(item.rationale)}</p>
+        <blockquote>引用：「${escapeHtml(item.source_excerpt)}」</blockquote>
+        <div class="button-row compact-row">
+          <button class="secondary-btn mini-btn" data-adapt="select-option" data-option-id="${escapeHtml(item.id)}">选择此方案</button>
+          <button class="primary-btn mini-btn" data-adapt="confirm-scope" data-option-id="${escapeHtml(item.id)}">确认范围并生成 Bible</button>
+        </div>
+      </article>`
+    )
+    .join("");
+  const cards = (bible?.character_cards || [])
+    .map(
+      (card, index) => `
+      <div class="prompt-block">
+        <strong>角色 ${index + 1}</strong>
+        <label>名称<input data-bible-card="character" data-index="${index}" data-field="name" value="${escapeHtml(card.name || "")}" /></label>
+        <label>身份/关系<input data-bible-card="character" data-index="${index}" data-field="identity" value="${escapeHtml(card.identity || card.role || "")}" /></label>
+        <label>外观<input data-bible-card="character" data-index="${index}" data-field="appearance" value="${escapeHtml(card.appearance || "")}" /></label>
+        <label>动机<input data-bible-card="character" data-index="${index}" data-field="motivation" value="${escapeHtml(card.motivation || "")}" /></label>
+        <label>不可改变特征<input data-bible-card="character" data-index="${index}" data-field="invariant" value="${escapeHtml(card.invariant || "")}" /></label>
+      </div>`
+    )
+    .join("");
+  const sceneCards = (bible?.scene_cards || [])
+    .map(
+      (card, index) => `
+      <div class="prompt-block">
+        <strong>场景 ${index + 1}</strong>
+        <label>名称<input data-bible-card="scene" data-index="${index}" data-field="name" value="${escapeHtml(card.name || "")}" /></label>
+        <label>环境<input data-bible-card="scene" data-index="${index}" data-field="environment" value="${escapeHtml(card.environment || "")}" /></label>
+        <label>时间<input data-bible-card="scene" data-index="${index}" data-field="time" value="${escapeHtml(card.time || "")}" /></label>
+        <label>视觉元素<input data-bible-card="scene" data-index="${index}" data-field="visuals" value="${escapeHtml(card.visuals || "")}" /></label>
+        <label>不可改变特征<input data-bible-card="scene" data-index="${index}" data-field="invariant" value="${escapeHtml(card.invariant || "")}" /></label>
+      </div>`
+    )
+    .join("");
+  const bibleForm = bible
+    ? `<div class="prompt-block">
+        <strong>Story Bible${bible.review_status === "confirmed" ? " · 已确认" : " · 可编辑"}</strong>
+        <label>Logline<textarea id="bibleLogline" rows="2">${escapeHtml(bible.logline || "")}</textarea></label>
+        <label>改编摘要<textarea id="bibleSummary" rows="3">${escapeHtml(bible.adaptation_summary || bible.summary || "")}</textarea></label>
+        <label>主题与情绪曲线<input id="bibleEmotion" value="${escapeHtml(bible.emotion_curve || "")}" /></label>
+        <label>主角<input id="bibleHero" value="${escapeHtml(bible.protagonist || "")}" /></label>
+        <label>目标<input id="bibleGoal" value="${escapeHtml(bible.protagonist_goal || "")}" /></label>
+        <label>阻碍<input id="bibleObstacle" value="${escapeHtml(bible.obstacle || "")}" /></label>
+        <label>全局视觉风格<input id="bibleStyle" value="${escapeHtml(bible.visual_style || "")}" /></label>
+        <label>一致性约束<textarea id="bibleConstraints" rows="2">${escapeHtml(bible.consistency_constraints || "")}</textarea></label>
+        ${cards}${sceneCards}
+        <div class="button-row compact-row">
+          <button class="secondary-btn mini-btn" data-adapt="save-bible">保存修改</button>
+          <button class="primary-btn mini-btn" data-adapt="confirm-bible">确认并生成分镜</button>
+          <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="bible">修改后重生成 Bible</button>
+        </div>
+      </div>`
+    : `<p class="muted-text">选定方案并确认范围后，将在此编辑 Story Bible。</p>`;
+  const draftRows = drafts
+    .map(
+      (item) => `
+      <article class="option-card">
+        <strong>${escapeHtml(item.title)}</strong>
+        <span class="tag">镜 ${escapeHtml(String(item.shot_index))}</span>
+        <label>叙事目的<input data-board-id="${escapeHtml(item.id)}" data-board-field="narrative_purpose" value="${escapeHtml(item.narrative_purpose || "")}" /></label>
+        <label>角色<input data-board-id="${escapeHtml(item.id)}" data-board-field="characters" value="${escapeHtml((item.characters || []).join("、"))}" /></label>
+        <label>场景<input data-board-id="${escapeHtml(item.id)}" data-board-field="scene" value="${escapeHtml(item.scene || "")}" /></label>
+        <label>动作<textarea data-board-id="${escapeHtml(item.id)}" data-board-field="action_text" rows="2">${escapeHtml(item.action_text || "")}</textarea></label>
+        <label>运镜<input data-board-id="${escapeHtml(item.id)}" data-board-field="camera_motion" value="${escapeHtml(item.camera_motion || "")}" /></label>
+        <label>时长（秒）<input data-board-id="${escapeHtml(item.id)}" data-board-field="duration_seconds" type="number" min="1" max="15" value="${escapeHtml(String(item.duration_seconds || 5))}" /></label>
+        <p class="muted-text">原文依据：「${escapeHtml(item.source_excerpt || "")}」</p>
+      </article>`
+    )
+    .join("");
+  const boardBlock = drafts.length
+    ? `<div class="prompt-block"><strong>分镜审核</strong>${draftRows}
+        <div class="button-row compact-row">
+          <button class="secondary-btn mini-btn" data-adapt="save-storyboard">保存分镜修改</button>
+          <button class="primary-btn mini-btn" data-adapt="confirm-storyboard">确认分镜，进入镜头制作</button>
+          <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="storyboard">修改后重生成分镜</button>
+        </div></div>`
+    : "";
+  box.innerHTML = `
+    <p class="muted-text">当前步骤：${escapeHtml(status)}。刷新后会恢复审核状态、已选方案与已保存内容。</p>
+    ${["awaiting_scope_review", "adaptation_options_ready"].includes(status) || (!production && options.length && !drafts.length && status !== "awaiting_bible_review" && status !== "awaiting_storyboard_review") ? optionCards : ""}
+    ${["awaiting_bible_review", "story_bible_ready", "awaiting_storyboard_review", "storyboard_draft_ready", "production_ready"].includes(status) || bible ? bibleForm : ""}
+    ${["awaiting_storyboard_review", "storyboard_draft_ready", "production_ready"].includes(status) || drafts.length ? boardBlock : ""}
+    ${options.length ? `<button class="secondary-btn mini-btn" data-adapt="regen" data-stage="scope">修改后重生成改编方案</button>` : ""}
   `;
 }
 

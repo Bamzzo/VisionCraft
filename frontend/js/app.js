@@ -32,6 +32,7 @@ function bindEvents() {
   el("shotInspector").addEventListener("click", onInspectorClick);
   el("shotInspector").addEventListener("change", onInspectorChange);
   el("shotInspector").addEventListener("input", onInspectorChange);
+  el("adaptationReview").addEventListener("click", onAdaptationClick);
   el("generateAllVideosBtn").addEventListener("click", onGenerateAllVideos);
   el("assembleProjectBtn").addEventListener("click", onAssembleProject);
   el("resumeWorkflowBtn").addEventListener("click", onResumeWorkflow);
@@ -193,7 +194,7 @@ async function onRunWorkflow() {
   try {
     const result = await api.runProject(state.project.id);
     attachEvents();
-    el("jobMessage").textContent = `任务 ${result.job_id} 已入队`;
+    el("jobMessage").textContent = `改编任务 ${result.job_id} 已入队`;
     await refreshProject({ preserveObservation: true });
   } catch (error) {
     showError(`启动失败：${error.message}`);
@@ -695,6 +696,73 @@ async function onAssembleProject() {
   } finally {
     el("assembleProjectBtn").disabled = false;
   }
+}
+
+async function onAdaptationClick(event) {
+  const trigger = event.target.closest("[data-adapt]");
+  if (!trigger || !state.project) return;
+  const action = trigger.dataset.adapt;
+  try {
+    trigger.disabled = true;
+    if (action === "select-option") {
+      state.project = await api.selectAdaptationOption(state.project.id, trigger.dataset.optionId);
+    } else if (action === "confirm-scope") {
+      state.project = await api.confirmScope(state.project.id, trigger.dataset.optionId);
+    } else if (action === "save-bible") {
+      state.project = await api.saveBible(state.project.id, collectBiblePayload());
+    } else if (action === "confirm-bible") {
+      state.project = await api.confirmBible(state.project.id, collectBiblePayload());
+    } else if (action === "save-storyboard") {
+      state.project = await api.saveStoryboard(state.project.id, collectStoryboardPayload());
+    } else if (action === "confirm-storyboard") {
+      state.project = await api.confirmStoryboard(state.project.id, collectStoryboardPayload());
+    } else if (action === "regen") {
+      state.project = await api.regenerateAdaptation(state.project.id, trigger.dataset.stage);
+    }
+    attachEvents();
+    renderAll();
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    trigger.disabled = false;
+  }
+}
+
+function collectBiblePayload() {
+  const cards = (kind) => {
+    const map = {};
+    document.querySelectorAll(`[data-bible-card="${kind}"]`).forEach((input) => {
+      const index = Number(input.dataset.index);
+      map[index] = map[index] || {};
+      map[index][input.dataset.field] = input.value;
+    });
+    return Object.keys(map)
+      .sort((a, b) => Number(a) - Number(b))
+      .map((key) => map[key]);
+  };
+  return {
+    logline: document.getElementById("bibleLogline")?.value,
+    adaptation_summary: document.getElementById("bibleSummary")?.value,
+    emotion_curve: document.getElementById("bibleEmotion")?.value,
+    protagonist: document.getElementById("bibleHero")?.value,
+    protagonist_goal: document.getElementById("bibleGoal")?.value,
+    obstacle: document.getElementById("bibleObstacle")?.value,
+    visual_style: document.getElementById("bibleStyle")?.value,
+    consistency_constraints: document.getElementById("bibleConstraints")?.value,
+    character_cards: cards("character"),
+    scene_cards: cards("scene"),
+  };
+}
+
+function collectStoryboardPayload() {
+  const grouped = {};
+  document.querySelectorAll("[data-board-id]").forEach((input) => {
+    const id = input.dataset.boardId;
+    grouped[id] = grouped[id] || { id };
+    const field = input.dataset.boardField;
+    grouped[id][field] = field === "characters" ? input.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) : field === "duration_seconds" ? Number(input.value) : input.value;
+  });
+  return Object.values(grouped);
 }
 
 async function onResumeWorkflow() {
