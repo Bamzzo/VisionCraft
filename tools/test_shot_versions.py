@@ -71,6 +71,35 @@ def _version_count(shot_id: str) -> int:
         return int(conn.execute("SELECT COUNT(*) AS n FROM shot_versions WHERE shot_id = ?", (shot_id,)).fetchone()["n"])
 
 
+def test_partial_draft_saves_preserve_previous_fields() -> None:
+    project_id, shot_id, version_id = _seed()
+    try:
+        with connect() as conn:
+            original = conn.execute("SELECT * FROM shot_versions WHERE id = ?", (version_id,)).fetchone()
+            shot = conn.execute("SELECT current_version_id FROM shots WHERE id = ?", (shot_id,)).fetchone()
+        original_description = original["description"]
+        original_camera = original["camera_motion"]
+        original_prompt = original["visual_prompt"]
+        original_first = original["first_frame_path"]
+        save_shot_draft(project_id, shot_id, {"camera_motion": "缓慢推进"})
+        save_shot_draft(project_id, shot_id, {"description": "角色转身看向远方"})
+        with connect() as conn:
+            draft = conn.execute("SELECT * FROM shot_drafts WHERE shot_id = ?", (shot_id,)).fetchone()
+            version = conn.execute("SELECT * FROM shot_versions WHERE id = ?", (version_id,)).fetchone()
+            current = conn.execute("SELECT current_version_id FROM shots WHERE id = ?", (shot_id,)).fetchone()
+        assert draft["description"] == "角色转身看向远方"
+        assert draft["camera_motion"] == "缓慢推进"
+        assert draft["visual_prompt"] == original_prompt
+        assert draft["first_frame_path"] == original_first
+        assert _version_count(shot_id) == 1
+        assert version["description"] == original_description
+        assert version["camera_motion"] == original_camera
+        assert current["current_version_id"] == version_id
+        print("PASS: 部分保存草稿会保留此前草稿字段，且不改历史版本")
+    finally:
+        _cleanup(project_id)
+
+
 def test_save_draft_does_not_overwrite_history() -> None:
     project_id, shot_id, version_id = _seed()
     try:
@@ -265,6 +294,7 @@ def test_http_draft_freeze_rollback_and_enqueue() -> None:
 
 
 def main() -> None:
+    test_partial_draft_saves_preserve_previous_fields()
     test_save_draft_does_not_overwrite_history()
     test_freeze_creates_version_only_on_material_change()
     test_local_generate_binds_new_version()

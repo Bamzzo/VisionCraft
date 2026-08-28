@@ -32,8 +32,9 @@ DRAFT_FIELDS = (
 
 def save_shot_draft(project_id: str, shot_id: str, payload: dict) -> dict:
     shot, version = _load_shot(project_id, shot_id)
-    current = _draft_from_version(shot, version)
-    merged = {**current, **_pick_fields(payload)}
+    baseline = _load_draft(shot_id) or _draft_from_version(shot, version)
+    # 仅覆盖请求里明确出现的键；值为 None 表示清空可空字段，键缺失则保留基准。
+    merged = {**baseline, **_pick_fields(payload)}
     _upsert_draft(project_id, shot_id, merged)
     return get_shot_editor(project_id, shot_id)
 
