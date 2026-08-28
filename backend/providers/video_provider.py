@@ -13,6 +13,7 @@ from typing import Any
 from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
 from ..services.asset_service import public_asset_path
+from ..services.media_transfer_service import MediaTransferError, prepare_image_reference
 
 
 @dataclass
@@ -529,15 +530,39 @@ def _ark_content_items(request: VideoAssetRequest, prompt: str) -> list[dict]:
     if mode not in {"i2v", "keyframes"}:
         return content
 
-    first_frame = _local_asset_data_url(request.project_id, request.first_frame_path)
-    last_frame = _local_asset_data_url(request.project_id, request.last_frame_path) if mode == "keyframes" else None
-    if first_frame:
-        first_item = {"type": "image_url", "image_url": {"url": first_frame}}
-        if last_frame:
-            first_item["role"] = "first_frame"
-        content.append(first_item)
-    if last_frame:
-        content.append({"type": "image_url", "image_url": {"url": last_frame}, "role": "last_frame"})
+    if not request.first_frame_path:
+        raise MediaTransferError(
+            "MISSING_FIRST_FRAME",
+            "I2V/keyframes mode requires a first-frame asset. Select or generate a keyframe before submitting.",
+        )
+    if mode == "keyframes" and not request.last_frame_path:
+        raise MediaTransferError(
+            "MISSING_LAST_FRAME",
+            "Keyframes mode requires both first-frame and last-frame assets. Use i2v for first-frame-only generation.",
+        )
+
+    first = prepare_image_reference(
+        request.project_id,
+        request.first_frame_path,
+        target_provider="ark",
+        target_model=os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
+        role="first_frame",
+    )
+    last = (
+        prepare_image_reference(
+            request.project_id,
+            request.last_frame_path,
+            target_provider="ark",
+            target_model=os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128"),
+            role="last_frame",
+        )
+        if mode == "keyframes"
+        else None
+    )
+    if first:
+        content.append({"type": "image_url", "image_url": {"url": first.url}, "role": "first_frame"})
+    if last:
+        content.append({"type": "image_url", "image_url": {"url": last.url}, "role": "last_frame"})
     return content
 
 

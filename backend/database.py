@@ -44,7 +44,15 @@ def init_db() -> None:
         _ensure_column(conn, "projects", "archived", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "shots", "rag_evidence", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "shot_versions", "video_mode", "TEXT NOT NULL DEFAULT 't2v'")
+        _ensure_column(conn, "assets", "mime_type", "TEXT")
+        _ensure_column(conn, "assets", "byte_size", "INTEGER")
+        _ensure_column(conn, "assets", "sha256", "TEXT")
+        _ensure_column(conn, "assets", "width", "INTEGER")
+        _ensure_column(conn, "assets", "height", "INTEGER")
+        _ensure_column(conn, "assets", "source_provider", "TEXT")
+        _ensure_column(conn, "assets", "source_model", "TEXT")
         _ensure_video_tasks(conn)
+        _ensure_media_transfers(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -79,4 +87,26 @@ def _ensure_video_tasks(conn: sqlite3.Connection) -> None:
           UNIQUE(provider, remote_task_id)
         )
         """
+    )
+
+
+def _ensure_media_transfers(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS media_transfers (
+          id TEXT PRIMARY KEY,
+          asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+          target_provider TEXT NOT NULL,
+          target_model TEXT NOT NULL,
+          transfer_mode TEXT NOT NULL,
+          role TEXT NOT NULL,
+          request_reference TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_transfers_asset_target "
+        "ON media_transfers(asset_id, target_provider, target_model)"
     )

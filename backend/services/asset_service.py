@@ -1,4 +1,7 @@
 import html
+import hashlib
+import mimetypes
+import struct
 import uuid
 from pathlib import Path
 
@@ -101,3 +104,61 @@ def create_linked_asset(
             ),
         )
     return asset_id
+
+
+def persist_binary_asset(
+    project_id: str,
+    asset_type: str,
+    name: str,
+    description: str,
+    prompt: str,
+    content: bytes,
+    suffix: str,
+    source_provider: str,
+    source_model: str,
+) -> str:
+    """Store a provider result once, with media metadata for downstream use."""
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
+    filename = f"{asset_id}{normalized_suffix.lower()}"
+    file_path = project_asset_dir(project_id) / filename
+    file_path.write_bytes(content)
+    mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    width, height = _image_dimensions(content, normalized_suffix.lower())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO assets
+            (id, project_id, type, name, description, prompt, file_path, embedding_ref,
+             mime_type, byte_size, sha256, width, height, source_provider, source_model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_id, project_id, asset_type, name, description, prompt,
+                public_asset_path(project_id, filename), f"provider:{source_provider}:{source_model}",
+                mime_type, len(content), hashlib.sha256(content).hexdigest(), width, height,
+                source_provider, source_model, utc_now(),
+            ),
+        )
+    return asset_id
+
+
+def _image_dimensions(content: bytes, suffix: str) -> tuple[int | None, int | None]:
+    """Read common image dimensions without adding an image-processing dependency."""
+    if suffix == ".png" and len(content) >= 24 and content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return struct.unpack(">II", content[16:24])
+    if suffix in {".jpg", ".jpeg"} and content.startswith(b"\xff\xd8"):
+        index = 2
+        while index + 9 < len(content):
+            if content[index] != 0xFF:
+                index += 1
+                continue
+            marker = content[index + 1]
+            index += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            length = int.from_bytes(content[index : index + 2], "big")
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                return int.from_bytes(content[index + 5 : index + 7], "big"), int.from_bytes(content[index + 3 : index + 5], "big")
+            index += max(length, 2)
+    return None, None

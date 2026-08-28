@@ -2,13 +2,10 @@ from dataclasses import dataclass
 import base64
 import json
 import os
-from pathlib import Path
-import uuid
 import urllib.error
 import urllib.request
 
-from ..database import connect, utc_now
-from ..services.asset_service import create_placeholder_svg, project_asset_dir, public_asset_path
+from ..services.asset_service import create_placeholder_svg, persist_binary_asset
 
 
 @dataclass
@@ -57,11 +54,6 @@ def generate_image_asset(request: ImageAssetRequest) -> str:
     )
 
 
-def save_binary_image(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-
-
 def _generate_siliconflow_image(request: ImageAssetRequest) -> str:
     api_key = os.environ["SILICONFLOW_API_KEY"]
     base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").rstrip("/")
@@ -100,31 +92,10 @@ def _generate_siliconflow_image(request: ImageAssetRequest) -> str:
     elif "webp" in content_type:
         suffix = ".webp"
 
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
-    filename = f"{asset_id}{suffix}"
-    file_path = project_asset_dir(request.project_id) / filename
-    save_binary_image(file_path, content)
-
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO assets
-            (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                asset_id,
-                request.project_id,
-                request.asset_type,
-                request.name,
-                request.description,
-                request.prompt,
-                public_asset_path(request.project_id, filename),
-                f"provider:siliconflow:{model}",
-                utc_now(),
-            ),
-        )
-    return asset_id
+    return persist_binary_asset(
+        request.project_id, request.asset_type, request.name, request.description, request.prompt,
+        content, suffix, "siliconflow", model,
+    )
 
 
 def _generate_ark_image(request: ImageAssetRequest) -> str:
@@ -174,31 +145,10 @@ def _generate_ark_image(request: ImageAssetRequest) -> str:
     if not content:
         raise RuntimeError(f"Ark image returned no image data: {body}")
 
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
-    filename = f"{asset_id}{suffix}"
-    file_path = project_asset_dir(request.project_id) / filename
-    save_binary_image(file_path, content)
-
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO assets
-            (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                asset_id,
-                request.project_id,
-                request.asset_type,
-                request.name,
-                request.description,
-                request.prompt,
-                public_asset_path(request.project_id, filename),
-                f"provider:ark:{model}",
-                utc_now(),
-            ),
-        )
-    return asset_id
+    return persist_binary_asset(
+        request.project_id, request.asset_type, request.name, request.description, request.prompt,
+        content, suffix, "ark", model,
+    )
 
 
 def _build_image_prompt(request: ImageAssetRequest) -> str:

@@ -103,6 +103,21 @@ CREATE TABLE IF NOT EXISTS assets (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS media_transfers (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  target_provider TEXT NOT NULL,
+  target_model TEXT NOT NULL,
+  transfer_mode TEXT NOT NULL,
+  role TEXT NOT NULL,
+  request_reference TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_transfers_asset_target
+ON media_transfers(asset_id, target_provider, target_model);
+
 CREATE TABLE IF NOT EXISTS feedback_records (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
