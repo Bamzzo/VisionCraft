@@ -758,14 +758,55 @@ button:disabled {
 }
 
 .task-drawer {
-  height: 58px;
+  min-height: 58px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+.task-drawer-main {
   display: grid;
   grid-template-columns: minmax(280px, 430px) 1fr auto;
   align-items: center;
   gap: 16px;
-  padding: 10px 18px;
-  border-top: 1px solid var(--border);
-  background: #fff;
+}
+
+.task-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.job-timeline {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.job-timeline-item {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-muted);
+}
+
+.shot-job-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .progress-track {

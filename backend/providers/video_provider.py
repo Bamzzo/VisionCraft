@@ -474,6 +474,7 @@ def _download_and_record_video(
     prompt: str,
     embedding_ref: str = "provider:siliconflow",
 ) -> str:
+    _notify_job(request, status="running", progress=78, message="正在下载并登记生成视频", stage="download_result")
     video_request = urllib.request.Request(video_url, method="GET")
     with urllib.request.urlopen(video_request, timeout=180) as response:
         content = response.read()
@@ -597,7 +598,56 @@ def _upsert_video_task(
                     now,
                 ),
             )
+    _notify_job(
+        request,
+        status="running",
+        progress=36,
+        message=f"正在提交至{_provider_user_label(provider)}",
+        stage="submit_provider",
+        detail={"provider": provider, "model": model, "remote_task_id": remote_task_id},
+    )
     return task_id
+
+
+def _provider_user_label(provider: str) -> str:
+    return {
+        "ark": "火山 Seedance",
+        "volc": "火山 Seedance",
+        "dashscope": "阿里 Wan",
+        "minimax": "MiniMax H3",
+        "siliconflow": "SiliconFlow",
+    }.get(provider, provider)
+
+
+def _notify_job(
+    request: VideoAssetRequest | None,
+    *,
+    job_id: str | None = None,
+    shot_id: str | None = None,
+    status: str,
+    progress: int,
+    message: str,
+    stage: str,
+    event_type: str = "job.update",
+    detail: dict | None = None,
+    error_message: str | None = None,
+) -> None:
+    resolved_job = job_id or (request.job_id if request else None)
+    if not resolved_job:
+        return
+    from ..services.job_service import update_job
+
+    update_job(
+        resolved_job,
+        status,
+        progress,
+        message,
+        error_message,
+        shot_id=shot_id or (request.shot_id if request else None),
+        stage=stage,
+        event_type=event_type,
+        detail=detail,
+    )
 
 
 def _update_video_task(
@@ -630,6 +680,32 @@ def _update_video_task(
                 task_id,
             ),
         )
+        row = conn.execute(
+            "SELECT job_id, shot_id, provider, model FROM video_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+    if row and row["job_id"]:
+        label = _provider_user_label(row["provider"])
+        if status == "running":
+            _notify_job(
+                None,
+                job_id=row["job_id"],
+                shot_id=row["shot_id"],
+                status="running",
+                progress=55,
+                message=f"{label} 云端正在生成",
+                stage="poll_remote",
+            )
+        elif status == "pending_remote":
+            _notify_job(
+                None,
+                job_id=row["job_id"],
+                shot_id=row["shot_id"],
+                status="waiting_remote",
+                progress=92,
+                message="云端任务仍在运行，正在回查同一任务，不会重复提交或重复计费",
+                stage="waiting_remote",
+            )
 
 
 def _project_file_path(project_id: str, filename: str) -> Path:

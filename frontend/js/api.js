@@ -25,6 +25,8 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request("/api/health"),
   capabilities: () => request("/api/providers/capabilities"),
+  getJob: (jobId) => request(`/api/jobs/${jobId}`),
+  jobEvents: (projectId, afterId = 0) => request(`/api/projects/${projectId}/job-events?after_id=${afterId}`),
   diagnostics: () => request("/api/providers/diagnostics"),
   listProjects: () => request("/api/projects"),
   getProject: (id) => request(`/api/projects/${id}`),

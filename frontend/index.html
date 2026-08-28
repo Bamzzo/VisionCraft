@@ -185,14 +185,21 @@
       </main>
 
       <footer class="task-drawer">
-        <div>
-          <strong>任务队列</strong>
-          <span id="jobMessage" class="muted-text">等待任务。</span>
+        <div class="task-drawer-main">
+          <div>
+            <strong>任务中心</strong>
+            <span id="jobMessage" class="muted-text">等待任务。</span>
+            <p id="jobHint" class="muted-text job-hint"></p>
+          </div>
+          <div class="progress-track">
+            <div id="jobProgress" class="progress-bar"></div>
+          </div>
+          <div class="task-drawer-actions">
+            <span id="jobStatus" class="status-pill neutral">空闲</span>
+            <button id="jobTimelineToggle" class="secondary-btn mini-btn" type="button">时间线</button>
+          </div>
         </div>
-        <div class="progress-track">
-          <div id="jobProgress" class="progress-bar"></div>
-        </div>
-        <span id="jobStatus" class="status-pill neutral">Idle</span>
+        <div id="jobTimeline" class="job-timeline hidden"></div>
       </footer>
     </div>
 

@@ -78,7 +78,7 @@ def generate_shot_video(
     duration_seconds: int | None = None,
     version_id: str | None = None,
 ) -> None:
-    update_job(job_id, "running", 8, "Preparing shot video generation")
+    update_job(job_id, "running", 8, "正在校验镜头生成参数", shot_id=shot_id, stage="prepare")
     try:
         prepared = prepare_shot_video_generation(
             project_id,
@@ -93,7 +93,15 @@ def generate_shot_video(
         shot = prepared["shot"]
         version = prepared["version"]
 
-        update_job(job_id, "running", 24, f"Submitting {prepared['provider_label']} / {prepared['model_label']}")
+        update_job(
+            job_id,
+            "running",
+            24,
+            f"正在提交至{prepared['provider_label']}",
+            shot_id=shot_id,
+            stage="submit_provider",
+            detail={"provider": prepared["provider"], "model": prepared["model"]},
+        )
         video_path = generate_video_asset(
             VideoAssetRequest(
                 project_id=project_id,
@@ -125,8 +133,11 @@ def generate_shot_video(
                 job_id,
                 "waiting_remote",
                 92,
-                f"Seedance cloud task is still running: {video_path.remote_task_id}",
+                "云端任务仍在运行，正在回查同一任务，不会重复提交或重复计费",
                 video_path.message,
+                shot_id=shot_id,
+                stage="waiting_remote",
+                detail={"remote_task_id": video_path.remote_task_id, "provider": video_path.provider},
             )
             return
         with connect() as conn:
@@ -135,14 +146,23 @@ def generate_shot_video(
                 (project_id, video_path.video_path),
             ).fetchone()
         source = asset["embedding_ref"] if asset else "unknown"
-        update_job(job_id, "completed", 100, f"Video ready ({source}): {video_path.video_path}")
+        update_job(
+            job_id,
+            "completed",
+            100,
+            "视频已生成，可在镜头卡片中预览",
+            shot_id=shot_id,
+            stage="persist_asset",
+            event_type="asset.ready",
+            detail={"source": source, "asset_path": video_path.video_path, "provider": video_path.provider, "model": video_path.model},
+        )
     except Exception as exc:
         with connect() as conn:
             conn.execute(
                 "UPDATE shots SET status = ?, updated_at = ? WHERE id = ? AND project_id = ?",
                 ("video_failed", utc_now(), shot_id, project_id),
             )
-        update_job(job_id, "failed", 100, "Video generation failed", str(exc))
+        update_job(job_id, "failed", 100, "视频生成失败", str(exc), shot_id=shot_id, stage="failed")
 
 
 def safe_retry_shot_video(project_id: str, shot_id: str, job_id: str) -> None:
@@ -371,7 +391,7 @@ def generate_project_videos(project_id: str, job_id: str) -> None:
 
 
 def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
-    update_job(job_id, "running", 8, "Checking Seedance cloud tasks")
+    update_job(job_id, "running", 8, "正在回查同一云端任务，不会重复提交或重复计费", stage="poll_remote")
     try:
         with connect() as conn:
             rows = conn.execute(
@@ -401,7 +421,7 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
                         (project_id,),
                     ).fetchall()
             if not rows:
-                update_job(job_id, "completed", 100, "No pending Seedance cloud tasks")
+                update_job(job_id, "completed", 100, "没有待回查的云端任务", stage="completed")
                 return
 
         completed: list[str] = []
@@ -409,7 +429,14 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
         failed: list[str] = []
         total = len(rows)
         for index, row in enumerate(rows, start=1):
-            update_job(job_id, "running", 10 + int((index - 1) / total * 80), f"Checking {index}/{total}: {row['title']}")
+            update_job(
+                job_id,
+                "running",
+                10 + int((index - 1) / total * 80),
+                f"正在回查同一云端任务：{row['title']}（不会重复提交）",
+                shot_id=row["shot_id"],
+                stage="poll_remote",
+            )
             try:
                 result = refresh_remote_video_task(row["id"])
                 if result.status == "completed":
@@ -434,21 +461,30 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
                 job_id,
                 "failed",
                 100,
-                f"Seedance task refresh finished with {len(failed)} failure(s)",
+                f"云端任务回查结束，{len(failed)} 个镜头失败",
                 "\n".join(failed),
+                stage="failed",
             )
         elif pending:
             update_job(
                 job_id,
                 "waiting_remote",
                 92,
-                f"{len(pending)} Seedance task(s) are still running",
+                "云端任务仍在运行，正在回查同一任务，不会重复提交或重复计费",
                 "\n".join(pending),
+                stage="waiting_remote",
             )
         else:
-            update_job(job_id, "completed", 100, f"Seedance refresh completed, recovered {len(completed)} video(s)")
+            update_job(
+                job_id,
+                "completed",
+                100,
+                f"云端回查完成，已恢复 {len(completed)} 个视频",
+                stage="persist_asset",
+                event_type="asset.ready",
+            )
     except Exception as exc:
-        update_job(job_id, "failed", 100, "Seedance task refresh failed", str(exc))
+        update_job(job_id, "failed", 100, "云端任务回查失败", str(exc), stage="failed")
 
 
 def _claim_legacy_remote_tasks(project_id: str, job_id: str) -> int:

@@ -90,6 +90,18 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - SSE 断线后仍能轮询恢复；页面刷新后从 SQLite 恢复任务状态。
 - 单镜头失败不会阻塞其他镜头；错误显示可理解且可执行。
 
+**状态：** 2026-08-28 已完成可验收切片（无费用验证）。
+
+**已实现：**
+
+- `job_events` 持久化任务阶段历史；`jobs` 仍是当前快照；`update_job` 统一追加事件。
+- 结构化 SSE：`snapshot`、`job.update`、`asset.ready`、`job.failed`、`project.refresh_required`，并带心跳；循环中不再完整读取项目。
+- `GET /api/projects/{id}/job-events` 作为 SSE 断线后的增量轮询入口。
+- 前端全局任务条、镜头局部状态、可展开时间线；`asset.ready` 后才刷新项目预览。
+- `waiting_remote` 仅调用既有云端查询刷新，并明确提示不会重复提交或重复计费。
+
+**技术债（不在本次重构）：** 能力矩阵的时长/比例/分辨率仍主要在 Provider 级，需补齐模型级 `supported_durations / supported_ratios / supported_resolutions`。新增代码不得回到前端硬编码模型规则。
+
 ### P3：关键帧、版本与局部重生成闭环
 
 **目标：** 用户能对单镜头做可控创作，而不必重跑整个项目。

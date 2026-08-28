@@ -53,8 +53,11 @@ def init_db() -> None:
         _ensure_column(conn, "assets", "height", "INTEGER")
         _ensure_column(conn, "assets", "source_provider", "TEXT")
         _ensure_column(conn, "assets", "source_model", "TEXT")
+        _ensure_column(conn, "jobs", "stage", "TEXT")
+        _ensure_column(conn, "jobs", "shot_id", "TEXT")
         _ensure_video_tasks(conn)
         _ensure_media_transfers(conn)
+        _ensure_job_events(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -112,3 +115,27 @@ def _ensure_media_transfers(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_media_transfers_asset_target "
         "ON media_transfers(asset_id, target_provider, target_model)"
     )
+
+
+def _ensure_job_events(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          shot_id TEXT,
+          event_type TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          status TEXT NOT NULL,
+          progress INTEGER NOT NULL DEFAULT 0,
+          message TEXT NOT NULL DEFAULT '',
+          detail_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_project_id ON job_events(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_created_at ON job_events(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_project_id_id ON job_events(project_id, id)")

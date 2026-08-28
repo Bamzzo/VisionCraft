@@ -177,6 +177,10 @@ def get_project(project_id: str) -> dict:
     result["jobs"] = [_row_to_dict(row) for row in jobs]
     result["video_tasks"] = video_task_items
     result["checkpoint"] = _row_to_dict(checkpoint) if checkpoint else None
+    from .job_service import get_recent_job_events, list_active_jobs
+
+    result["job_events"] = get_recent_job_events(project_id, limit=40)
+    result["active_jobs"] = list_active_jobs(project_id)
     return result
 
 

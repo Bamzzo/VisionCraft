@@ -30,6 +30,10 @@ function bindEvents() {
   el("retryWorkflowBtn").addEventListener("click", onRetryWorkflow);
   el("exportJsonBtn").addEventListener("click", () => exportProject("json"));
   el("exportMdBtn").addEventListener("click", () => exportProject("markdown"));
+  el("jobTimelineToggle").addEventListener("click", () => {
+    state.timelineOpen = !state.timelineOpen;
+    renderAll();
+  });
   el("shotModeInput").addEventListener("change", () => {
     el("manualShotField").classList.toggle("hidden", el("shotModeInput").value !== "manual");
   });
@@ -41,7 +45,11 @@ function bindEvents() {
     state.project = await api.getProject(item.dataset.projectId);
     state.selectedShotId = state.project.shots?.[0]?.id || null;
     state.memoryResults = [];
+    state.jobEvents = [];
+    state.lastEventId = 0;
+    state.shotProgress = {};
     renderFeedbackResult(null);
+    restoreJobObservation();
     renderAll();
   });
   el("shotGrid").addEventListener("click", (event) => {
@@ -125,6 +133,7 @@ async function loadProjects() {
     state.project = await api.getProject(state.projects[0].id);
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
+  restoreJobObservation();
 }
 
 async function onCreateProject(event) {
@@ -162,7 +171,7 @@ async function onRunWorkflow() {
     const result = await api.runProject(state.project.id);
     attachEvents();
     el("jobMessage").textContent = `任务 ${result.job_id} 已入队`;
-    await refreshProject();
+    await refreshProject({ preserveObservation: true });
   } catch (error) {
     showError(`启动失败：${error.message}`);
   }
@@ -170,51 +179,179 @@ async function onRunWorkflow() {
 
 function attachEvents() {
   if (!state.project) return;
-  if (state.eventSource) state.eventSource.close();
-  // 后端只推送简短状态，前端收到变化后重新拉取项目详情。
-  state.eventSource = new EventSource(`/api/projects/${state.project.id}/events`);
-  state.eventSource.onmessage = async () => {
-    await refreshProject();
-  };
-  state.eventSource.onerror = () => {
-    state.eventSource?.close();
-    state.eventSource = null;
-  };
-  startProjectPolling();
+  startEventStream();
+  startRemoteRefreshWatch();
 }
 
-function startProjectPolling() {
-  if (state.pollTimer) {
-    window.clearInterval(state.pollTimer);
+function startEventStream() {
+  if (!state.project) return;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
   }
-  state.pollTimer = window.setInterval(async () => {
-    if (!state.project) {
-      stopProjectPolling();
+  const source = new EventSource(`/api/projects/${state.project.id}/events?after_id=${state.lastEventId || 0}`);
+  state.eventSource = source;
+  const onEvent = async (event) => {
+    state.sseConnected = true;
+    stopEventPolling();
+    if (!event.data) return;
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
       return;
     }
-    try {
-      await refreshProject();
-      if (!hasActiveLocalJob(state.project)) {
-        stopProjectPolling();
-      }
-    } catch (error) {
-      console.warn("Project polling failed", error);
+    if (event.type === "snapshot" || payload.jobs) {
+      applyJobSnapshot(payload);
+      renderAll();
+      return;
     }
-  }, 1800);
+    await applyJobEvent(payload);
+  };
+  ["snapshot", "job.update", "asset.ready", "job.failed", "project.refresh_required"].forEach((type) => {
+    source.addEventListener(type, onEvent);
+  });
+  source.onmessage = onEvent;
+  source.onerror = () => {
+    state.sseConnected = false;
+    source.close();
+    if (state.eventSource === source) state.eventSource = null;
+    startEventPolling();
+  };
 }
 
-function stopProjectPolling() {
+function startEventPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = window.setInterval(pollJobEvents, 4000);
+  pollJobEvents();
+}
+
+function stopEventPolling() {
   if (!state.pollTimer) return;
   window.clearInterval(state.pollTimer);
   state.pollTimer = null;
 }
 
-function hasActiveLocalJob(project) {
-  const latestJob = project?.jobs?.[0];
-  return !!latestJob && ["queued", "running"].includes(latestJob.status);
+async function pollJobEvents() {
+  if (!state.project) {
+    stopEventPolling();
+    return;
+  }
+  try {
+    const snapshot = await api.jobEvents(state.project.id, state.lastEventId || 0);
+    applyJobSnapshot(snapshot);
+    for (const event of snapshot.events || []) {
+      await applyJobEvent(event, { skipRender: true });
+    }
+    renderAll();
+    if (!hasActiveJob(state.project) && !snapshot.has_waiting_remote) {
+      stopEventPolling();
+      stopRemoteRefreshWatch();
+    }
+  } catch (error) {
+    console.warn("任务事件轮询失败", error);
+  }
 }
 
-async function refreshProject() {
+function applyJobSnapshot(payload) {
+  if (!state.project || !payload) return;
+  if (payload.jobs) {
+    state.project.active_jobs = payload.jobs;
+    const byId = new Map((state.project.jobs || []).map((job) => [job.id, job]));
+    payload.jobs.forEach((job) => byId.set(job.id, { ...byId.get(job.id), ...job }));
+    state.project.jobs = [...byId.values()].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  }
+}
+
+async function applyJobEvent(event, options = {}) {
+  if (!event || event.id == null) return;
+  const eventId = Number(event.id);
+  if (Number.isFinite(eventId)) {
+    if (state.jobEvents.some((item) => Number(item.id) === eventId)) return;
+    state.lastEventId = Math.max(state.lastEventId, eventId);
+  }
+  state.jobEvents = [...state.jobEvents, event].sort((a, b) => Number(a.id) - Number(b.id));
+  if (event.shot_id) state.shotProgress[event.shot_id] = event;
+  if (state.project) {
+    const jobs = [...(state.project.jobs || [])];
+    const index = jobs.findIndex((job) => job.id === event.job_id);
+    const snapshot = {
+      id: event.job_id,
+      project_id: event.project_id,
+      status: event.status,
+      progress: event.progress,
+      message: event.message,
+      stage: event.stage,
+      shot_id: event.shot_id,
+      updated_at: event.created_at,
+    };
+    if (index >= 0) jobs[index] = { ...jobs[index], ...snapshot };
+    else jobs.unshift(snapshot);
+    state.project.jobs = jobs;
+  }
+  const shouldRefreshProject = ["asset.ready", "project.refresh_required", "job.failed"].includes(event.event_type);
+  if (shouldRefreshProject) {
+    await refreshProject({ preserveObservation: true });
+    return;
+  }
+  if (!options.skipRender) renderAll();
+}
+
+function startRemoteRefreshWatch() {
+  if (state.remoteRefreshTimer) return;
+  state.remoteRefreshTimer = window.setInterval(maybeRefreshRemoteTasks, 25000);
+}
+
+function stopRemoteRefreshWatch() {
+  if (!state.remoteRefreshTimer) return;
+  window.clearInterval(state.remoteRefreshTimer);
+  state.remoteRefreshTimer = null;
+}
+
+async function maybeRefreshRemoteTasks() {
+  if (!state.project || state.refreshInFlight || !hasWaitingRemote(state.project)) return;
+  const refreshBusy = (state.project.jobs || []).some(
+    (job) => job.type === "video_task_refresh" && ["queued", "running"].includes(job.status)
+  );
+  if (refreshBusy) return;
+  try {
+    state.refreshInFlight = true;
+    await api.refreshVideoTasks(state.project.id);
+  } catch (error) {
+    console.warn("云端任务回查失败", error);
+  } finally {
+    state.refreshInFlight = false;
+  }
+}
+
+function hasActiveJob(project) {
+  const jobs = project?.active_jobs?.length ? project.active_jobs : project?.jobs || [];
+  return jobs.some((job) => ["queued", "running", "waiting_remote", "paused"].includes(job.status));
+}
+
+function hasWaitingRemote(project) {
+  if ((project?.active_jobs || []).some((job) => job.status === "waiting_remote")) return true;
+  return (project?.shots || []).some(
+    (shot) =>
+      ["video_waiting_remote", "video_running"].includes(shot.status) ||
+      ["running", "pending_remote"].includes(shot.active_video_task?.status)
+  );
+}
+
+function restoreJobObservation() {
+  if (!state.project) return;
+  const events = state.project.job_events || [];
+  state.jobEvents = events;
+  state.lastEventId = events.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
+  events.forEach((event) => {
+    if (event.shot_id) state.shotProgress[event.shot_id] = event;
+  });
+  if (hasActiveJob(state.project) || hasWaitingRemote(state.project)) {
+    attachEvents();
+  }
+}
+
+async function refreshProject(options = {}) {
   if (!state.project) return;
   state.project = await api.getProject(state.project.id);
   state.diagnostics = await api.diagnostics();
@@ -222,7 +359,19 @@ async function refreshProject() {
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
   state.projects = await api.listProjects();
+  const incoming = state.project.job_events || [];
+  incoming.forEach((event) => {
+    if (!state.jobEvents.some((item) => Number(item.id) === Number(event.id))) {
+      state.jobEvents.push(event);
+    }
+    if (event.shot_id) state.shotProgress[event.shot_id] = event;
+    state.lastEventId = Math.max(state.lastEventId, Number(event.id) || 0);
+  });
+  state.jobEvents.sort((a, b) => Number(a.id) - Number(b.id));
   renderAll();
+  if (!options.preserveObservation && (hasActiveJob(state.project) || hasWaitingRemote(state.project))) {
+    attachEvents();
+  }
 }
 
 async function onSendFeedback() {
@@ -463,7 +612,10 @@ async function onDeleteProject() {
     state.project = null;
     state.selectedShotId = null;
     state.memoryResults = [];
-    stopProjectPolling();
+    state.eventSource?.close();
+    state.eventSource = null;
+    stopEventPolling();
+    stopRemoteRefreshWatch();
     await loadProjects();
     renderFeedbackResult(null);
     renderAll();

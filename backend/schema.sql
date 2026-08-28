@@ -142,9 +142,30 @@ CREATE TABLE IF NOT EXISTS jobs (
   message TEXT NOT NULL DEFAULT '',
   retry_count INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
+  stage TEXT,
+  shot_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS job_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  shot_id TEXT,
+  event_type TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT NOT NULL DEFAULT '',
+  detail_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_events_project_id ON job_events(project_id);
+CREATE INDEX IF NOT EXISTS idx_job_events_created_at ON job_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_job_events_project_id_id ON job_events(project_id, id);
 
 CREATE TABLE IF NOT EXISTS video_tasks (
   id TEXT PRIMARY KEY,

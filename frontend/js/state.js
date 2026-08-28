@@ -8,6 +8,13 @@ export const state = {
   pollTimer: null,
   memoryResults: [],
   videoDraft: null,
+  jobEvents: [],
+  lastEventId: 0,
+  shotProgress: {},
+  sseConnected: false,
+  timelineOpen: false,
+  remoteRefreshTimer: null,
+  refreshInFlight: false,
 };
 
 export const agents = [

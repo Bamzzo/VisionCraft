@@ -1,19 +1,19 @@
 import asyncio
 import json
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import FRONTEND_DIR, PROJECTS_DIR, init_environment
-from .database import init_db
+from .database import connect, init_db
 from .providers.capabilities import CapabilityError, get_provider_capabilities, get_provider_diagnostics
 from .providers.llm_provider import live_llm_available
 from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, VideoGenerateRequest
 from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
-from .services.job_service import create_job, get_job
+from .services.job_service import create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects, rollback_shot_version
@@ -79,7 +79,7 @@ def delete_project_endpoint(project_id: str) -> dict:
 def run_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow", "Workflow queued")
+    job_id = create_job(project_id, "full_workflow", "改编流程已排队")
     background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -100,7 +100,7 @@ def resume_project_endpoint(project_id: str, background_tasks: BackgroundTasks) 
 def retry_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "full_workflow_retry", "Workflow retry queued")
+    job_id = create_job(project_id, "full_workflow_retry", "改编流程重试已排队")
     background_tasks.add_task(run_langgraph_workflow, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -113,32 +113,58 @@ def get_job_endpoint(job_id: str) -> dict:
     return job
 
 
-@app.get("/api/projects/{project_id}/events")
-async def project_events(project_id: str) -> StreamingResponse:
-    async def event_stream():
-        last_payload = ""
-        for _ in range(240):
-            project = get_project(project_id)
-            if not project:
-                yield "event: error\ndata: {\"message\":\"Project not found\"}\n\n"
-                return
-            jobs = project.get("jobs", [])
-            payload = json.dumps(
-                {
-                    "status": project["status"],
-                    "job": jobs[0] if jobs else None,
-                    "shot_count": len(project.get("shots", [])),
-                },
-                ensure_ascii=False,
-            )
-            if payload != last_payload:
-                yield f"data: {payload}\n\n"
-                last_payload = payload
-            if jobs and jobs[0]["status"] in {"completed", "failed", "waiting_remote"}:
-                return
-            await asyncio.sleep(1)
+@app.get("/api/projects/{project_id}/job-events")
+def list_project_job_events(
+    project_id: str,
+    after_id: int = Query(default=0, ge=0),
+    job_id: str | None = Query(default=None),
+) -> dict:
+    if not _project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    snapshot = job_center_snapshot(project_id, after_id=after_id)
+    if job_id:
+        snapshot["events"] = get_job_events(project_id, after_id=after_id, job_id=job_id)
+    return snapshot
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/api/projects/{project_id}/events")
+async def project_events(
+    project_id: str,
+    after_id: int = Query(default=0, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    if not _project_exists(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    cursor = after_id
+    if last_event_id and last_event_id.isdigit():
+        cursor = max(cursor, int(last_event_id))
+
+    async def event_stream():
+        last_id = cursor
+        snapshot_sent = False
+        for _ in range(3600):
+            if not _project_exists(project_id):
+                yield "event: error\ndata: {\"message\":\"项目不存在\"}\n\n"
+                return
+            if not snapshot_sent:
+                jobs = list_active_jobs(project_id)
+                payload = json.dumps({"project_id": project_id, "jobs": jobs}, ensure_ascii=False)
+                yield f"event: snapshot\ndata: {payload}\n\n"
+                snapshot_sent = True
+            events = get_job_events(project_id, after_id=last_id)
+            if events:
+                for event in events:
+                    yield format_sse(event)
+                    last_id = event["id"]
+            else:
+                yield ": ping\n\n"
+            await asyncio.sleep(0.8)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/feedback")
@@ -206,6 +232,7 @@ def generate_video_endpoint(
         project_id,
         "video_generation",
         f"{prepared['provider_label']} / {prepared['model_label']} 已排队",
+        shot_id=shot_id,
     )
     background_tasks.add_task(
         generate_shot_video,
@@ -235,7 +262,7 @@ def safe_retry_video_endpoint(project_id: str, shot_id: str, background_tasks: B
         raise HTTPException(status_code=404, detail="Project not found")
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
-    job_id = create_job(project_id, "video_safety_retry", "Safe video retry queued")
+    job_id = create_job(project_id, "video_safety_retry", "安全改写重试已排队", shot_id=shot_id)
     background_tasks.add_task(safe_retry_shot_video, project_id, shot_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -247,7 +274,7 @@ def generate_all_videos_endpoint(project_id: str, background_tasks: BackgroundTa
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.get("shots"):
         raise HTTPException(status_code=400, detail="No shots available")
-    job_id = create_job(project_id, "batch_video_generation", "Batch video generation queued")
+    job_id = create_job(project_id, "batch_video_generation", "批量视频生成已排队")
     background_tasks.add_task(generate_project_videos, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -257,7 +284,7 @@ def refresh_video_tasks_endpoint(project_id: str, background_tasks: BackgroundTa
     project = get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "video_task_refresh", "Seedance cloud task refresh queued")
+    job_id = create_job(project_id, "video_task_refresh", "正在回查同一云端任务，不会重复提交或重复计费")
     background_tasks.add_task(refresh_project_video_tasks, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -269,7 +296,7 @@ def assemble_video_endpoint(project_id: str, background_tasks: BackgroundTasks) 
         raise HTTPException(status_code=404, detail="Project not found")
     if not project.get("shots"):
         raise HTTPException(status_code=400, detail="No shots available")
-    job_id = create_job(project_id, "sequence_assembly", "Sequence assembly queued")
+    job_id = create_job(project_id, "sequence_assembly", "成片合成已排队")
     background_tasks.add_task(assemble_project_video, project_id, job_id)
     return {"job_id": job_id, "status": "queued"}
 
@@ -312,6 +339,12 @@ def export_markdown(project_id: str) -> PlainTextResponse:
     if not markdown:
         raise HTTPException(status_code=404, detail="Project not found")
     return PlainTextResponse(markdown, media_type="text/markdown; charset=utf-8")
+
+
+def _project_exists(project_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone()
+    return row is not None
 
 
 if FRONTEND_DIR.exists():

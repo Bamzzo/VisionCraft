@@ -302,6 +302,7 @@ function renderShots() {
           <strong>${escapeHtml(shot.title)}</strong>
           <span class="status-pill ${statusClass(videoStatus)}">${escapeHtml(videoStatus)}</span>
         </div>
+        ${shotProgressHtml(shot)}
         <p class="shot-description">${escapeHtml(shot.description)}</p>
       </button>`;
     })
@@ -365,6 +366,7 @@ function renderInspector() {
           <span class="tag">v${escapeHtml(version.version_number)}</span>
         </div>
         <p class="muted-text">来源关键帧：${escapeHtml(frameStatusLabel(version))}</p>
+        ${shotProgressHtml(shot)}
       </div>`
     : "";
   const keyframeControl = `<div class="prompt-block keyframe-control">
@@ -428,7 +430,7 @@ function renderInspector() {
       ? `<div class="video-shell"><video class="video-preview" src="${escapeHtml(version.video_path)}" controls playsinline></video>${renderMediaBadge(videoAsset || version.video_path)}</div>${generateButton}`
       : `<div class="video-placeholder danger-placeholder">该片段是静帧占位视频，不能作为正式视频或成片素材。请重新生成真实视频。</div>${generateButton}`
     : waitingRemote
-    ? `<div class="video-placeholder">云端仍在生成，稍后可回查同一个任务，不会重新提交。</div><button class="secondary-btn full-width" data-action="refresh-video-tasks">立即刷新云端任务</button>`
+    ? `<div class="video-placeholder">云端仍在生成。正在回查同一云端任务，不会重复提交或重复计费。</div><button class="secondary-btn full-width" data-action="refresh-video-tasks">立即刷新云端任务</button>`
     : generateButton;
   const evidence = shot.rag_evidence || [];
   const evidenceBlock = evidence.length
@@ -628,12 +630,69 @@ function renderAssetCard(item) {
 }
 
 function renderJob() {
-  const job = state.project?.jobs?.[0];
-  const error = job?.error_message ? `｜${job.error_message}` : "";
-  el("jobMessage").textContent = `${job?.message || "等待任务。"}${error}`;
-  el("jobStatus").textContent = job?.status || "Idle";
-  el("jobStatus").className = `status-pill ${statusClass(job?.status || "idle")}`;
-  el("jobProgress").style.width = `${job?.progress || 0}%`;
+  const job = (state.project?.active_jobs || [])[0] || state.project?.jobs?.[0];
+  const latest = state.jobEvents[state.jobEvents.length - 1];
+  const message = latest?.message || job?.message || "等待任务。";
+  const status = latest?.status || job?.status || "idle";
+  const progress = latest?.progress ?? job?.progress ?? 0;
+  const waiting = status === "waiting_remote" || hasWaitingHint(status);
+  el("jobMessage").textContent = message;
+  el("jobHint").textContent = waiting
+    ? "正在回查同一云端任务，不会重复提交或重复计费。"
+    : state.sseConnected
+      ? "实时更新已连接。"
+      : hasActiveHint(status)
+        ? "实时通道断开，正在用低频轮询恢复任务状态。"
+        : "";
+  el("jobStatus").textContent = statusLabel(status);
+  el("jobStatus").className = `status-pill ${statusClass(status)}`;
+  el("jobProgress").style.width = `${progress || 0}%`;
+  const timeline = el("jobTimeline");
+  const toggle = el("jobTimelineToggle");
+  if (!timeline || !toggle) return;
+  toggle.textContent = state.timelineOpen ? "收起时间线" : "时间线";
+  timeline.classList.toggle("hidden", !state.timelineOpen);
+  const events = [...state.jobEvents].slice(-20).reverse();
+  timeline.innerHTML = events.length
+    ? events
+        .map(
+          (item) => `<div class="job-timeline-item">
+            <span class="tag">${escapeHtml(item.stage || item.status)}</span>
+            <span>${escapeHtml(item.message)}</span>
+            <span class="muted-text">${escapeHtml(item.progress ?? 0)}%</span>
+          </div>`
+        )
+        .join("")
+    : `<div class="muted-text">暂无任务事件。</div>`;
+}
+
+function shotProgressHtml(shot) {
+  const event = state.shotProgress[shot.id];
+  if (!event) return "";
+  const provider = event.detail?.provider || "";
+  return `<p class="shot-job-status">${escapeHtml(event.message || "")}${provider ? ` · ${escapeHtml(provider)}` : ""} · ${escapeHtml(event.progress ?? 0)}%</p>`;
+}
+
+function statusLabel(status) {
+  return (
+    {
+      idle: "空闲",
+      queued: "已排队",
+      running: "处理中",
+      waiting_remote: "等待云端",
+      paused: "已暂停",
+      completed: "已完成",
+      failed: "失败",
+    }[status] || status
+  );
+}
+
+function hasWaitingHint(status) {
+  return status === "waiting_remote";
+}
+
+function hasActiveHint(status) {
+  return ["queued", "running", "waiting_remote", "paused"].includes(status);
 }
 
 export function renderFeedbackResult(result) {
