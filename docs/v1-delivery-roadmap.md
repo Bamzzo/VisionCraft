@@ -43,6 +43,17 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **目标：** 用户在每个镜头中选择生成方式、Provider 和模型；系统只显示有效组合。
 
+**状态：** 2026-08-28 已完成可验收切片（无费用验证）。
+
+**已实现：**
+
+- `/api/providers/capabilities` 统一返回 `supported_modes`、模型列表、时长/比例/分辨率，以及 `mode_requirements`。
+- `POST /api/projects/{id}/shots/{shotId}/video` 接受 `{ video_mode, provider, model, duration_seconds }`；请求级选择优先于环境默认值。
+- 后端用同一能力矩阵校验：无首帧不能 I2V，无尾帧不能首尾帧，不支持的模式/时长/比例直接 400，不提交云端任务。
+- 切换 Provider/模型会新建 `shot_version`，旧视频和旧版本保留。
+- 镜头检查器按能力矩阵过滤选项，并展示 Provider、模型、模式、时长、分辨率和关键帧来源。
+- 无费用测试：`tools/test_provider_capabilities.py`。
+
 **开发内容：**
 
 - 扩展前端 API：`generateVideo(projectId, shotId, { video_mode, provider, model })`。

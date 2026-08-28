@@ -4,10 +4,68 @@ from pathlib import Path
 
 from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
+from ..providers.capabilities import validate_video_generation
 from ..providers.llm_provider import rewrite_video_prompt_for_safety
 from ..providers.video_provider import VideoAssetRequest, generate_video_asset, refresh_remote_video_task
 from ..services.job_service import update_job
 from ..services.asset_service import public_asset_path
+
+
+def prepare_shot_video_generation(
+    project_id: str,
+    shot_id: str,
+    video_mode: str = "t2v",
+    provider: str | None = None,
+    model: str | None = None,
+    duration_seconds: int | None = None,
+    version_id: str | None = None,
+) -> dict:
+    with connect() as conn:
+        project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        shot = conn.execute("SELECT * FROM shots WHERE id = ? AND project_id = ?", (shot_id, project_id)).fetchone()
+        if not project or not shot:
+            raise RuntimeError("Project or shot not found")
+        version = conn.execute(
+            "SELECT * FROM shot_versions WHERE id = ?",
+            (version_id or shot["current_version_id"],),
+        ).fetchone()
+        if not version:
+            raise RuntimeError("Current shot version not found")
+        task_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM video_tasks WHERE version_id = ?",
+            (version["id"],),
+        ).fetchone()["n"]
+        version = dict(version)
+        project = dict(project)
+        shot = dict(shot)
+
+    plan = validate_video_generation(
+        provider=provider,
+        model=model,
+        video_mode=_safe_video_mode(video_mode),
+        duration_seconds=duration_seconds or project["duration_seconds"],
+        aspect_ratio=project["aspect_ratio"],
+        first_frame_path=version["first_frame_path"],
+        last_frame_path=version["last_frame_path"],
+    )
+    same_spec = (
+        (version["video_mode"] or "t2v") == plan["video_mode"]
+        and (version["provider"] or "") == plan["provider"]
+        and (version["model"] or "") == plan["model"]
+    )
+    already_targeted = bool(version["provider"] or version["model"])
+    should_fork = bool(version["video_path"]) or task_count > 0 or (already_targeted and not same_spec)
+    if should_fork:
+        version = _fork_generation_version(project_id, shot, dict(version), plan)
+    else:
+        version = _stamp_generation_version(dict(version), plan)
+    return {
+        **plan,
+        "project": dict(project),
+        "shot": dict(shot),
+        "version": version,
+        "version_id": version["id"],
+    }
 
 
 def generate_shot_video(
@@ -17,41 +75,25 @@ def generate_shot_video(
     video_mode: str = "t2v",
     provider: str | None = None,
     model: str | None = None,
+    duration_seconds: int | None = None,
+    version_id: str | None = None,
 ) -> None:
     update_job(job_id, "running", 8, "Preparing shot video generation")
     try:
-        with connect() as conn:
-            project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-            shot = conn.execute("SELECT * FROM shots WHERE id = ? AND project_id = ?", (shot_id, project_id)).fetchone()
-            if not project or not shot:
-                raise RuntimeError("Project or shot not found")
-            version = conn.execute(
-                "SELECT * FROM shot_versions WHERE id = ?",
-                (shot["current_version_id"],),
-            ).fetchone()
-            if not version:
-                raise RuntimeError("Current shot version not found")
-            video_asset = conn.execute(
-                "SELECT embedding_ref FROM assets WHERE project_id = ? AND file_path = ?",
-                (project_id, version["video_path"]),
-            ).fetchone()
-            # 旧测试可能留下静态图拼接的视频，生成前先清理，避免误判为真实片段。
-            if version["video_path"] and not _is_real_shot_video(video_asset["embedding_ref"] if video_asset else None):
-                conn.execute("UPDATE shot_versions SET video_path = ? WHERE id = ?", (None, version["id"]))
-                conn.execute(
-                    "UPDATE shots SET status = ?, updated_at = ? WHERE id = ?",
-                    ("keyframes_ready", utc_now(), shot_id),
-                )
-                version = dict(version)
-                version["video_path"] = None
-            conn.execute(
-                "UPDATE shot_versions SET video_mode = ? WHERE id = ?",
-                (_safe_video_mode(video_mode), version["id"]),
-            )
-            version = dict(version)
-            version["video_mode"] = _safe_video_mode(video_mode)
+        prepared = prepare_shot_video_generation(
+            project_id,
+            shot_id,
+            video_mode=video_mode,
+            provider=provider,
+            model=model,
+            duration_seconds=duration_seconds,
+            version_id=version_id,
+        )
+        project = prepared["project"]
+        shot = prepared["shot"]
+        version = prepared["version"]
 
-        update_job(job_id, "running", 24, "Submitting video generation task")
+        update_job(job_id, "running", 24, f"Submitting {prepared['provider_label']} / {prepared['model_label']}")
         video_path = generate_video_asset(
             VideoAssetRequest(
                 project_id=project_id,
@@ -64,12 +106,12 @@ def generate_shot_video(
                 last_frame_path=version["last_frame_path"],
                 negative_prompt=version["negative_prompt"] or shot["negative_prompt"],
                 audio_prompt=version["audio_prompt"] or shot["audio_prompt"],
-                video_mode=version["video_mode"],
-                duration_seconds=project["duration_seconds"],
+                video_mode=prepared["video_mode"],
+                duration_seconds=prepared["duration_seconds"],
                 aspect_ratio=project["aspect_ratio"],
                 job_id=job_id,
-                provider_override=provider,
-                model_override=model,
+                provider_override=prepared["provider"],
+                model_override=prepared["model"],
             )
         )
         if video_path.status == "pending_remote":
@@ -590,3 +632,82 @@ def _is_real_shot_video(embedding_ref: str | None) -> bool:
 def _safe_video_mode(video_mode: str | None) -> str:
     mode = (video_mode or "t2v").lower()
     return mode if mode in {"t2v", "i2v", "keyframes"} else "t2v"
+
+
+def _stamp_generation_version(version: dict, plan: dict) -> dict:
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE shot_versions
+            SET video_mode = ?, provider = ?, model = ?
+            WHERE id = ?
+            """,
+            (plan["video_mode"], plan["provider"], plan["model"], version["id"]),
+        )
+        conn.execute(
+            "UPDATE shots SET status = ?, updated_at = ? WHERE id = ?",
+            ("video_running", now, version["shot_id"]),
+        )
+    version["video_mode"] = plan["video_mode"]
+    version["provider"] = plan["provider"]
+    version["model"] = plan["model"]
+    return version
+
+
+def _fork_generation_version(project_id: str, shot: dict, version: dict, plan: dict) -> dict:
+    now = utc_now()
+    version_id = f"version_{uuid.uuid4().hex[:10]}"
+    with connect() as conn:
+        version_number = conn.execute(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version FROM shot_versions WHERE shot_id = ?",
+            (shot["id"],),
+        ).fetchone()["next_version"]
+        conn.execute(
+            """
+            INSERT INTO shot_versions
+            (id, shot_id, version_number, description, visual_prompt, negative_prompt, audio_prompt,
+             first_frame_path, last_frame_path, video_path, video_mode, provider, model, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                shot["id"],
+                version_number,
+                version["description"] or shot["description"],
+                version["visual_prompt"] or shot["visual_prompt"],
+                version["negative_prompt"] or shot["negative_prompt"],
+                version["audio_prompt"] or shot["audio_prompt"],
+                version["first_frame_path"],
+                version["last_frame_path"],
+                None,
+                plan["video_mode"],
+                plan["provider"],
+                plan["model"],
+                "video_generation",
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE shots
+            SET status = ?, current_version_id = ?, retry_count = retry_count + 1, updated_at = ?
+            WHERE id = ? AND project_id = ?
+            """,
+            ("video_running", version_id, now, shot["id"], project_id),
+        )
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, project_id))
+    forked = dict(version)
+    forked.update(
+        {
+            "id": version_id,
+            "version_number": version_number,
+            "video_path": None,
+            "video_mode": plan["video_mode"],
+            "provider": plan["provider"],
+            "model": plan["model"],
+            "created_by": "video_generation",
+            "created_at": now,
+        }
+    )
+    return forked

@@ -22,6 +22,7 @@ class VideoGenerateRequest(BaseModel):
     video_mode: Literal["t2v", "i2v", "keyframes"] = "t2v"
     provider: str | None = Field(default=None, max_length=40)
     model: str | None = Field(default=None, max_length=120)
+    duration_seconds: int | None = Field(default=None, ge=1, le=30)
 
 
 class KeyframeSelectRequest(BaseModel):

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import FRONTEND_DIR, PROJECTS_DIR, init_environment
 from .database import init_db
-from .providers.capabilities import get_provider_capabilities, get_provider_diagnostics
+from .providers.capabilities import CapabilityError, get_provider_capabilities, get_provider_diagnostics
 from .providers.llm_provider import live_llm_available
 from .schemas import DemoCleanupRequest, FeedbackCreate, KeyframeRedrawRequest, KeyframeSelectRequest, ProjectCreate, VideoGenerateRequest
 from .services.export_service import build_markdown
@@ -17,7 +17,7 @@ from .services.job_service import create_job, get_job
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects, rollback_shot_version
-from .services.video_service import assemble_project_video, generate_project_videos, generate_shot_video, refresh_project_video_tasks, safe_retry_shot_video
+from .services.video_service import assemble_project_video, generate_project_videos, generate_shot_video, prepare_shot_video_generation, refresh_project_video_tasks, safe_retry_shot_video
 from .services.checkpoint_service import get_paused_checkpoint
 from .workflow.langgraph_workflow import resume_langgraph_workflow, run_langgraph_workflow
 
@@ -188,18 +188,44 @@ def generate_video_endpoint(
         raise HTTPException(status_code=404, detail="Project not found")
     if not any(shot["id"] == shot_id for shot in project.get("shots", [])):
         raise HTTPException(status_code=404, detail="Shot not found")
-    job_id = create_job(project_id, "video_generation", "Video generation queued")
     request_payload = payload or VideoGenerateRequest()
+    try:
+        prepared = prepare_shot_video_generation(
+            project_id,
+            shot_id,
+            video_mode=request_payload.video_mode,
+            provider=request_payload.provider,
+            model=request_payload.model,
+            duration_seconds=request_payload.duration_seconds,
+        )
+    except CapabilityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_id = create_job(
+        project_id,
+        "video_generation",
+        f"{prepared['provider_label']} / {prepared['model_label']} 已排队",
+    )
     background_tasks.add_task(
         generate_shot_video,
         project_id,
         shot_id,
         job_id,
-        request_payload.video_mode,
-        request_payload.provider,
-        request_payload.model,
+        prepared["video_mode"],
+        prepared["provider"],
+        prepared["model"],
+        prepared["duration_seconds"],
+        prepared["version_id"],
     )
-    return {"job_id": job_id, "status": "queued"}
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "provider": prepared["provider"],
+        "model": prepared["model"],
+        "video_mode": prepared["video_mode"],
+        "version_id": prepared["version_id"],
+    }
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/video/safe-retry")

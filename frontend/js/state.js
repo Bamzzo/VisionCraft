@@ -7,6 +7,7 @@ export const state = {
   eventSource: null,
   pollTimer: null,
   memoryResults: [],
+  videoDraft: null,
 };
 
 export const agents = [
@@ -26,4 +27,9 @@ export function selectedShot() {
 export function latestVersion(shot) {
   if (!shot || !shot.versions || shot.versions.length === 0) return null;
   return shot.versions[0];
+}
+
+export function currentVersion(shot) {
+  if (!shot || !shot.versions || shot.versions.length === 0) return null;
+  return shot.versions.find((item) => item.id === shot.current_version_id) || latestVersion(shot);
 }

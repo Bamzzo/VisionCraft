@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { renderAll, renderCapabilities, renderFeedbackResult } from "./render.js";
+import { renderAll, renderCapabilities, renderFeedbackResult, currentVideoDraftPayload } from "./render.js";
 import { selectedShot, state } from "./state.js";
 
 const el = (id) => document.getElementById(id);
@@ -23,6 +23,7 @@ function bindEvents() {
   el("sendFeedbackBtn").addEventListener("click", onSendFeedback);
   el("memorySearchBtn").addEventListener("click", onSearchMemory);
   el("shotInspector").addEventListener("click", onInspectorClick);
+  el("shotInspector").addEventListener("change", onInspectorChange);
   el("generateAllVideosBtn").addEventListener("click", onGenerateAllVideos);
   el("assembleProjectBtn").addEventListener("click", onAssembleProject);
   el("resumeWorkflowBtn").addEventListener("click", onResumeWorkflow);
@@ -47,6 +48,7 @@ function bindEvents() {
     const item = event.target.closest("[data-shot-id]");
     if (!item) return;
     state.selectedShotId = item.dataset.shotId;
+    state.videoDraft = null;
     renderAll();
   });
 }
@@ -249,6 +251,26 @@ async function onSearchMemory() {
   }
 }
 
+function onInspectorChange(event) {
+  const target = event.target;
+  if (!target || !["videoModeSelect", "videoProviderSelect", "videoModelSelect", "videoDurationSelect"].includes(target.id)) {
+    return;
+  }
+  const shot = selectedShot();
+  if (!shot) return;
+  state.videoDraft = {
+    shotId: shot.id,
+    video_mode: document.getElementById("videoModeSelect")?.value || "t2v",
+    provider: document.getElementById("videoProviderSelect")?.value || "",
+    model: document.getElementById("videoModelSelect")?.value || "",
+    duration_seconds: Number(document.getElementById("videoDurationSelect")?.value || state.project?.duration_seconds || 5),
+  };
+  if (target.id === "videoModeSelect" || target.id === "videoProviderSelect") {
+    state.videoDraft.model = "";
+  }
+  renderAll();
+}
+
 async function onInspectorClick(event) {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
@@ -279,8 +301,7 @@ async function onInspectorClick(event) {
   try {
     trigger.disabled = true;
     trigger.textContent = "视频任务已提交";
-    const videoMode = document.getElementById("videoModeSelect")?.value || "t2v";
-    const result = await api.generateVideo(state.project.id, shot.id, videoMode);
+    const result = await api.generateVideo(state.project.id, shot.id, currentVideoDraftPayload());
     attachEvents();
     el("jobMessage").textContent = `视频任务 ${result.job_id} 已入队`;
     await refreshProject();

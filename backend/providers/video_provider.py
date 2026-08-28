@@ -49,11 +49,17 @@ class VideoGenerationResult:
 
 
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
+    from .capabilities import normalize_video_provider
+
     failure_reasons: list[str] = []
-    provider = (request.provider_override or os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow")).lower()
-    providers = [provider] if provider in {"siliconflow", "ark", "volc", "dashscope", "minimax"} else ["siliconflow", "ark"]
-    if provider == "siliconflow":
-        providers.append("ark")
+    explicit = bool(request.provider_override)
+    provider = normalize_video_provider(request.provider_override) or os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow").lower()
+    if explicit:
+        providers = [provider]
+    else:
+        providers = [provider] if provider in {"siliconflow", "ark", "volc", "dashscope", "minimax"} else ["siliconflow", "ark"]
+        if provider == "siliconflow":
+            providers.append("ark")
 
     attempted = False
     for candidate in dict.fromkeys(providers):
@@ -73,6 +79,8 @@ def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
         except Exception as exc:
             failure_reasons.append(f"{candidate}: {_compact_error(exc)}")
     if not attempted:
+        if explicit:
+            raise RuntimeError(f"指定的视频 Provider 未配置或不可用：{provider}")
         raise RuntimeError("No live video provider configured. Refusing to create placeholder still-video output.")
     raise RuntimeError("All live video providers failed. " + " | ".join(failure_reasons))
 

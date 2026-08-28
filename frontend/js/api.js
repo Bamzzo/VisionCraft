@@ -68,11 +68,11 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ target }),
     }),
-  generateVideo: (projectId, shotId, videoMode = "t2v") =>
+  generateVideo: (projectId, shotId, payload = {}) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video`, {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ video_mode: videoMode }),
+      body: JSON.stringify(typeof payload === "string" ? { video_mode: payload } : payload),
     }),
   safeRetryVideo: (projectId, shotId) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video/safe-retry`, {

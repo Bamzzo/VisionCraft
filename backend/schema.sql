@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS shot_versions (
   last_frame_path TEXT,
   video_path TEXT,
   video_mode TEXT NOT NULL DEFAULT 't2v',
+  provider TEXT,
+  model TEXT,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );

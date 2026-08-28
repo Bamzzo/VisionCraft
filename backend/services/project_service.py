@@ -152,14 +152,19 @@ def get_project(project_id: str) -> dict:
     result["characters"] = [_row_to_dict(row) for row in characters]
     result["scenes"] = [_row_to_dict(row) for row in scenes]
     result["global_constraints"] = [_row_to_dict(row) for row in constraints]
-    versions_by_shot: dict[str, list[dict]] = {}
-    for row in versions:
-        item = _row_to_dict(row)
-        versions_by_shot.setdefault(item["shot_id"], []).append(item)
     video_tasks_by_shot: dict[str, list[dict]] = {}
     video_task_items = [_row_to_dict(row) for row in video_tasks]
     for task in video_task_items:
         video_tasks_by_shot.setdefault(task["shot_id"], []).append(task)
+    versions_by_shot: dict[str, list[dict]] = {}
+    for row in versions:
+        item = _row_to_dict(row)
+        version_tasks = [task for task in video_task_items if task["version_id"] == item["id"]]
+        item["generation"] = version_tasks[0] if version_tasks else None
+        if not item.get("provider") and item["generation"]:
+            item["provider"] = item["generation"].get("provider")
+            item["model"] = item["generation"].get("model")
+        versions_by_shot.setdefault(item["shot_id"], []).append(item)
     result["shots"] = []
     for row in shots:
         shot = _normalize_shot(row)
