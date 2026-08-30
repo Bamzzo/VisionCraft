@@ -392,6 +392,13 @@ export function computeWorkflow(project) {
     let state;
     if (stage.index < frontierIndex) {
       state = completedStageModified(project, stage.id) ? STAGE_STATE.MODIFIED : STAGE_STATE.COMPLETED;
+      if (
+        ["text", "storyline", "bible", "storyboard"].includes(stage.id) &&
+        (project?.stale_stages || []).includes(stage.id) &&
+        stageHasData(project, stage.id)
+      ) {
+        state = STAGE_STATE.INVALIDATED;
+      }
     } else if (stage.index === frontierIndex) {
       state = frontierState(project, stage.id);
     } else {

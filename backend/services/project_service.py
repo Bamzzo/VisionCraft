@@ -42,10 +42,10 @@ def create_project(payload: ProjectCreate) -> dict:
             """
             INSERT INTO projects (
               id, title, source_text, style, aspect_ratio, duration_seconds, output_resolution,
-              shot_count_mode, requested_shot_count, review_mode, status, routing_mode,
+              shot_count_mode, requested_shot_count, review_mode, status, routing_mode, generation_mode,
               created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -60,6 +60,7 @@ def create_project(payload: ProjectCreate) -> dict:
                 1 if payload.review_mode else 0,
                 "created",
                 routing_mode,
+                getattr(payload, "generation_mode", None) or "mock",
                 now,
                 now,
             ),
@@ -296,6 +297,8 @@ def get_project(project_id: str) -> dict:
         item["characters"] = from_json(item.get("characters"), [])
         result["storyboard_drafts"].append(item)
     result["review_records"] = [_row_to_dict(row) for row in review_records]
+    result["generation_mode"] = result.get("generation_mode") or "mock"
+    result["stale_stages"] = from_json(result.get("stale_stages"), []) or []
     from .job_service import get_recent_job_events, list_active_jobs
 
     result["job_events"] = get_recent_job_events(project_id, limit=40)
@@ -304,7 +307,13 @@ def get_project(project_id: str) -> dict:
     from .video_service import get_assembly_status
 
     result["assembly"] = get_assembly_status(project_id)
-    return attach_medium_text(result)
+    result = attach_medium_text(result)
+    from .model_config_service import attach_model_state
+    from .vision_review_service import list_vision_reviews
+
+    result = attach_model_state(result)
+    result["vision_reviews"] = list_vision_reviews(project_id)
+    return result
 
 
 _DRAFT_COMPARE_FIELDS = (

@@ -92,7 +92,7 @@ def _llm_config() -> LLMConfig:
         return LLMConfig(
             api_key=os.environ["DEEPSEEK_API_KEY"],
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         )
     if os.getenv("SILICONFLOW_API_KEY"):
         return LLMConfig(
@@ -242,6 +242,11 @@ def _summarize_chunk_with_llm(config: LLMConfig, payload: ProjectCreate, index: 
 
 
 def _call_chat_json(config: LLMConfig, messages: list[dict[str, str]], temperature: float, timeout: int) -> dict:
+    from .llm_catalog import live_llm_authorized
+    from .llm_adapter import LiveCallNotAuthorized
+
+    if not live_llm_authorized():
+        raise LiveCallNotAuthorized()
     data = {
         "model": config.model,
         "messages": messages,

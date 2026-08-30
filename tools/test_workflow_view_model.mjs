@@ -314,4 +314,21 @@ function realShot(overrides = {}) {
   console.log("PASS: 项目切换后状态不串项目，旧阶段 id 可解析");
 }
 
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      stale_stages: ["bible", "storyboard"],
+      story_bible: { review_status: "stale" },
+      storyboard_drafts: [{ id: "sb1", shot_index: 1, title: "镜 1" }],
+      shots: [realShot()],
+      assets: [{ id: "av", type: "video", file_path: "/v.mp4", embedding_ref: "provider:seedance" }],
+    })
+  );
+  assert(stageById(workflow, "bible").state === STAGE_STATE.INVALIDATED, "阶段模型修改后 Story Bible 应显示失效");
+  assert(stageById(workflow, "storyboard").state === STAGE_STATE.INVALIDATED, "阶段模型修改后分镜应显示失效");
+  assert(stageById(workflow, "video").state !== STAGE_STATE.INVALIDATED, "镜头视频不应因文本模型修改而失效");
+  console.log("PASS: 阶段模型修改只失效必要下游");
+}
+
 console.log("ALL WORKFLOW VIEW MODEL TESTS PASSED");

@@ -4,8 +4,15 @@ from __future__ import annotations
 import uuid
 
 from ..database import connect, from_json, to_json, utc_now
+from ..providers.llm_catalog import ModelConfigError
 from ..services.checkpoint_service import complete_checkpoint, get_paused_checkpoint, save_workflow_checkpoint
 from ..services.job_service import create_job, update_job
+from ..services.model_config_service import (
+    clear_stage_stale,
+    plan_adaptations_with_policy,
+    plan_story_bible_with_policy,
+    plan_storyboard_with_policy,
+)
 from ..services.project_service import get_project, update_project_status
 from ..workflow.adaptation_planner import plan_adaptations, plan_story_bible, plan_storyboard
 
@@ -66,7 +73,13 @@ def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dic
         return {"job_id": job_id, "status": state.get("status"), "project": state}
     ensure_implicit_short_scope(project)
     update_job(job_id, "running", 8, "文本理解：正在抽取段落、人物与冲突依据", stage="understand_text")
-    payload = _generate_options(project)
+    try:
+        payload = _generate_options(project)
+    except ModelConfigError as exc:
+        update_job(job_id, "failed", 100, str(exc), str(exc), stage="understand_text")
+        raise AdaptationError(exc.code, str(exc)) from exc
+    if any(item.get("used_local_fallback") for item in payload):
+        update_job(job_id, "running", 22, "真实文本模型失败，已使用本地回退生成改编方案", stage="plan_adaptations")
     update_project_status(project_id, "awaiting_scope_review")
     save_workflow_checkpoint(
         project_id,
@@ -82,7 +95,13 @@ def generate_options_from_context(project_id: str, job_id: str | None = None) ->
     project = _require_project(project_id)
     job_id = job_id or create_job(project_id, "adaptation_workflow", "改编方案生成已排队")
     update_job(job_id, "running", 22, "正在根据已确认范围生成改编候选方案", stage="plan_adaptations")
-    payload = _generate_options(project)
+    try:
+        payload = _generate_options(project)
+    except ModelConfigError as exc:
+        update_job(job_id, "failed", 100, str(exc), str(exc), stage="plan_adaptations")
+        raise AdaptationError(exc.code, str(exc)) from exc
+    if any(item.get("used_local_fallback") for item in payload):
+        update_job(job_id, "running", 24, "真实文本模型失败，已使用本地回退生成改编方案", stage="plan_adaptations")
     update_project_status(project_id, "awaiting_scope_review")
     save_workflow_checkpoint(
         project_id,
@@ -383,7 +402,12 @@ def _generate_options(project: dict) -> list[dict]:
     context = planner_source_text(project)
     full = project["source_text"]
     scope_id = _active_scope_id(project["id"])
-    planned = plan_adaptations(project["title"], context, project.get("style") or "", int(project.get("duration_seconds") or 5))
+
+    def planner():
+        return plan_adaptations(project["title"], context, project.get("style") or "", int(project.get("duration_seconds") or 5))
+
+    planned, lineage = plan_adaptations_with_policy(project, planner)
+    source = lineage.get("source") or "mock_planner"
     with connect() as conn:
         conn.execute("DELETE FROM adaptation_options WHERE project_id = ?", (project["id"],))
         conn.execute("UPDATE projects SET selected_option_id = NULL, updated_at = ? WHERE id = ?", (now, project["id"]))
@@ -398,8 +422,8 @@ def _generate_options(project: dict) -> list[dict]:
                 INSERT INTO adaptation_options
                 (id, project_id, option_index, title, rationale, protagonist_goal, conflict, ending_orientation,
                  suggested_duration_seconds, suggested_shot_count, source_excerpt, source_start, source_end,
-                 selected, source, created_at, scope_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                 selected, source, created_at, scope_id, provider, model, generation_mode, used_local_fallback, config_source, stale)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                 """,
                 (
                     option_id,
@@ -415,37 +439,75 @@ def _generate_options(project: dict) -> list[dict]:
                     excerpt,
                     start,
                     end,
-                    item["source"],
+                    source,
                     now,
                     scope_id,
+                    lineage.get("provider"),
+                    lineage.get("model"),
+                    lineage.get("generation_mode"),
+                    lineage.get("used_local_fallback") or 0,
+                    lineage.get("config_source"),
                 ),
             )
-            rows.append({**item, "id": option_id, "project_id": project["id"], "selected": 0, "source_excerpt": excerpt, "source_start": start, "source_end": end, "scope_id": scope_id})
+            rows.append(
+                {
+                    **item,
+                    "id": option_id,
+                    "project_id": project["id"],
+                    "selected": 0,
+                    "source_excerpt": excerpt,
+                    "source_start": start,
+                    "source_end": end,
+                    "scope_id": scope_id,
+                    "source": source,
+                    "provider": lineage.get("provider"),
+                    "model": lineage.get("model"),
+                    "generation_mode": lineage.get("generation_mode"),
+                    "used_local_fallback": lineage.get("used_local_fallback") or 0,
+                    "config_source": lineage.get("config_source"),
+                }
+            )
     if not rows:
         raise AdaptationError("SCOPE_EMPTY", "选定范围内无法生成改编方案。请重新选择事件范围后确认。")
+    clear_stage_stale(project["id"], ["text", "storyline"])
     update_project_status(project["id"], "adaptation_options_ready")
     return rows
 
 
 def _write_bible(project: dict, option: dict, preserve_user_fields: bool = True) -> None:
-    planned = plan_story_bible(project["title"], planner_source_text(project), project.get("style") or "", option)
+    def planner():
+        return plan_story_bible(project["title"], planner_source_text(project), project.get("style") or "", option)
+
+    try:
+        planned, lineage = plan_story_bible_with_policy(project, option, planner)
+    except ModelConfigError as exc:
+        raise AdaptationError(exc.code, str(exc)) from exc
     current = _load_bible(project["id"]) if preserve_user_fields else None
     merged = _merge_bible(current, planned) if current else planned
     if not preserve_user_fields:
         merged = planned
     merged["option_id"] = option["id"]
     merged["review_status"] = "draft"
-    merged["source"] = "mock_planner"
+    merged["source"] = lineage.get("source") or "mock_planner"
     merged["scope_id"] = option.get("scope_id") or _active_scope_id(project["id"])
     _upsert_bible_row(project["id"], merged)
+    _apply_output_lineage("story_bibles", "project_id = ?", (project["id"],), lineage)
     _sync_bible_cards(project["id"], merged)
+    clear_stage_stale(project["id"], ["bible"])
 
 
 def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
     context = planner_source_text(project)
     full = project["source_text"]
     scope_id = option.get("scope_id") or _active_scope_id(project["id"])
-    shots = plan_storyboard(project["title"], context, project.get("style") or "", option, bible)
+
+    def planner():
+        return plan_storyboard(project["title"], context, project.get("style") or "", option, bible)
+
+    try:
+        shots, lineage = plan_storyboard_with_policy(project, option, bible, planner)
+    except ModelConfigError as exc:
+        raise AdaptationError(exc.code, str(exc)) from exc
     now = utc_now()
     _clear_storyboard(project["id"])
     with connect() as conn:
@@ -458,8 +520,9 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
                 INSERT INTO storyboard_drafts
                 (id, project_id, shot_index, title, narrative_purpose, characters, scene, action_text, camera_motion,
                  duration_seconds, visual_prompt, bible_character, bible_scene, source_excerpt, source_start, source_end,
-                 source_type, review_status, created_at, updated_at, scope_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 source_type, review_status, created_at, updated_at, scope_id, provider, model, generation_mode,
+                 used_local_fallback, config_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     f"sb_{uuid.uuid4().hex[:10]}",
@@ -483,8 +546,14 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
                     now,
                     now,
                     scope_id,
+                    lineage.get("provider"),
+                    lineage.get("model"),
+                    lineage.get("generation_mode"),
+                    lineage.get("used_local_fallback") or 0,
+                    lineage.get("config_source"),
                 ),
             )
+    clear_stage_stale(project["id"], ["storyboard"])
     update_project_status(project["id"], "storyboard_draft_ready")
 
 
@@ -591,8 +660,8 @@ def _storyboard_shot_payload(draft: dict) -> dict:
         "visual_prompt": draft.get("visual_prompt") or "",
         "duration_seconds": int(draft.get("duration_seconds") or 5),
         "video_mode": draft.get("video_mode") or "t2v",
-        "provider": draft.get("provider"),
-        "model": draft.get("model"),
+        "provider": None,
+        "model": None,
         "bible_character": draft.get("bible_character"),
         "bible_scene": draft.get("bible_scene"),
         "source_excerpt": draft.get("source_excerpt") or "",
@@ -922,3 +991,23 @@ def _require_option(project_id: str, option_id: str) -> dict:
 
 def _stage_label(stage: str) -> str:
     return {"scope": "改编范围", "bible": "Story Bible", "storyboard": "分镜"}[stage]
+
+
+def _apply_output_lineage(table: str, where_sql: str, where_args: tuple, lineage: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            f"""
+            UPDATE {table}
+            SET provider=?, model=?, generation_mode=?, used_local_fallback=?, config_source=?, source=?
+            WHERE {where_sql}
+            """,
+            (
+                lineage.get("provider"),
+                lineage.get("model"),
+                lineage.get("generation_mode"),
+                lineage.get("used_local_fallback") or 0,
+                lineage.get("config_source"),
+                lineage.get("source"),
+                *where_args,
+            ),
+        )

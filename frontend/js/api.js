@@ -196,4 +196,23 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ stage }),
     }),
+  getModelConfigs: (projectId) => request(`/api/projects/${projectId}/model-configs`),
+  saveModelConfig: (projectId, stage, payload) =>
+    request(`/api/projects/${projectId}/model-configs/${stage}`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
+  saveGenerationMode: (projectId, generationMode) =>
+    request(`/api/projects/${projectId}/generation-mode`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ generation_mode: generationMode }),
+    }),
+  visionReview: (projectId, payload) =>
+    request(`/api/projects/${projectId}/vision-review`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
 };

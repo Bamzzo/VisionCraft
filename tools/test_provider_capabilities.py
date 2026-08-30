@@ -57,6 +57,36 @@ def test_capability_contract() -> None:
         for model in item["models"]:
             assert model["id"]
             assert model["supported_modes"]
+    llm = payload["llm"]
+    assert isinstance(llm, list) and llm
+    flash = next(item for item in llm if item["model"] == "deepseek-v4-flash")
+    pro = next(item for item in llm if item["model"] == "deepseek-v4-pro")
+    vision = next(item for item in llm if item["model"] == "deepseek-v4-flash-vision-exp")
+    for item in (flash, pro, vision):
+        assert "provider" in item and item["provider"] == "deepseek"
+        assert isinstance(item["configured"], bool)
+        assert "roles" in item
+        assert "supports_vision" in item
+        assert "supports_json" in item
+        assert "is_default" in item
+        for key in item:
+            lowered = str(key).lower()
+            assert "api_key" not in lowered
+            assert "authorization" not in lowered
+            if isinstance(item[key], str):
+                assert "sk-" not in item[key]
+                assert "bearer " not in item[key].lower()
+    assert flash["is_default"] is True
+    assert flash["supports_vision"] is False
+    assert flash["supports_json"] is True
+    assert "text_generation" in flash["roles"]
+    assert pro["is_default"] is False
+    assert vision["supports_vision"] is True
+    assert "vision" in vision["roles"]
+    assert payload["stages"]["text_understanding"]["default_model"] == "deepseek-v4-flash"
+    assert payload["stages"]["vision_review"]["default_model"] == "deepseek-v4-flash-vision-exp"
+    assert payload["default_video_provider"] in {"minimax", "ark", "dashscope", "siliconflow"}
+    print("PASS: DeepSeek text/vision capability fields and P1 video contract")
 
 
 def test_validate_frames_and_modes() -> None:

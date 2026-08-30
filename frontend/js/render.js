@@ -204,7 +204,7 @@ function renderProjectSection() {
 }
 
 function setProjectCreateOnlyFieldsDisabled(disabled) {
-  ["sourceTextInput", "styleInput", "shotModeInput", "shotCountInput", "reviewModeInput"].forEach((id) => {
+    ["sourceTextInput", "styleInput", "shotModeInput", "shotCountInput", "reviewModeInput", "generationModeInput"].forEach((id) => {
     const node = el(id);
     if (node) node.disabled = disabled;
   });
@@ -229,7 +229,8 @@ function renderSummaryFields() {
     ["单镜时长", `${project.duration_seconds}s`],
     ["输出分辨率", project.output_resolution || "1280x720"],
     ["镜头策略", project.shot_count_mode === "manual" ? `手动 · ${project.requested_shot_count || "-"} 镜` : "自动"],
-    ["运行模式", project.review_mode ? "监制模式" : "自动模式"],
+  ["运行模式", project.review_mode ? "监制模式" : "自动模式"],
+    ["生成模式", generationModeLabel(project.generation_mode)],
     ["原文规模", `${project.text_scale_label || ""} · ${(project.source_text || "").length} 字`],
     ["更新时间", formatTime(project.updated_at)],
   ];
@@ -498,20 +499,21 @@ function stageBodyHtml(project, stage, stageVm) {
   if (locked && stage !== "assembly" && stage !== "export") {
     return `<div class="empty-state stage-locked" data-stage-locked="1">${escapeHtml(stageVm.lockedHint || stageLockedHint(stage))}</div>`;
   }
+  const picker = stageModelPanelHtml(project, stage);
   switch (stage) {
     case "text":
-      return textStageHtml(project);
+      return `${picker}${textStageHtml(project)}`;
     case "storyline":
-      return storylineStageHtml(project);
+      return `${picker}${storylineStageHtml(project)}`;
     case "adaptation":
-      return adaptationStageHtml(project);
+      return `${picker}${adaptationStageHtml(project)}`;
     case "bible":
-      return bibleStageHtml(project);
+      return `${picker}${bibleStageHtml(project)}`;
     case "storyboard":
-      return storyboardStageHtml(project);
+      return `${picker}${storyboardStageHtml(project)}`;
     case "keyframes":
     case "video":
-      return assetGridHtml(project, stage);
+      return `${picker}${assetGridHtml(project, stage)}`;
     case "assembly":
       return assemblyStageHtml(project);
     case "export":
@@ -679,6 +681,7 @@ function adaptationStageHtml(project, options = {}) {
         <p><strong>时长建议：</strong>${escapeHtml(String(item.suggested_duration_seconds))}s · ${escapeHtml(String(item.suggested_shot_count))} 镜</p>
         <p><strong>推荐理由：</strong>${escapeHtml(item.rationale)}</p>
         <blockquote>引用：「${escapeHtml(item.source_excerpt)}」</blockquote>
+        ${modelLineageHtml(item)}
         <div class="button-row compact-row">
           <button class="secondary-btn mini-btn" data-adapt="select-option" data-option-id="${escapeHtml(item.id)}">选择此方案</button>
           <button class="primary-btn mini-btn" data-adapt="confirm-scope" data-option-id="${escapeHtml(item.id)}">确认范围并生成 Story Bible</button>
@@ -728,6 +731,7 @@ function bibleStageHtml(project) {
     <div class="prompt-block" id="bibleForm">
       <strong>Story Bible${bible.review_status === "confirmed" ? " · 已确认" : " · 可编辑"}</strong>
       <span class="muted-text">${bible.review_status === "confirmed" ? "已确认。再次修改需重新确认并会使下游分镜失效。" : "编辑后请保存或确认。"}</span>
+      ${modelLineageHtml(bible)}
       <label>Logline<textarea id="bibleLogline" rows="2" data-bible-track>${escapeHtml(bible.logline || "")}</textarea></label>
       <label>改编摘要<textarea id="bibleSummary" rows="3" data-bible-track>${escapeHtml(bible.adaptation_summary || bible.summary || "")}</textarea></label>
       <label>主题与情绪曲线<input id="bibleEmotion" data-bible-track value="${escapeHtml(bible.emotion_curve || "")}" /></label>
@@ -775,6 +779,7 @@ function storyboardStageHtml(project) {
         <label>运镜<input data-board-id="${escapeHtml(item.id)}" data-board-field="camera_motion" data-board-track value="${escapeHtml(item.camera_motion || "")}" /></label>
         <label>时长（秒）<input data-board-id="${escapeHtml(item.id)}" data-board-field="duration_seconds" data-board-track type="number" min="1" max="15" value="${escapeHtml(String(item.duration_seconds || 5))}" /></label>
         <p class="muted-text">原文依据：「${escapeHtml(item.source_excerpt || "")}」</p>
+        ${modelLineageHtml(item)}
       </article>`
     )
     .join("");
@@ -1322,6 +1327,7 @@ function shotEditorHtml(project, shot, stage) {
       <p class="muted-text" id="videoCapabilityHint">${escapeHtml(constraint.hint)}</p>
       <label>首帧资产 ${draft.first_frame_path ? "· 已选" : "· 未选"}<select id="firstFrameSelect" data-shot-track>${optionHtml(draft.first_frame_path)}</select></label>
       <label>尾帧资产 ${draft.last_frame_path ? "· 已选" : "· 未选"}<select id="lastFrameSelect" data-shot-track>${optionHtml(draft.last_frame_path)}</select></label>
+      ${stage === "keyframes" ? `<div class="button-row compact-row"><button class="secondary-btn mini-btn" data-adapt="vision-review" data-asset-path="${escapeHtml(draft.first_frame_path || version?.first_frame_path || "")}">用视觉模型检查当前首帧</button></div>` : ""}
       <label>参考图 ${draft.reference_frame_path ? "· 已选" : "· 未选"}<select id="referenceFrameSelect" data-shot-track>${optionHtml(draft.reference_frame_path)}</select></label>
       <div class="button-row compact-row">
         <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存镜头草稿</button>
@@ -1506,8 +1512,119 @@ function shotProgressHtml(shot) {
 }
 
 /* ================================================================== */
-/* 能力 / 反馈 / 视频草稿（供 app.js 使用）                              */
+/* 阶段模型选择                                                          */
 /* ================================================================== */
+
+const UI_STAGE_MODEL_FIELDS = {
+  text: ["text_understanding"],
+  storyline: ["adaptation_options"],
+  bible: ["story_bible"],
+  storyboard: ["storyboard"],
+  keyframes: ["vision_review", "keyframe_generation"],
+  video: ["video_generation"],
+};
+
+function generationModeLabel(mode) {
+  return {
+    mock: "本地确定性（Mock）",
+    live_strict: "严格真实",
+    live_with_local_fallback: "真实优先，允许本地回退",
+  }[mode] || "本地确定性（Mock）";
+}
+
+function stageModelPanelHtml(project, stage) {
+  const fields = UI_STAGE_MODEL_FIELDS[stage];
+  if (!fields || !project) return "";
+  const configs = project.model_configs || {};
+  const pickers = fields.map((field) => stageModelPickerHtml(project, field, configs[field])).join("");
+  const modeBlock = stage === "text" ? generationModePickerHtml(project) : "";
+  const reviews = stage === "keyframes" ? latestVisionReviewHtml(project) : "";
+  return `${modeBlock}${pickers}${reviews}`;
+}
+
+function generationModePickerHtml(project) {
+  const current = project.generation_mode || "mock";
+  const modes = state.capabilities?.generation_modes || [
+    { id: "mock", label: "本地确定性（Mock）" },
+    { id: "live_strict", label: "严格真实（失败即失败）" },
+    { id: "live_with_local_fallback", label: "真实优先，允许本地回退" },
+  ];
+  return `<section class="stage-model-picker" data-generation-mode>
+    <div class="section-title"><h3>项目生成模式</h3></div>
+    <label>调用策略
+      <select id="generationModeSelect">
+        ${modes.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === current ? "selected" : ""}>${escapeHtml(item.label || generationModeLabel(item.id))}</option>`).join("")}
+      </select>
+    </label>
+    <p class="muted-text">默认不发起真实付费调用。严格真实失败会标记任务失败；允许回退时会明确写明「已使用本地回退」。</p>
+    <div class="button-row compact-row">
+      <button class="secondary-btn mini-btn" data-adapt="save-generation-mode">保存生成模式</button>
+    </div>
+  </section>`;
+}
+
+function stageModelPickerHtml(project, stageKey, config) {
+  const resolved = config || {};
+  const draft = state.stageModelDraft?.[stageKey];
+  const dirty = Boolean(draft?.dirty);
+  const available = resolved.available || [];
+  const provider = draft?.provider || resolved.provider;
+  const providers = uniqueValues(available.map((item) => item.provider));
+  const models = available.filter((item) => item.provider === provider);
+  let model = draft?.model || resolved.model;
+  if (models.length && !models.some((item) => item.model === model)) {
+    model = models[0].model;
+  }
+  const selectedMeta = available.find((item) => item.provider === provider && item.model === model) || models[0] || resolved;
+  const configured = Boolean(selectedMeta?.configured);
+  const status = configured ? "已配置" : "未配置";
+  const origin = resolved.selected_by_user ? "用户选择" : "默认预选";
+  return `<section class="stage-model-picker" data-model-stage="${escapeHtml(stageKey)}">
+    <div class="section-title">
+      <h3>${escapeHtml(resolved.label || stageKey)}</h3>
+      <span class="status-pill ${configured ? "success" : "warning"}">${status}</span>
+    </div>
+    <div class="form-grid">
+      <label>Provider
+        <select data-model-field="provider">
+          ${providers.map((item) => `<option value="${escapeHtml(item)}" ${item === provider ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+        </select>
+      </label>
+      <label>模型
+        <select data-model-field="model">
+          ${models.map((item) => `<option value="${escapeHtml(item.model)}" ${item.model === model ? "selected" : ""}>${escapeHtml(item.label || item.model)}${item.configured ? "" : "（未配置）"}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    <p class="muted-text">本阶段将使用：${escapeHtml(provider || "未选择")} / ${escapeHtml(model || "未选择")} · ${origin}${dirty ? " · 未保存" : ""}</p>
+    <span class="${dirty ? "dirty-flag" : "clean-flag"}">${dirty ? "配置未保存" : "已与项目配置同步"}</span>
+    <div class="button-row compact-row">
+      <button class="secondary-btn mini-btn" data-adapt="save-model-config" data-model-stage="${escapeHtml(stageKey)}" ${dirty ? "" : "disabled"}>保存此阶段模型</button>
+    </div>
+  </section>`;
+}
+
+function modelLineageHtml(item) {
+  if (!item) return "";
+  const provider = item.provider || "";
+  const model = item.model || "";
+  if (!provider && !model && !item.source) return "";
+  const origin = item.config_source === "user" ? "用户选择" : item.config_source === "default" ? "默认预选" : item.source || "未记录";
+  const fallback = Number(item.used_local_fallback) ? " · 已使用本地回退" : "";
+  return `<p class="muted-text">实际使用：${escapeHtml(provider || "本地规划器")} / ${escapeHtml(model || item.source || "mock")} · 来源：${escapeHtml(origin)}${fallback}</p>`;
+}
+
+function latestVisionReviewHtml(project) {
+  const latest = (project.vision_reviews || [])[0] || project.latest_vision_review;
+  if (!latest) return "";
+  const result = latest.result || {};
+  return `<div class="prompt-block">
+    <strong>最近视觉检查</strong>
+    ${modelLineageHtml(latest)}
+    <p>${escapeHtml(result.description || "")}</p>
+    <p class="muted-text">传输：${escapeHtml(latest.transport_mode || "")} · ${escapeHtml(latest.mime_type || "")} · ${escapeHtml(String(latest.byte_size || 0))} 字节</p>
+  </div>`;
+}
 
 export function renderCapabilities() {
   const videos = state.capabilities?.video || [];
@@ -1604,7 +1721,7 @@ function videoProviderOptions(videoMode) {
     const supportsMode = (item.supported_modes || []).includes(videoMode);
     const configured = item.mode === "live-ready";
     const disabled = !supportsMode;
-    const suffix = !supportsMode ? "（不支持该模式）" : configured ? "" : "（未配置密钥）";
+    const suffix = !supportsMode ? "（不支持该模式）" : configured ? "" : "（未配置）";
     return { id: item.id, label: `${item.label}${suffix}`, disabled };
   });
 }
@@ -1623,13 +1740,13 @@ function frameStatusLabel(source) {
 
 function syncVideoDraft(shot, version) {
   const persisted = shot.draft || {};
-  const defaultProvider = state.capabilities?.default_video_provider || videoProviders().find((item) => item.mode === "live-ready")?.id || videoProviders()[0]?.id;
+  const defaultProvider = state.capabilities?.default_video_provider || videoProviders()[0]?.id;
   const existing = state.videoDraft?.shotId === shot.id ? state.videoDraft : null;
   const videoMode = existing?.video_mode || persisted.video_mode || version?.video_mode || "t2v";
   let provider = existing?.provider || persisted.provider || version?.provider || defaultProvider;
-  const providers = videoProviderOptions(videoMode).filter((item) => !item.disabled);
+  const providers = videoProviderOptions(videoMode);
   if (!providers.some((item) => item.id === provider)) {
-    provider = providers[0]?.id || defaultProvider;
+    provider = defaultProvider;
   }
   const models = videoModelOptions(provider, videoMode);
   let model = existing?.model || persisted.model || version?.model || findVideoProvider(provider)?.default_model;

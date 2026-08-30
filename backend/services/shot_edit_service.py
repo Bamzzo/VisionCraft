@@ -116,12 +116,21 @@ def _validate_generation(project_id: str, draft: dict) -> None:
         project = conn.execute("SELECT aspect_ratio FROM projects WHERE id = ?", (project_id,)).fetchone()
     if not project:
         raise ShotEditError("PROJECT_NOT_FOUND", "项目不存在。")
+    provider = draft.get("provider")
+    duration = int(draft.get("duration_seconds") or 5)
+    if not provider:
+        from ..providers.capabilities import default_video_provider, get_video_provider_capability
+
+        capability = get_video_provider_capability(default_video_provider())
+        supported = [int(item) for item in (capability or {}).get("supported_durations") or []]
+        if supported and duration not in supported:
+            duration = min(supported, key=lambda item: abs(item - duration))
     try:
         validate_video_generation(
-            provider=draft.get("provider"),
+            provider=provider,
             model=draft.get("model"),
             video_mode=draft.get("video_mode") or "t2v",
-            duration_seconds=int(draft.get("duration_seconds") or 5),
+            duration_seconds=duration,
             aspect_ratio=project["aspect_ratio"],
             first_frame_path=draft.get("first_frame_path"),
             last_frame_path=draft.get("last_frame_path"),

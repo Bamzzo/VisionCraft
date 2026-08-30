@@ -286,6 +286,26 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - `tools/test_v1_qa_browser.py`
 - 既有 UI 工作台、V1 演示和 P2～P6-E 回归仍通过。
 
+### P7-A：文本模型、视觉模型与阶段级模型选择
+
+**状态：** 2026-08-30 已完成本地无费用切片。不发起真实付费 LLM / 视觉 / 视频 API 调用。
+
+**已实现：**
+
+- 模型角色分离：文本（`deepseek-v4-flash` / `deepseek-v4-pro`）、视觉（`deepseek-v4-flash-vision-exp`）、图片生成、视频（默认预选 MiniMax，可切换）、FFmpeg 不进下拉框；
+- `/api/providers/capabilities` 增加模型级 `llm`、`stages`、`generation_modes`；`configured` 只返回布尔值；
+- 项目表 `workflow_model_configs` 与 `generation_mode`（`mock` / `live_strict` / `live_with_local_fallback`）；
+- 文本 / 视觉 Adapter 边界；JSON 失败可诊断；严格真实失败即失败，允许回退时明确标记「已使用本地回退」；
+- 视觉请求只使用项目内资产与 Data URL；Data URL 不入库、不进 job_events；
+- 工作台各文本/视觉/视频阶段可选择模型；成片阶段不显示 LLM 选择；
+- 真实 HTTP 另需 `VISIONCRAFT_ALLOW_LIVE_LLM=1` 与人类确认。详见 `docs/stage-model-selection.md`。
+
+**验收：**
+
+- `tools/test_stage_models.py`
+- `tools/test_provider_capabilities.py`
+- 既有 P1～P6-E 与改编回归命令仍通过。
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

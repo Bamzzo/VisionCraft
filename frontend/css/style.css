@@ -774,6 +774,12 @@ button:disabled {
   .assembly-settings-row {
     grid-template-columns: minmax(0, 1fr);
   }
+  .stage-model-picker,
+  .stage-workspace,
+  .center-panel {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
 }
 
 /* 素材网格 */
@@ -989,6 +995,30 @@ button:disabled {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
+}
+
+.stage-model-picker {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--panel-subtle);
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.stage-model-picker .form-grid,
+.stage-model-picker select,
+.stage-model-picker label {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stage-model-picker h3 {
+  margin: 0;
+  font-size: 13px;
 }
 
 /* ---------- 通用内容块（沿用并克制化） ---------- */

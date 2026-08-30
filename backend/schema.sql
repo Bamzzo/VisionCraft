@@ -414,3 +414,43 @@ CREATE TABLE IF NOT EXISTS assembly_settings (
   subtitle_position TEXT NOT NULL DEFAULT 'bottom',
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS workflow_model_configs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workflow_run_id TEXT,
+  stage TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  parameters TEXT NOT NULL DEFAULT '{}',
+  selected_by_user INTEGER NOT NULL DEFAULT 0,
+  is_default INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(project_id, stage)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_model_configs_project ON workflow_model_configs(project_id);
+
+CREATE TABLE IF NOT EXISTS vision_reviews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  asset_id TEXT NOT NULL,
+  asset_role TEXT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  transport_mode TEXT,
+  mime_type TEXT,
+  width INTEGER,
+  height INTEGER,
+  byte_size INTEGER,
+  request_id TEXT,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  used_local_fallback INTEGER NOT NULL DEFAULT 0,
+  generation_mode TEXT,
+  source TEXT,
+  config_source TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vision_reviews_project ON vision_reviews(project_id);

@@ -32,7 +32,7 @@ def normalize_video_provider(provider: str | None) -> str | None:
 
 
 def default_video_provider() -> str:
-    return normalize_video_provider(os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow")) or "siliconflow"
+    return normalize_video_provider(os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "minimax")) or "minimax"
 
 
 def get_provider_capabilities() -> dict:
@@ -51,12 +51,17 @@ def get_provider_capabilities() -> dict:
     return {
         "mode_requirements": MODE_REQUIREMENTS,
         "default_video_provider": default_video_provider(),
-        "llm": [
+        "generation_modes": [
+            {"id": "mock", "label": "本地确定性（Mock）", "is_default": True},
+            {"id": "live_strict", "label": "严格真实（失败即失败）", "is_default": False},
+            {"id": "live_with_local_fallback", "label": "真实优先，允许本地回退", "is_default": False},
+        ],
+        "llm_providers": [
             {
                 "id": "deepseek",
                 "label": "DeepSeek",
                 "mode": "live-ready" if deepseek_live else "not-configured",
-                "tasks": ["story_planning", "prompt_generation", "feedback_parsing"],
+                "tasks": ["story_planning", "prompt_generation", "feedback_parsing", "vision"],
             },
             {
                 "id": "siliconflow",
@@ -65,6 +70,8 @@ def get_provider_capabilities() -> dict:
                 "tasks": ["story_planning", "prompt_generation"],
             },
         ],
+        "llm": _llm_models_payload(),
+        "stages": _stage_defaults_payload(),
         "image": [
             {
                 "id": "ark_image",
@@ -152,7 +159,7 @@ def get_provider_diagnostics() -> dict:
     deepseek_key = bool(os.getenv("DEEPSEEK_API_KEY"))
     siliconflow_key = bool(os.getenv("SILICONFLOW_API_KEY"))
     image_provider = os.getenv("VISIONCRAFT_IMAGE_PROVIDER", "siliconflow")
-    video_provider = os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "siliconflow")
+    video_provider = os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "minimax")
     ark_image_key = bool(os.getenv("VOLC_IMAGE_API_KEY") or os.getenv("VOLC_API_KEY"))
     ark_video_key = bool(os.getenv("VOLC_VIDEO_API_KEY") or os.getenv("VOLC_API_KEY"))
     dashscope_key = bool(os.getenv("DASHSCOPE_API_KEY"))
@@ -164,7 +171,7 @@ def get_provider_diagnostics() -> dict:
         if image_provider in {"ark", "volc"}
         else siliconflow_key or ark_image_key
     )
-    canonical_video = normalize_video_provider(video_provider) or "siliconflow"
+    canonical_video = normalize_video_provider(video_provider) or "minimax"
     video_configured = {
         "siliconflow": siliconflow_key,
         "ark": ark_video_key,
@@ -175,7 +182,7 @@ def get_provider_diagnostics() -> dict:
         "llm": {
             "configured": deepseek_key or siliconflow_key,
             "provider": "deepseek" if deepseek_key else "siliconflow" if siliconflow_key else "mock",
-            "model": os.getenv("DEEPSEEK_MODEL") if deepseek_key else os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2"),
+            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash") if deepseek_key else os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2"),
         },
         "image": {
             "configured": image_configured,
@@ -331,3 +338,24 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "minimax":
         return os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     return os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
+
+
+def _llm_models_payload() -> list[dict]:
+    from .llm_catalog import llm_model_catalog
+
+    return llm_model_catalog()
+
+
+def _stage_defaults_payload() -> dict:
+    from .llm_catalog import STAGE_LABELS, STAGE_ROLE, ALL_STAGES, default_for_stage
+
+    return {
+        stage: {
+            "stage": stage,
+            "role": STAGE_ROLE[stage],
+            "label": STAGE_LABELS[stage],
+            "default_provider": default_for_stage(stage)["provider"],
+            "default_model": default_for_stage(stage)["model"],
+        }
+        for stage in ALL_STAGES
+    }

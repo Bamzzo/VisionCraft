@@ -244,6 +244,7 @@ function populateFormFromProject(project) {
   el("manualShotField").classList.toggle("hidden", project.shot_count_mode !== "manual");
   el("shotCountInput").value = project.requested_shot_count || 4;
   el("reviewModeInput").checked = Boolean(project.review_mode);
+  setSelectValue(el("generationModeInput"), project.generation_mode || "mock");
   setSelectValue(el("ratioInput"), project.aspect_ratio);
   setSelectValue(el("durationInput"), project.duration_seconds);
   setSelectValue(el("resolutionInput"), project.output_resolution || "1280x720");
@@ -320,6 +321,7 @@ async function onCreateProject() {
     shot_count_mode: mode,
     requested_shot_count: mode === "manual" ? Number(el("shotCountInput").value) : null,
     review_mode: el("reviewModeInput").checked,
+    generation_mode: el("generationModeInput")?.value || "mock",
   };
   try {
     await flushShotDraft();
@@ -518,6 +520,18 @@ async function onAdaptationAction(trigger) {
     } else if (action === "discard-storyboard") {
       renderAll();
       return;
+    } else if (action === "save-model-config") {
+      await saveStageModelConfig(trigger.dataset.modelStage);
+    } else if (action === "save-generation-mode") {
+      const mode = document.getElementById("generationModeSelect")?.value || "mock";
+      state.project = await api.saveGenerationMode(state.project.id, mode);
+    } else if (action === "vision-review") {
+      const path = trigger.dataset.assetPath;
+      if (!path) {
+        showError("请先选择属于当前项目的关键帧。");
+        return;
+      }
+      state.project = await api.visionReview(state.project.id, { asset_path: path, role: "first_frame" });
     } else if (action === "regen") {
       // 重做：先保存当前阶段草稿，再从该阶段重新执行（后端会失效必要下游）。
       await redoStage(state.project, trigger.dataset.stage);
@@ -1150,11 +1164,45 @@ function onWorkspaceInput(event) {
   if (!target) return;
   if (target.closest("#assemblySettingsForm")) {
     updateAssemblySettingsDirtyUI();
+  } else if (target.closest("[data-model-stage]")) {
+    onStageModelDraftInput(target);
   } else if (target.closest("[data-bible-track]") || target.closest("[data-bible-card]")) {
     updateFormDirtyUI("bible");
   } else if (target.closest("[data-board-track]") || target.closest("[data-board-id]")) {
     updateFormDirtyUI("storyboard");
   }
+}
+
+function onStageModelDraftInput(target) {
+  const panel = target.closest("[data-model-stage]");
+  if (!panel || !state.project) return;
+  const stage = panel.dataset.modelStage;
+  const provider = panel.querySelector('[data-model-field="provider"]')?.value;
+  const model = panel.querySelector('[data-model-field="model"]')?.value;
+  const current = state.project.model_configs?.[stage] || {};
+  const dirty = provider !== current.provider || model !== current.model;
+  state.stageModelDraft = {
+    ...(state.stageModelDraft || {}),
+    [stage]: { provider, model, dirty },
+  };
+  renderAll();
+}
+
+async function saveStageModelConfig(stage) {
+  if (!state.project || !stage) return;
+  const panel = document.querySelector(`[data-model-stage="${stage}"]`);
+  const current = state.project.model_configs?.[stage] || {};
+  const provider = panel?.querySelector('[data-model-field="provider"]')?.value || state.stageModelDraft?.[stage]?.provider || current.provider;
+  const model = panel?.querySelector('[data-model-field="model"]')?.value || state.stageModelDraft?.[stage]?.model || current.model;
+  if (!provider || !model) {
+    showError("请选择 Provider 和模型。");
+    return;
+  }
+  state.project = await api.saveModelConfig(state.project.id, stage, { provider, model });
+  if (state.stageModelDraft) delete state.stageModelDraft[stage];
+  const labels = { text: "文本理解", storyline: "故事线选择", bible: "Story Bible", storyboard: "分镜设计" };
+  const affected = (state.project.invalidated_stages || []).map((id) => labels[id] || id).join("、");
+  showSuccess(affected ? `已保存模型配置。可能受影响：${affected}` : "已保存模型配置。");
 }
 
 function assemblySettingsEqual(left, right) {

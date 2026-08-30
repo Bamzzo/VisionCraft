@@ -101,6 +101,14 @@
                 <input id="reviewModeInput" type="checkbox" />
                 <span>监制模式：质检后暂停，等待人工确认再继续</span>
               </label>
+              <label>
+                生成模式
+                <select id="generationModeInput">
+                  <option value="mock" selected>本地确定性（Mock）</option>
+                  <option value="live_strict">严格真实（失败即失败）</option>
+                  <option value="live_with_local_fallback">真实优先，允许本地回退</option>
+                </select>
+              </label>
               <div class="button-row">
                 <button id="submitProjectBtn" type="submit" class="primary-btn">创建项目</button>
                 <button id="cancelFormBtn" type="button" class="secondary-btn hidden">取消</button>

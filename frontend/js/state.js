@@ -40,6 +40,7 @@ export const state = {
   // { paused: bool }：仅本页会话内生效的原型暂停标记。
   workflowControl: { paused: false },
 
+  stageModelDraft: {},
   /* ---- 成片配置草稿（未保存时刷新/任务更新不丢，切换项目时清空） ---- */
   assemblyDraft: null,
   statusNotice: null,
@@ -66,6 +67,7 @@ export function resetViewState() {
   state.selectedAsset = null;
   state.assetViewMode = {};
   state.stageEdit = null;
+  state.stageModelDraft = {};
   state.workflowControl = { paused: false };
   state.assemblyDraft = null;
   state.statusNotice = null;

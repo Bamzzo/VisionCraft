@@ -13,6 +13,7 @@ class ProjectCreate(BaseModel):
     shot_count_mode: str = Field(default="auto")
     requested_shot_count: int | None = Field(default=None, ge=1, le=12)
     review_mode: bool = Field(default=False)
+    generation_mode: Literal["mock", "live_strict", "live_with_local_fallback"] = "mock"
 
 
 class ProjectSettingsUpdate(BaseModel):
@@ -107,6 +108,23 @@ class MediumScopeSaveRequest(BaseModel):
 
 class MediumRegenerateRequest(BaseModel):
     stage: Literal["analysis", "storyline"] = "analysis"
+
+
+class StageModelConfigUpdate(BaseModel):
+    provider: str = Field(min_length=1, max_length=40)
+    model: str = Field(min_length=1, max_length=120)
+    parameters: dict | None = None
+    workflow_run_id: str | None = Field(default=None, max_length=40)
+
+
+class GenerationModeUpdate(BaseModel):
+    generation_mode: Literal["mock", "live_strict", "live_with_local_fallback"]
+
+
+class VisionReviewRequest(BaseModel):
+    asset_id: str | None = Field(default=None, max_length=40)
+    asset_path: str | None = Field(default=None, max_length=260)
+    role: str = Field(default="keyframe", max_length=40)
 
 
 class DemoCleanupRequest(BaseModel):

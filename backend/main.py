@@ -16,6 +16,7 @@ from .schemas import (
     AssemblySettingsUpdate,
     DemoCleanupRequest,
     FeedbackCreate,
+    GenerationModeUpdate,
     KeyframeRedrawRequest,
     KeyframeSelectRequest,
     MediumRegenerateRequest,
@@ -23,9 +24,11 @@ from .schemas import (
     MediumStorylineSelectRequest,
     ProjectCreate,
     ShotDraftUpdate,
+    StageModelConfigUpdate,
     StoryboardSaveRequest,
     StoryBibleUpdate,
     VideoGenerateRequest,
+    VisionReviewRequest,
 )
 from .services.adaptation_service import (
     AdaptationError,
@@ -56,6 +59,10 @@ from .services.feedback_service import apply_feedback
 from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
+from .services.model_config_service import list_stage_configs, save_stage_config, set_generation_mode
+from .providers.llm_catalog import ModelConfigError
+from .providers.vision_adapter import VisionAdapterError
+from .services.vision_review_service import review_project_image
 from .services.project_service import (
     ProjectSettingsError,
     cleanup_demo_data,
@@ -119,6 +126,55 @@ def provider_capabilities() -> dict:
 @app.get("/api/providers/diagnostics")
 def provider_diagnostics() -> dict:
     return get_provider_diagnostics()
+
+
+def _raise_model_config(exc: ModelConfigError | VisionAdapterError) -> None:
+    status = 404 if getattr(exc, "code", "") in {"PROJECT_NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.get("/api/projects/{project_id}/model-configs")
+def get_model_configs_endpoint(project_id: str) -> dict:
+    try:
+        return list_stage_configs(project_id)
+    except ModelConfigError as exc:
+        _raise_model_config(exc)
+
+
+@app.put("/api/projects/{project_id}/model-configs/{stage}")
+def put_model_config_endpoint(project_id: str, stage: str, payload: StageModelConfigUpdate) -> dict:
+    try:
+        return save_stage_config(
+            project_id,
+            stage,
+            provider=payload.provider,
+            model=payload.model,
+            parameters=payload.parameters,
+            workflow_run_id=payload.workflow_run_id,
+        )
+    except ModelConfigError as exc:
+        _raise_model_config(exc)
+
+
+@app.put("/api/projects/{project_id}/generation-mode")
+def put_generation_mode_endpoint(project_id: str, payload: GenerationModeUpdate) -> dict:
+    try:
+        return set_generation_mode(project_id, payload.generation_mode)
+    except ModelConfigError as exc:
+        _raise_model_config(exc)
+
+
+@app.post("/api/projects/{project_id}/vision-review")
+def vision_review_endpoint(project_id: str, payload: VisionReviewRequest) -> dict:
+    try:
+        return review_project_image(
+            project_id,
+            asset_id=payload.asset_id,
+            asset_path=payload.asset_path,
+            role=payload.role or "keyframe",
+        )
+    except (ModelConfigError, VisionAdapterError) as exc:
+        _raise_model_config(exc)
 
 
 @app.post("/api/projects")
