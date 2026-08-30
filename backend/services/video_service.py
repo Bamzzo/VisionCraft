@@ -570,12 +570,12 @@ def _extract_cloud_task_id(text: str) -> str | None:
 
 
 def assemble_project_video(project_id: str, job_id: str) -> None:
-    update_job(job_id, "running", 8, "Preparing sequence assembly")
+    update_job(job_id, "running", 8, "正在检查成片合成条件", stage="validate_inputs")
     try:
         with connect() as conn:
             project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
             if not project:
-                raise RuntimeError("Project not found")
+                raise RuntimeError("项目不存在。")
             rows = conn.execute(
                 """
                 SELECT s.shot_index, s.title, sv.video_path, a.embedding_ref AS video_ref
@@ -589,19 +589,25 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             ).fetchall()
         video_paths = [row["video_path"] for row in rows if row["video_path"]]
         if not video_paths:
-            raise RuntimeError("No shot videos available for assembly")
+            raise RuntimeError("没有可用于合成的镜头视频，请先生成镜头视频。")
         missing = [row["title"] for row in rows if not row["video_path"]]
         if missing:
-            raise RuntimeError("Some shots have no video: " + ", ".join(missing))
+            raise RuntimeError("以下镜头尚未生成视频：" + "、".join(missing))
         invalid = [row["title"] for row in rows if not _is_real_shot_video(row["video_ref"])]
         if invalid:
             # 只有每个镜头都有模型视频时才允许合成，避免占位素材混入成片。
             raise RuntimeError(
-                "Some shot videos are placeholders or non-model outputs and cannot be assembled: "
-                + ", ".join(invalid)
+                "以下镜头的视频不是可用于成片的模型生成结果，无法合成：" + "、".join(invalid)
             )
+        missing_files = [
+            row["title"]
+            for row in rows
+            if not _local_asset_path(project_id, row["video_path"]).is_file()
+        ]
+        if missing_files:
+            raise RuntimeError("以下镜头的视频文件不存在或已失效：" + "、".join(missing_files))
 
-        update_job(job_id, "running", 30, "Normalizing and concatenating video clips")
+        update_job(job_id, "running", 30, "正在统一规格并合成镜头视频", stage="concat")
         asset_id = f"asset_{uuid.uuid4().hex[:10]}"
         filename = f"{asset_id}.mp4"
         output_path = PROJECTS_DIR / project_id / filename
@@ -632,8 +638,12 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             "+faststart",
             str(output_path),
         ]
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        concat_file.unlink(missing_ok=True)
+        try:
+            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        finally:
+            concat_file.unlink(missing_ok=True)
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise RuntimeError("FFmpeg 未生成有效的成片文件。")
         video_path = public_asset_path(project_id, filename)
         with connect() as conn:
             conn.execute(
@@ -654,9 +664,21 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
                     utc_now(),
                 ),
             )
-        update_job(job_id, "completed", 100, f"Final cut ready: {video_path}")
+            conn.execute(
+                "UPDATE projects SET assembly_stale = 0, updated_at = ? WHERE id = ?",
+                (utc_now(), project_id),
+            )
+        update_job(
+            job_id,
+            "completed",
+            100,
+            "成片已生成，可在工作区预览或下载",
+            stage="persist_asset",
+            event_type="asset.ready",
+            detail={"asset_path": video_path, "shot_count": len(video_paths)},
+        )
     except Exception as exc:
-        update_job(job_id, "failed", 100, "Sequence assembly failed", str(exc))
+        update_job(job_id, "failed", 100, "成片合成失败", str(exc), stage="failed")
 
 
 def _local_asset_path(project_id: str, public_path: str) -> Path:
