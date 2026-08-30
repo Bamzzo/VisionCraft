@@ -105,6 +105,7 @@ export const api = {
     request(`/api/projects/${projectId}/videos/refresh`, {
       method: "POST",
     }),
+  getAssembly: (projectId) => request(`/api/projects/${projectId}/assembly`),
   assembleProject: (projectId) =>
     request(`/api/projects/${projectId}/assemble`, {
       method: "POST",

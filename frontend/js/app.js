@@ -372,6 +372,11 @@ function onWorkspaceClick(event) {
     selectAsset(card.dataset.stage, card.dataset.assetKey);
     return;
   }
+  const assemble = event.target.closest("[data-action='assemble-project']");
+  if (assemble && !assemble.disabled) {
+    onAssembleProject();
+    return;
+  }
   // 阶段操作（改编 / 故事线 / Bible / 分镜）
   const trigger = event.target.closest("[data-adapt]");
   if (trigger) {
@@ -800,7 +805,10 @@ async function onAssembleProject() {
   try {
     const result = await api.assembleProject(state.project.id);
     attachEvents();
-    el("jobMessage").textContent = `成片合成任务 ${result.job_id} 已入队`;
+    el("jobMessage").textContent = result.reused
+      ? result.message || "成片合成任务已在进行中"
+      : result.message || `成片合成任务 ${result.job_id} 已入队`;
+    state.viewStage = "assembly";
     await refreshProject();
   } catch (error) {
     showError(`成片合成失败：${error.message}`);

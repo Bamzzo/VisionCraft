@@ -639,6 +639,94 @@ button:disabled {
   place-items: center;
 }
 
+.assembly-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.assembly-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assembly-shot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.assembly-shot-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.assembly-shot-row.blocked {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: var(--review-bg);
+}
+
+.assembly-shot-index {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.assembly-shot-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.assembly-shot-issue {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--review);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.assembly-progress,
+.assembly-result,
+.assembly-history {
+  min-width: 0;
+}
+
+.assembly-history ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.assembly-history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.assembly-preview video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--preview-bg);
+  border-radius: var(--radius-sm);
+}
+
 /* 素材网格 */
 .asset-grid {
   display: grid;

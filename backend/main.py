@@ -64,7 +64,17 @@ from .services.shot_edit_service import (
     rollback_shot_to_version,
     save_shot_draft,
 )
-from .services.video_service import assemble_project_video, generate_project_videos, generate_shot_video, prepare_shot_video_generation, refresh_project_video_tasks, safe_retry_shot_video
+from .services.video_service import (
+    AssemblyError,
+    assemble_project_video,
+    enqueue_project_assembly,
+    generate_project_videos,
+    generate_shot_video,
+    get_assembly_status,
+    prepare_shot_video_generation,
+    refresh_project_video_tasks,
+    safe_retry_shot_video,
+)
 from .services.checkpoint_service import get_paused_checkpoint
 from .workflow.adaptation_workflow import run_adaptation_workflow
 from .workflow.langgraph_workflow import resume_langgraph_workflow, run_langgraph_workflow
@@ -562,16 +572,24 @@ def refresh_video_tasks_endpoint(project_id: str, background_tasks: BackgroundTa
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.get("/api/projects/{project_id}/assembly")
+def assembly_status_endpoint(project_id: str) -> dict:
+    if not get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return get_assembly_status(project_id)
+
+
 @app.post("/api/projects/{project_id}/assemble")
 def assemble_video_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
-    project = get_project(project_id)
-    if not project:
+    if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
-    if not project.get("shots"):
-        raise HTTPException(status_code=400, detail="No shots available")
-    job_id = create_job(project_id, "sequence_assembly", "成片合成已排队")
-    background_tasks.add_task(assemble_project_video, project_id, job_id)
-    return {"job_id": job_id, "status": "queued"}
+    try:
+        plan = enqueue_project_assembly(project_id)
+    except AssemblyError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    if not plan.get("reused"):
+        background_tasks.add_task(assemble_project_video, project_id, plan["job_id"])
+    return plan
 
 
 @app.post("/api/projects/demo/cleanup")

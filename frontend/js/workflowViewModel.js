@@ -550,27 +550,38 @@ function videoAssets(project) {
 
 function assemblyAssets(project) {
   const assets = project.assets || [];
-  const finals = assets.filter((asset) => asset.type === "final-video");
-  const cards = finals.map((asset) => {
-    const card = baseCard("final", asset.name || "成片", asset);
-    card.preview = asset.file_path || "";
+  const finals = assets
+    .filter((asset) => asset.type === "final-video")
+    .slice()
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const cards = finals.map((asset, index) => {
+    const latest = index === 0;
+    const card = baseCard("final", latest ? "当前成片" : "历史成片", asset);
+    card.preview = latest ? asset.file_path || "" : "";
     card.summary = asset.description || "";
-    card.status = project.assembly_stale ? "stale" : "ready";
-    card.statusLabel = project.assembly_stale ? "已过期" : "已生成";
-    card.tone = project.assembly_stale ? "modified" : "done";
-    card.meta = { 来源: asset.embedding_ref || "" };
+    card.status = latest && project.assembly_stale ? "stale" : latest ? "ready" : "history";
+    card.statusLabel = latest ? (project.assembly_stale ? "已过期" : "当前有效") : "历史";
+    card.tone = latest ? (project.assembly_stale ? "modified" : "done") : "idle";
+    card.meta = { 时间: asset.created_at || "", 镜头数: asset.description || "" };
     return card;
   });
-  // 镜头顺序卡（用于确认合成顺序）。
-  (project.shots || []).forEach((shot, index) => {
-    const version = currentVersionOf(shot);
-    const card = baseCard("shot-order", `${index + 1}. ${shot.title}`, { id: `order-${shot.id}`, shot, version });
-    card.preview = version?.video_path || version?.first_frame_path || "";
-    card.summary = shot.description || "";
-    card.statusLabel = shotHasRealVideo(project, shot) ? "视频就绪" : "缺视频";
-    card.tone = shotHasRealVideo(project, shot) ? "done" : "review";
-    cards.push(card);
-  });
+  (project.shots || [])
+    .slice()
+    .sort((a, b) => Number(a.shot_index || 0) - Number(b.shot_index || 0))
+    .forEach((shot) => {
+      const version = currentVersionOf(shot);
+      const real = shotHasRealVideo(project, shot);
+      const card = baseCard("shot-order", `${String(shot.shot_index).padStart(2, "0")}. ${shot.title}`, {
+        id: `order-${shot.id}`,
+        shot,
+        version,
+      });
+      card.preview = real ? version?.video_path || "" : version?.first_frame_path || "";
+      card.summary = shot.description || "";
+      card.statusLabel = real ? "视频就绪" : version?.video_path ? "占位/失效" : "缺视频";
+      card.tone = real ? "done" : "review";
+      cards.push(card);
+    });
   return cards;
 }
 

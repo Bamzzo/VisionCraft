@@ -211,7 +211,9 @@ def get_project(project_id: str) -> dict:
     result["job_events"] = get_recent_job_events(project_id, limit=40)
     result["active_jobs"] = list_active_jobs(project_id)
     from .medium_text_service import attach_medium_text
+    from .video_service import get_assembly_status
 
+    result["assembly"] = get_assembly_status(project_id)
     return attach_medium_text(result)
 
 

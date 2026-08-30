@@ -55,6 +55,11 @@ function isRealShotVideo(asset) {
   return asset?.type === "video" && ref.startsWith("provider:") && !ref.startsWith("provider:ffmpeg");
 }
 
+function shotHasRealVideo(project, shot) {
+  const version = currentVersion(shot) || (shot?.versions || [])[0];
+  return isRealShotVideo((project?.assets || []).find((asset) => asset.file_path === version?.video_path));
+}
+
 function isInvalidVideoAsset(asset) {
   return asset?.type === "video" && !isRealShotVideo(asset);
 }
@@ -457,8 +462,9 @@ function stageBodyHtml(project, stage, stageVm) {
       return storyboardStageHtml(project);
     case "keyframes":
     case "video":
-    case "assembly":
       return assetGridHtml(project, stage);
+    case "assembly":
+      return assemblyStageHtml(project);
     default:
       return `<div class="empty-state">该阶段暂无内容。</div>`;
   }
@@ -792,26 +798,149 @@ function genericDetailHtml(card, stage) {
     </div>`;
 }
 
+function assemblyStatusOf(project) {
+  if (project?.assembly) return project.assembly;
+  const shots = (project?.shots || []).slice().sort((a, b) => Number(a.shot_index || 0) - Number(b.shot_index || 0));
+  const mapped = shots.map((shot) => {
+    const ready = shotHasRealVideo(project, shot);
+    return {
+      shot_id: shot.id,
+      shot_index: shot.shot_index,
+      title: shot.title,
+      ready,
+      issue: ready ? "" : `镜头 ${String(shot.shot_index).padStart(2, "0")} 尚未准备好当前有效视频。`,
+      video_path: currentVersion(shot)?.video_path || "",
+    };
+  });
+  const finals = (project?.assets || [])
+    .filter((asset) => asset.type === "final-video")
+    .slice()
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const active = (project?.active_jobs || []).find((job) => job.type === "sequence_assembly");
+  return {
+    ok: mapped.length > 0 && mapped.every((item) => item.ready),
+    can_assemble: mapped.length > 0 && mapped.every((item) => item.ready) && !active,
+    errors: mapped.filter((item) => item.issue).map((item) => item.issue),
+    shot_count: mapped.length,
+    ready_count: mapped.filter((item) => item.ready).length,
+    stale: Boolean(project?.assembly_stale),
+    audio_note: "当前合成只拼接并统一视频流规格，不混音、不加旁白或配乐。",
+    active_job: active || null,
+    current_final: finals[0]
+      ? { id: finals[0].id, file_path: finals[0].file_path, created_at: finals[0].created_at, description: finals[0].description }
+      : null,
+    history: finals.slice(1),
+    shots: mapped,
+  };
+}
+
+function assemblyStageHtml(project) {
+  const assembly = assemblyStatusOf(project);
+  const running = Boolean(assembly.active_job);
+  const hasFinal = Boolean(assembly.current_final);
+  let buttonLabel = "合成成片";
+  let buttonDisabled = !assembly.ok || running;
+  if (running) buttonLabel = "正在合成";
+  else if (hasFinal) {
+    buttonLabel = "重新合成";
+    buttonDisabled = !assembly.ok;
+  }
+  const disableReason = running
+    ? "合成任务进行中。"
+    : assembly.ok
+    ? ""
+    : assembly.errors[0] || "镜头视频尚未全部就绪。";
+  const shotRows = (assembly.shots || [])
+    .map((shot) => {
+      const index = String(shot.shot_index ?? "").padStart(2, "0");
+      return `<li class="assembly-shot-row ${shot.ready ? "ready" : "blocked"}">
+        <span class="assembly-shot-index">${escapeHtml(index)}</span>
+        <span class="assembly-shot-title">${escapeHtml(shot.title || "未命名镜头")}</span>
+        <span class="status-pill ${shot.ready ? "success" : "warning"}">${shot.ready ? "视频就绪" : "未就绪"}</span>
+        ${shot.issue ? `<p class="assembly-shot-issue">${escapeHtml(shot.issue)}</p>` : ""}
+      </li>`;
+    })
+    .join("");
+  const progress = assembly.active_job
+    ? `<div class="assembly-progress">
+        <p><strong>${escapeHtml(assembly.active_job.message || "成片合成进行中")}</strong></p>
+        <div class="project-progress" title="合成进度"><span style="width:${Number(assembly.active_job.progress || 0)}%"></span></div>
+        <p class="muted-text">${escapeHtml(jobStatusLabel(assembly.active_job.status))} · ${escapeHtml(String(assembly.active_job.progress || 0))}%</p>
+      </div>`
+    : "";
+  const failedJob = (project.jobs || []).find((job) => job.type === "sequence_assembly" && job.status === "failed");
+  const failBlock =
+    !running && failedJob?.error_message
+      ? `<div class="prompt-block failure-diagnosis"><strong>最近一次合成失败</strong><p>${escapeHtml(failedJob.error_message)}</p></div>`
+      : "";
+  const current = assembly.current_final;
+  const staleLabel = assembly.stale ? "已过期" : "当前有效";
+  const preview = current
+    ? `<div class="assembly-preview">
+        <div class="asset-detail-preview">
+          <video src="${escapeHtml(current.file_path)}" controls playsinline></video>
+        </div>
+        <div class="button-row compact-row">
+          <a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" download>下载成片</a>
+          <a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" target="_blank" rel="noopener">打开成片</a>
+        </div>
+        <p class="muted-text">最近合成：${escapeHtml(formatTime(current.created_at))} · ${escapeHtml(current.description || `${assembly.shot_count} 个镜头`)}</p>
+      </div>`
+    : `<div class="empty-state">尚未生成成片。镜头全部就绪后即可合成。</div>`;
+  const history = (assembly.history || [])
+    .map(
+      (item) => `<li class="assembly-history-item">
+        <span>${escapeHtml(formatTime(item.created_at))}</span>
+        <a href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">查看历史成片</a>
+      </li>`
+    )
+    .join("");
+  return `
+    <section class="assembly-panel" id="assemblyPanel">
+      <div class="assembly-head">
+        <div>
+          <h3>成片合成</h3>
+          <p class="muted-text">当前有效镜头 ${escapeHtml(String(assembly.ready_count || 0))} / ${escapeHtml(String(assembly.shot_count || 0))}</p>
+        </div>
+        ${current ? `<span class="status-pill ${assembly.stale ? "warning" : "success"}" id="assemblyFreshness">${escapeHtml(staleLabel)}</span>` : ""}
+      </div>
+      ${assembly.audio_note ? `<p class="muted-text">${escapeHtml(assembly.audio_note)}</p>` : ""}
+      ${failBlock}
+      <ol class="assembly-shot-list">${shotRows || "<li class='muted-text'>暂无制作镜头。</li>"}</ol>
+      ${progress}
+      <div class="button-row compact-row">
+        <button class="primary-btn" id="assembleProjectBtn" data-action="assemble-project" ${buttonDisabled ? "disabled" : ""} title="${escapeHtml(disableReason)}">${escapeHtml(buttonLabel)}</button>
+        ${disableReason ? `<p class="muted-text" id="assembleDisabledReason">${escapeHtml(disableReason)}</p>` : ""}
+      </div>
+      <div class="assembly-result">
+        <h3>${assembly.stale ? "当前成片已过期" : "成片预览"}</h3>
+        ${preview}
+      </div>
+      ${history ? `<div class="assembly-history"><h3>历史成片</h3><ul>${history}</ul></div>` : ""}
+    </section>`;
+}
+
 function assemblyDetailHtml(project) {
-  const finalAsset = (project.assets || []).find((asset) => asset.type === "final-video");
-  const preview = finalAsset
-    ? `<div class="asset-detail-preview"><video src="${escapeHtml(finalAsset.file_path)}" controls playsinline></video>${renderMediaBadge(finalAsset)}</div>`
+  const assembly = assemblyStatusOf(project);
+  const current = assembly.current_final;
+  const preview = current
+    ? `<div class="asset-detail-preview"><video src="${escapeHtml(current.file_path)}" controls playsinline></video></div>`
     : `<div class="asset-detail-preview"><div class="asset-thumb-empty">尚未生成成片</div></div>`;
   return `
     <div class="asset-detail-head">
       <div>
         <h3>成片合成</h3>
-        <p class="muted-text">${project.assembly_stale ? "成片已过期：镜头版本变化后需要重新合成（不会自动执行）。" : "将各镜头视频合成为可播放短片。"}</p>
+        <p class="muted-text">${assembly.stale ? "成片已过期：镜头版本变化后需要重新合成（不会自动执行）。" : "将各镜头当前有效视频合成为可播放短片。"}</p>
       </div>
-      ${finalAsset ? `<span class="status-pill ${project.assembly_stale ? "warning" : "success"}">${project.assembly_stale ? "已过期" : "已生成"}</span>` : ""}
+      ${current ? `<span class="status-pill ${assembly.stale ? "warning" : "success"}">${assembly.stale ? "已过期" : "当前有效"}</span>` : ""}
     </div>
     <div class="asset-detail-grid">
       ${preview}
       <div class="asset-detail-fields">
-        <p class="muted-text">共 ${(project.shots || []).length} 个镜头参与合成。</p>
+        <p class="muted-text">共 ${escapeHtml(String(assembly.shot_count || 0))} 个镜头，${escapeHtml(String(assembly.ready_count || 0))} 个视频就绪。</p>
         <div class="button-row compact-row">
-          <button class="primary-btn mini-btn" data-action="assemble-project">合成成片</button>
-          ${finalAsset ? `<a class="secondary-btn mini-btn" href="${escapeHtml(finalAsset.file_path)}" target="_blank" rel="noopener">打开成片</a>` : ""}
+          <button class="primary-btn mini-btn" data-action="assemble-project" ${assembly.ok && !assembly.active_job ? "" : "disabled"}>合成成片</button>
+          ${current ? `<a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" download>下载成片</a>` : ""}
         </div>
       </div>
     </div>`;

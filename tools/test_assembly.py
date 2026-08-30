@@ -85,6 +85,7 @@ def test_success_persists_asset_and_clears_stale() -> None:
 
         def fake_run(command, **_kwargs):
             Path(command[-1]).write_bytes(b"assembled-video")
+            return video_service.subprocess.CompletedProcess(command, 0, "", "")
 
         video_service.subprocess.run = fake_run
         job_id = create_job(project_id, "sequence_assembly", "成片合成已排队")
@@ -128,7 +129,7 @@ def test_rejects_missing_and_placeholder_videos() -> None:
         video_service.assemble_project_video(project_id, job_id)
         job = get_job(job_id)
         assert job["status"] == "failed"
-        assert "不是可用于成片的模型生成结果" in (job["error_message"] or "")
+        assert "占位视频" in (job["error_message"] or "")
         print("PASS: assembly rejects missing and placeholder videos")
     finally:
         cleanup(project_id)

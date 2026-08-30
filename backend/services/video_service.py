@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -7,8 +8,17 @@ from ..database import connect, utc_now
 from ..providers.capabilities import validate_video_generation
 from ..providers.llm_provider import rewrite_video_prompt_for_safety
 from ..providers.video_provider import VideoAssetRequest, generate_video_asset, refresh_remote_video_task
-from ..services.job_service import update_job
+from ..services.job_service import ACTIVE_JOB_STATUSES, create_job, list_active_jobs, update_job
 from ..services.asset_service import public_asset_path
+
+
+class AssemblyError(Exception):
+    """合成前置校验失败，由路由转成中文 400，不得创建任务。"""
+
+    def __init__(self, message: str, code: str = "ASSEMBLY_INVALID"):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def prepare_shot_video_generation(
@@ -569,44 +579,280 @@ def _extract_cloud_task_id(text: str) -> str | None:
     return text[start:end]
 
 
+def _shot_label(index: int | None) -> str:
+    try:
+        return f"镜头 {int(index):02d}"
+    except (TypeError, ValueError):
+        return "镜头"
+
+
+def _is_real_shot_video(embedding_ref: str | None) -> bool:
+    if not embedding_ref:
+        return False
+    if embedding_ref.startswith("fallback:"):
+        return False
+    if embedding_ref.startswith("provider:ffmpeg"):
+        return False
+    return embedding_ref.startswith("provider:")
+
+
+def _local_asset_path(project_id: str, public_path: str) -> Path:
+    expected_prefix = f"/assets/{project_id}/"
+    raw = str(public_path or "").replace("\\", "/")
+    if not raw.startswith(expected_prefix):
+        raise AssemblyError(f"视频路径不属于当前项目资产目录。")
+    filename = raw[len(expected_prefix) :].split("/", 1)[0]
+    if not filename or filename in {".", ".."} or ".." in filename:
+        raise AssemblyError("视频路径无效。")
+    project_dir = (PROJECTS_DIR / project_id).resolve()
+    resolved = (project_dir / filename).resolve()
+    if resolved.parent != project_dir:
+        raise AssemblyError("视频路径超出当前项目资产目录。")
+    return resolved
+
+
+def _ffmpeg_concat_path(path: Path) -> str:
+    # concat demuxer 用单引号包裹；路径中的单引号按 ffmpeg 规则转义。
+    return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
+
+
+def _latest_final_assets(project_id: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM assets
+            WHERE project_id = ? AND type = 'final-video'
+            ORDER BY created_at DESC
+            """,
+            (project_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _active_assembly_job(project_id: str) -> dict | None:
+    jobs = [
+        job
+        for job in list_active_jobs(project_id)
+        if job.get("type") == "sequence_assembly" and job.get("status") in ACTIVE_JOB_STATUSES
+    ]
+    return jobs[0] if jobs else None
+
+
+def validate_assembly(project_id: str) -> dict:
+    """静态校验当前有效镜头是否可以合成。不创建任务、不调用 FFmpeg。"""
+    errors: list[str] = []
+    shot_rows: list[dict] = []
+    video_paths: list[str] = []
+    with connect() as conn:
+        project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not project:
+            return {
+                "ok": False,
+                "errors": ["项目不存在。"],
+                "shots": [],
+                "video_paths": [],
+                "shot_count": 0,
+                "ready_count": 0,
+                "stale": False,
+                "current_final": None,
+                "history": [],
+                "active_job": None,
+                "project": None,
+                "ffmpeg_available": bool(shutil.which("ffmpeg")),
+            }
+        rows = conn.execute(
+            """
+            SELECT s.id AS shot_id, s.shot_index, s.title, s.status, s.current_version_id,
+                   sv.id AS version_id, sv.video_path,
+                   a.id AS asset_id, a.project_id AS asset_project_id, a.type AS asset_type,
+                   a.embedding_ref AS video_ref, a.file_path AS asset_path
+            FROM shots s
+            LEFT JOIN shot_versions sv ON sv.id = s.current_version_id
+            LEFT JOIN assets a ON a.project_id = s.project_id AND a.file_path = sv.video_path
+            WHERE s.project_id = ?
+            ORDER BY s.shot_index
+            """,
+            (project_id,),
+        ).fetchall()
+        foreign = conn.execute(
+            """
+            SELECT a.project_id, a.file_path
+            FROM shots s
+            JOIN shot_versions sv ON sv.id = s.current_version_id
+            JOIN assets a ON a.file_path = sv.video_path
+            WHERE s.project_id = ? AND a.project_id != s.project_id
+            """,
+            (project_id,),
+        ).fetchall()
+
+    if not rows:
+        errors.append("项目还没有制作镜头，请先完成分镜并生成镜头视频。")
+
+    seen_index: set[int] = set()
+    for row in rows:
+        item = dict(row)
+        label = _shot_label(item.get("shot_index"))
+        issue = ""
+        index = item.get("shot_index")
+        if index in seen_index:
+            issue = f"{label} 的镜头顺序重复，请检查分镜排序后再合成。"
+        elif index is not None:
+            seen_index.add(index)
+        if not issue and not item.get("current_version_id"):
+            issue = f"{label} 尚未生成视频，请先完成该镜头的视频生成。"
+        elif not issue and item.get("status") in {"video_invalid"}:
+            issue = f"{label} 的当前版本已失效，请重新生成当前版本。"
+        elif not issue and not item.get("video_path"):
+            issue = f"{label} 尚未生成视频，请先完成该镜头的视频生成。"
+        elif not issue and (not item.get("asset_id") or item.get("asset_project_id") != project_id):
+            if any(str(foreign_row["file_path"]) == str(item.get("video_path")) for foreign_row in foreign):
+                issue = f"{label} 的视频属于其他项目，不能进入成片。"
+            else:
+                issue = f"{label} 的视频不属于当前项目，不能进入成片。"
+        elif not issue and item.get("asset_type") not in {None, "video"}:
+            issue = f"{label} 的当前素材不是镜头视频，不能进入成片。"
+        elif not issue and not _is_real_shot_video(item.get("video_ref")):
+            issue = f"{label} 使用的是占位视频，不能进入成片，请替换为模型生成视频。"
+        else:
+            try:
+                local = _local_asset_path(project_id, item["video_path"])
+            except AssemblyError:
+                issue = f"{label} 的视频文件不存在或已失效，请重新生成当前版本。"
+                local = None
+            if not issue and (local is None or not local.is_file() or local.stat().st_size <= 0):
+                issue = f"{label} 的视频文件不存在或已失效，请重新生成当前版本。"
+            elif not issue:
+                video_paths.append(item["video_path"])
+        if issue:
+            errors.append(issue)
+        item["issue"] = issue
+        item["ready"] = not issue
+        shot_rows.append(item)
+
+    finals = _latest_final_assets(project_id)
+    current_final = dict(finals[0]) if finals else None
+    history = [dict(item) for item in finals[1:]]
+    active = _active_assembly_job(project_id)
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "shots": shot_rows,
+        "video_paths": video_paths,
+        "shot_count": len(shot_rows),
+        "ready_count": sum(1 for item in shot_rows if item["ready"]),
+        "stale": bool(project["assembly_stale"]),
+        "current_final": current_final,
+        "history": history,
+        "active_job": dict(active) if active else None,
+        "project": dict(project),
+        "ffmpeg_available": bool(shutil.which("ffmpeg")),
+    }
+
+
+def get_assembly_status(project_id: str) -> dict:
+    report = validate_assembly(project_id)
+    current = report["current_final"]
+    return {
+        "ok": report["ok"],
+        "can_assemble": report["ok"] and report["active_job"] is None,
+        "errors": report["errors"],
+        "shot_count": report["shot_count"],
+        "ready_count": report["ready_count"],
+        "stale": report["stale"],
+        "ffmpeg_available": report["ffmpeg_available"],
+        "audio_scope": "video_only",
+        "audio_note": "当前合成只拼接并统一视频流规格，不混音、不加旁白或配乐。",
+        "active_job": (
+            {
+                "id": report["active_job"]["id"],
+                "status": report["active_job"]["status"],
+                "progress": report["active_job"]["progress"],
+                "message": report["active_job"]["message"],
+                "stage": report["active_job"].get("stage") or "",
+                "error_message": report["active_job"].get("error_message") or "",
+            }
+            if report["active_job"]
+            else None
+        ),
+        "current_final": (
+            {
+                "id": current["id"],
+                "file_path": current["file_path"],
+                "created_at": current["created_at"],
+                "description": current.get("description") or "",
+                "shot_count": _shot_count_from_description(current.get("description") or ""),
+            }
+            if current
+            else None
+        ),
+        "history": [
+            {
+                "id": item["id"],
+                "file_path": item["file_path"],
+                "created_at": item["created_at"],
+                "description": item.get("description") or "",
+            }
+            for item in report["history"]
+        ],
+        "shots": [
+            {
+                "shot_id": item.get("shot_id"),
+                "shot_index": item.get("shot_index"),
+                "title": item.get("title") or "",
+                "ready": item.get("ready"),
+                "issue": item.get("issue") or "",
+                "video_path": item.get("video_path") or "",
+                "status": item.get("status") or "",
+            }
+            for item in report["shots"]
+        ],
+    }
+
+
+def _shot_count_from_description(description: str) -> int | None:
+    marker = "from "
+    if marker not in description:
+        return None
+    try:
+        return int(description.split("from ", 1)[1].split(" ", 1)[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def enqueue_project_assembly(project_id: str) -> dict:
+    """入队前完成静态校验。已有活动任务时复用，不创建并发合成。"""
+    report = validate_assembly(project_id)
+    if not report["ok"]:
+        raise AssemblyError(report["errors"][0] if report["errors"] else "当前项目不满足合成条件。")
+    active = report["active_job"]
+    if active:
+        return {
+            "job_id": active["id"],
+            "status": active["status"],
+            "reused": True,
+            "message": "成片合成任务已在进行中，已返回现有任务。",
+            "shot_count": report["shot_count"],
+        }
+    job_id = create_job(project_id, "sequence_assembly", "成片合成已排队", stage="queued")
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "reused": False,
+        "message": "成片合成已排队",
+        "shot_count": report["shot_count"],
+    }
+
+
 def assemble_project_video(project_id: str, job_id: str) -> None:
+    concat_file: Path | None = None
+    output_path: Path | None = None
     update_job(job_id, "running", 8, "正在检查成片合成条件", stage="validate_inputs")
     try:
-        with connect() as conn:
-            project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-            if not project:
-                raise RuntimeError("项目不存在。")
-            rows = conn.execute(
-                """
-                SELECT s.shot_index, s.title, sv.video_path, a.embedding_ref AS video_ref
-                FROM shots s
-                JOIN shot_versions sv ON sv.id = s.current_version_id
-                LEFT JOIN assets a ON a.project_id = s.project_id AND a.file_path = sv.video_path
-                WHERE s.project_id = ?
-                ORDER BY s.shot_index
-                """,
-                (project_id,),
-            ).fetchall()
-        video_paths = [row["video_path"] for row in rows if row["video_path"]]
-        if not video_paths:
-            raise RuntimeError("没有可用于合成的镜头视频，请先生成镜头视频。")
-        missing = [row["title"] for row in rows if not row["video_path"]]
-        if missing:
-            raise RuntimeError("以下镜头尚未生成视频：" + "、".join(missing))
-        invalid = [row["title"] for row in rows if not _is_real_shot_video(row["video_ref"])]
-        if invalid:
-            # 只有每个镜头都有模型视频时才允许合成，避免占位素材混入成片。
-            raise RuntimeError(
-                "以下镜头的视频不是可用于成片的模型生成结果，无法合成：" + "、".join(invalid)
-            )
-        missing_files = [
-            row["title"]
-            for row in rows
-            if not _local_asset_path(project_id, row["video_path"]).is_file()
-        ]
-        if missing_files:
-            raise RuntimeError("以下镜头的视频文件不存在或已失效：" + "、".join(missing_files))
-
+        report = validate_assembly(project_id)
+        if not report["ok"]:
+            raise RuntimeError(" ".join(report["errors"]))
+        project = report["project"]
+        video_paths = report["video_paths"]
         update_job(job_id, "running", 30, "正在统一规格并合成镜头视频", stage="concat")
         asset_id = f"asset_{uuid.uuid4().hex[:10]}"
         filename = f"{asset_id}.mp4"
@@ -632,6 +878,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             "24",
             "-c:v",
             "libx264",
+            "-an",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -639,12 +886,19 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             str(output_path),
         ]
         try:
-            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
         finally:
-            concat_file.unlink(missing_ok=True)
-        if not output_path.is_file() or output_path.stat().st_size == 0:
-            raise RuntimeError("FFmpeg 未生成有效的成片文件。")
+            if concat_file is not None:
+                concat_file.unlink(missing_ok=True)
+                concat_file = None
+        if completed.returncode != 0:
+            raise RuntimeError("成片合成失败，请检查各镜头视频是否完整后重试。")
+        if output_path is None or not output_path.is_file() or output_path.stat().st_size == 0:
+            if output_path is not None:
+                output_path.unlink(missing_ok=True)
+            raise RuntimeError("成片文件无效，未登记资产。请重新合成。")
         video_path = public_asset_path(project_id, filename)
+        shot_count = len(video_paths)
         with connect() as conn:
             conn.execute(
                 """
@@ -657,8 +911,8 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
                     project_id,
                     "final-video",
                     f"{project['title']} Final Cut",
-                    f"Assembled final cut from {len(video_paths)} shot videos.",
-                    "FFmpeg sequence assembly",
+                    f"Assembled final cut from {shot_count} shot videos.",
+                    "FFmpeg sequence assembly (video only)",
                     video_path,
                     "provider:ffmpeg:sequence-assembly",
                     utc_now(),
@@ -675,29 +929,17 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             "成片已生成，可在工作区预览或下载",
             stage="persist_asset",
             event_type="asset.ready",
-            detail={"asset_path": video_path, "shot_count": len(video_paths)},
+            detail={"asset_path": video_path, "shot_count": shot_count},
         )
     except Exception as exc:
-        update_job(job_id, "failed", 100, "成片合成失败", str(exc), stage="failed")
-
-
-def _local_asset_path(project_id: str, public_path: str) -> Path:
-    filename = public_path.rsplit("/", 1)[-1]
-    return PROJECTS_DIR / project_id / filename
-
-
-def _ffmpeg_concat_path(path: Path) -> str:
-    return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
-
-
-def _is_real_shot_video(embedding_ref: str | None) -> bool:
-    if not embedding_ref:
-        return False
-    if embedding_ref.startswith("fallback:"):
-        return False
-    if embedding_ref.startswith("provider:ffmpeg"):
-        return False
-    return embedding_ref.startswith("provider:")
+        if concat_file is not None:
+            concat_file.unlink(missing_ok=True)
+        if output_path is not None and output_path.exists() and output_path.stat().st_size == 0:
+            output_path.unlink(missing_ok=True)
+        message = str(exc)
+        if "ffmpeg" in message.lower() and "成片合成失败" not in message:
+            message = "成片合成失败，请检查各镜头视频是否完整后重试。"
+        update_job(job_id, "failed", 100, "成片合成失败", message, stage="failed")
 
 
 def _safe_video_mode(video_mode: str | None) -> str:
