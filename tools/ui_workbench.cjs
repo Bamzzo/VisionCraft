@@ -2,6 +2,10 @@
  * UI-0～UI-1 工作台交互原型验收（真实浏览器，mock 后端，无付费 API）。
  * 由 tools/test_ui_workbench.py 通过 npx playwright 调用。
  *
+ * 本脚本只验收当前四区工作台（左项目 / 中阶段工作区 / 右阶段导航 / 底任务中心）。
+ * output/playwright 下旧文件（workbench-*.png、short-*.png、medium-*.png、
+ * browser-short-review.png）是历史产物，不作为本轮主验收证据。
+ *
  * 覆盖：
  *  1. 新建项目不改变当前项目；创建项目后自动切换并恢复摘要；
  *  2. 新建草稿未提交时切换项目的未保存守卫（取消/放弃）；
@@ -11,7 +15,7 @@
  *  6. 上游重做后下游阶段显示失效；
  *  7. 任务进度更新无需刷新；
  *  8. 切换项目后旧任务事件不污染新项目；
- *  9. 长中文与长型号名不溢出（1440×900 / 1920×1080 / 窄窗口）。
+ *  9. 长中文标题最多 2 行省略，完整标题可访问，窗口无横向溢出。
  */
 const fs = require("fs");
 const path = require("path");
@@ -29,6 +33,17 @@ function shortText(seed) {
     "但是族中长老已经设下阻碍，他只能选择冒险一搏。" +
     "最终他停在山门前，留下未说完的话。"
   );
+}
+
+function mediumText() {
+  const unit = shortText("中等");
+  let text = "";
+  let i = 0;
+  while (text.length < 2200) {
+    i += 1;
+    text += `第${i}段。${unit}`;
+  }
+  return text;
 }
 
 async function launchBrowser() {
@@ -128,12 +143,29 @@ async function main() {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#newProjectBtn");
 
+    const layoutOk = await page.evaluate(() => ({
+      left: Boolean(document.querySelector(".left-panel #projectSection")),
+      center: Boolean(document.querySelector(".center-panel #stageWorkspace")),
+      right: Boolean(document.querySelector(".right-panel #stageNav")),
+      task: Boolean(document.querySelector("#taskDrawer, #taskCenterBody")),
+      oldReview: Boolean(document.querySelector("#adaptationReview")),
+      oldConsole: Boolean(document.querySelector("#supervisorConsole")),
+    }));
+    if (!layoutOk.left || !layoutOk.center || !layoutOk.right || !layoutOk.task) {
+      throw new Error(`未检测到四区工作台布局：${JSON.stringify(layoutOk)}`);
+    }
+    if (layoutOk.oldReview || layoutOk.oldConsole) {
+      throw new Error("页面仍包含旧版改编审核 / 监制控制台主区域");
+    }
+    pass("浏览器加载的是当前四区工作台，而非旧版中间审核 + 右侧监制控制台");
+
     /* ===== 1 & 2：创建自动切换 + 新建不改变当前项目 + 未保存守卫 ===== */
     const titleA = `工作台甲-${Date.now()}`;
     const idA = await uiCreateProject(page, titleA, shortText("A"));
     created.push(idA);
     if ((await activeProjectId(page)) !== idA) throw new Error("创建项目 A 后未自动切换");
     if ((await summaryValue(page, "项目名称")) !== titleA) throw new Error("创建后未恢复项目摘要");
+    await page.screenshot({ path: path.join(OUT, "ui-01-empty-project-1440.png"), fullPage: true });
     pass("创建项目后自动选中新项目并恢复项目摘要");
 
     const titleB = `工作台乙-${Date.now()}`;
@@ -170,6 +202,32 @@ async function main() {
     if (await page.locator("#projectForm").isVisible()) throw new Error("放弃修改后应恢复项目摘要态");
     pass("新建草稿未提交时切换项目触发守卫（取消保留 / 放弃切换）");
 
+    /* ===== 故事线审核场景截图（中等文本，真实 API） ===== */
+    const titleM = `工作台故事线-${Date.now()}`.slice(0, 120);
+    const mediumCreated = await apiPost(page, "/api/projects", {
+      title: titleM,
+      source_text: mediumText(),
+      style: "cinematic clean realism",
+      aspect_ratio: "16:9",
+      duration_seconds: 5,
+    });
+    const idM = mediumCreated.id;
+    created.push(idM);
+    await apiPost(page, `/api/projects/${idM}/run`);
+    await waitProject(page, idM, (p) => p.status === "awaiting_storyline_review" || (p.storylines || []).length > 0);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#newProjectBtn");
+    await selectProject(page, idM);
+    await page.click('[data-stage-id="storyline"]');
+    await page.waitForFunction(
+      () => document.querySelector("#stageWorkspaceTitle")?.textContent.includes("故事线"),
+      null,
+      { timeout: 5000 }
+    );
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: path.join(OUT, "ui-02-storyline-review-1440.png"), fullPage: true });
+    pass("中等文本故事线审核场景已用新版工作台截图");
+
     /* ===== 3：点击阶段只改变查看阶段 ===== */
     const projA = await driveToStoryboard(page, idA);
     // 为首个镜头生成关键帧（同步 mock），制造下游产物，用于验证重做后的「已失效」标记。
@@ -185,6 +243,10 @@ async function main() {
     if (execBefore !== execAfter) throw new Error(`点击阶段改变了执行阶段：${execBefore} -> ${execAfter}`);
     const jobsAfter = await page.evaluate(() => (document.querySelector("#jobMessage")?.textContent || ""));
     if (jobsBefore !== jobsAfter) throw new Error("点击阶段触发了新任务");
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: path.join(OUT, "ui-03-story-bible-1920.png"), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 900 });
     pass("点击右侧阶段只切换查看内容，不改变执行阶段、不启动任务");
 
     /* ===== 5 & 6：脏状态门控 + 上游重做下游失效 ===== */
@@ -255,11 +317,12 @@ async function main() {
     if (timelineRun.includes("镜头生成参数") || timelineRun.includes("提交至") || timelineRun.includes("重生成 Story Bible")) {
       throw new Error(`任务中心时间线出现非本项目事件，存在串项目污染：${timelineRun.slice(0, 120)}`);
     }
+    await page.screenshot({ path: path.join(OUT, "ui-04-task-center-1440.png"), fullPage: true });
     await page.screenshot({ path: path.join(OUT, "workbench-task-center.png"), fullPage: true });
     pass("任务中心在不刷新页面的情况下显示任务与进度，且时间线无串项目污染");
 
-    /* ===== 9：长中文与长型号名不溢出 ===== */
-    const longTitle = `长标题-${"影视创作工作台长中文标题溢出验证".repeat(6)}-${Date.now()}`;
+    /* ===== 9：长中文标题 2 行省略 + 无横向溢出 ===== */
+    const longTitle = (`长标题-${"影视创作工作台长中文标题溢出验证".repeat(4)}-${Date.now()}`).slice(0, 120);
     const idD = await uiCreateProject(page, longTitle, shortText("D"));
     created.push(idD);
     for (const width of [1440, 1920, 1100]) {
@@ -268,14 +331,40 @@ async function main() {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       if (overflow > 2) throw new Error(`宽度 ${width} 下出现横向溢出 ${overflow}px`);
     }
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const titleOverflow = await page.evaluate(() => {
-      const node = document.querySelector(".project-item.active strong");
-      return node ? node.scrollWidth - node.clientWidth : 0;
+    await page.setViewportSize({ width: 1100, height: 900 });
+    const titleInfo = await page.evaluate(() => {
+      const item = document.querySelector(".project-item.active");
+      const node = item?.querySelector(".project-item-title");
+      const meta = item?.querySelector(".project-item-meta");
+      const idNode = item?.querySelector(".project-item-id");
+      if (!item || !node) return null;
+      const style = getComputedStyle(node);
+      return {
+        cardHeight: item.getBoundingClientRect().height,
+        lineClamp: style.webkitLineClamp,
+        titleAttr: item.getAttribute("title") || "",
+        fullText: node.textContent || "",
+        clamped: node.scrollHeight > node.clientHeight + 1,
+        metaVisible: Boolean(meta && meta.getBoundingClientRect().height > 8),
+        metaText: meta?.innerText || "",
+        idVisible: Boolean(idNode && idNode.getBoundingClientRect().height > 6),
+        idText: idNode?.textContent || "",
+      };
     });
-    if (titleOverflow > 2) throw new Error("长项目标题未换行，溢出容器");
+    if (!titleInfo) throw new Error("未找到项目列表活动项标题");
+    if (titleInfo.lineClamp !== "2") throw new Error(`长标题未限制为 2 行，实际 line-clamp=${titleInfo.lineClamp}`);
+    if (titleInfo.cardHeight > 150) throw new Error(`长标题项目卡过高：${titleInfo.cardHeight}px`);
+    if (titleInfo.titleAttr !== longTitle) throw new Error("项目卡 title 未保留完整标题");
+    if (titleInfo.fullText !== longTitle) throw new Error("项目真实名称被改写，仅允许视觉截断");
+    if (!titleInfo.clamped) throw new Error("超长标题未被截断，仍占据完整高度");
+    if (!titleInfo.metaVisible || !/文本理解|Story Bible|分镜|改编|故事线/.test(titleInfo.metaText)) {
+      throw new Error("项目卡阶段或更新时间被长标题挤出");
+    }
+    if (!titleInfo.idVisible || titleInfo.idText !== idD) throw new Error("项目卡未清晰显示项目 ID");
+    await page.screenshot({ path: path.join(OUT, "ui-05-long-title-1100.png"), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.screenshot({ path: path.join(OUT, "workbench-long-text.png"), fullPage: true });
-    pass("1440×900 / 1920×1080 / 窄窗口下无横向溢出，长中文标题正常换行");
+    pass("1440×900 / 1920×1080 / 1100 下无横向溢出，长标题最多 2 行且完整标题可访问");
 
     console.log("ALL UI WORKBENCH TESTS PASSED");
   } finally {

@@ -240,9 +240,9 @@ function renderProjects() {
       const failed = ["failed", "video_failed"].includes(project.status);
       const progress = projectProgress(project);
       return `
-      <button class="project-item ${active ? "active" : ""}" data-project-id="${escapeHtml(project.id)}">
+      <button class="project-item ${active ? "active" : ""}" data-project-id="${escapeHtml(project.id)}" title="${escapeHtml(project.title)}">
         <div class="project-item-head">
-          <strong>${escapeHtml(project.title)}</strong>
+          <strong class="project-item-title">${escapeHtml(project.title)}</strong>
           <span class="status-pill ${statusClass(project.status)}">${escapeHtml(project.status)}</span>
         </div>
         <div class="project-progress" title="制作进度"><span style="width:${progress}%"></span></div>
@@ -250,6 +250,7 @@ function renderProjects() {
           <span>${escapeHtml(projectStageLabel(project))}${failed ? " · 异常" : ""}</span>
           <span>${escapeHtml(formatTime(project.updated_at))}</span>
         </div>
+        <div class="project-item-id">${escapeHtml(project.id)}</div>
       </button>`;
     })
     .join("");
