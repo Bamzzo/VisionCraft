@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 
 from ..database import connect, from_json, to_json, utc_now
+from ..providers.live_budget import BudgetBlockedError, assert_live_vision_allowed
 from ..providers.llm_adapter import JsonParseError, LiveCallNotAuthorized, ProviderError
 from ..providers.llm_catalog import ModelConfigError
 from ..providers.vision_adapter import (
@@ -57,9 +58,17 @@ def review_project_image(
 
     if mode != "mock":
         try:
+            assert_live_vision_allowed(
+                project_id,
+                prompt_chars=len(vision_prompt_for_keyframe(role)),
+                source_text=project.get("source_text") or "",
+            )
             parsed = complete_vision_json(prepared)
             result = _coerce_vision_result(parsed, mock_result)
             source = "live_vision"
+        except BudgetBlockedError as exc:
+            update_job(job_id, "failed", 100, str(exc), str(exc), stage="vision_review", detail=meta)
+            raise
         except (LiveCallNotAuthorized, JsonParseError, ProviderError) as exc:
             error = str(exc)
             if mode == "live_strict":

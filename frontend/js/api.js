@@ -76,6 +76,14 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ target }),
     }),
+  registerLocalKeyframe: (projectId, shotId, file) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request(`/api/projects/${projectId}/shots/${shotId}/keyframes/register-local`, {
+      method: "POST",
+      body,
+    });
+  },
   generateVideo: (projectId, shotId, payload = {}) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video`, {
       method: "POST",

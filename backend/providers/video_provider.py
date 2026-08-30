@@ -14,6 +14,7 @@ from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
 from ..services.asset_service import public_asset_path
 from ..services.media_transfer_service import MediaTransferError, prepare_image_reference
+from .live_budget import assert_live_video_allowed
 
 
 @dataclass
@@ -251,6 +252,7 @@ def _dashscope_media_items(request: VideoAssetRequest, model: str) -> list[dict]
 
 
 def _generate_minimax_video(request: VideoAssetRequest) -> VideoGenerationResult:
+    assert_live_video_allowed(request.project_id, seconds=request.duration_seconds)
     base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
     model = request.model_override or os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     prompt = _build_video_prompt(request)

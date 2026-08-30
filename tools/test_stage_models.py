@@ -186,6 +186,8 @@ def test_text_request_construction() -> None:
     assert prepared.url.endswith("/chat/completions")
     assert prepared.body["model"] == DEEPSEEK_FLASH
     assert prepared.body["response_format"] == {"type": "json_object"}
+    assert prepared.body["thinking"] == {"type": "disabled"}
+    assert prepared.body["max_tokens"] == 4096
     assert all(not isinstance(message.get("content"), list) for message in prepared.body["messages"])
     meta = json.dumps(prepared.public_metadata(), ensure_ascii=False)
     assert SAMPLE[:20] not in meta
@@ -269,6 +271,8 @@ def test_live_mock_transport_maps_to_p4() -> None:
         assert project["adaptation_options"][0]["source"] == "live_llm"
         assert project["adaptation_options"][0]["used_local_fallback"] == 0
         assert captured_requests()[0].body["model"] == DEEPSEEK_FLASH
+        assert captured_requests()[0].body["thinking"] == {"type": "disabled"}
+        assert captured_requests()[0].body["max_tokens"] == 4096
         print("PASS: mocked live LLM maps onto existing P4 option fields")
     finally:
         _cleanup(project_id)
@@ -314,6 +318,8 @@ def test_vision_request_and_redaction() -> None:
             model=DEEPSEEK_VISION,
             role="first_frame",
         )
+        assert prepared.body["thinking"] == {"type": "disabled"}
+        assert prepared.body["max_tokens"] == 2048
         assert payload_contains_data_url(prepared.body)
         meta = prepared.public_metadata()
         assert meta["asset_id"] == asset_id

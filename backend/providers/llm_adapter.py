@@ -13,6 +13,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from .live_budget import TEXT_MAX_TOKENS, THINKING_DISABLED, public_request_plan
 from .llm_catalog import DEEPSEEK_CHAT_URL, DEEPSEEK_FLASH, live_llm_authorized
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?", re.I)
@@ -57,14 +58,18 @@ class PreparedChatRequest:
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "text":
                         text_chars += len(str(block.get("text") or ""))
+        thinking = self.body.get("thinking") or {}
         return {
             "provider": self.provider,
             "model": self.model,
             "endpoint": self.url,
             "message_count": len(messages),
             "prompt_chars": text_chars,
+            "max_tokens": self.body.get("max_tokens"),
+            "thinking": thinking.get("type") or "disabled",
             "response_format": (self.body.get("response_format") or {}).get("type"),
             "has_images": False,
+            "kind": "text",
         }
 
 
@@ -103,17 +108,40 @@ def build_text_request(
         "messages": messages,
         "temperature": temperature,
         "response_format": {"type": "json_object"},
+        "max_tokens": TEXT_MAX_TOKENS,
+        "thinking": dict(THINKING_DISABLED),
     }
     if extra_body:
-        body.update(extra_body)
+        extra = dict(extra_body)
+        extra.pop("thinking", None)
+        requested = extra.pop("max_tokens", TEXT_MAX_TOKENS)
+        try:
+            requested_tokens = int(requested)
+        except (TypeError, ValueError):
+            requested_tokens = TEXT_MAX_TOKENS
+        body.update(extra)
+        body["max_tokens"] = max(1, min(requested_tokens, TEXT_MAX_TOKENS))
+        body["thinking"] = dict(THINKING_DISABLED)
     url = _chat_url(provider)
+    prompt_chars = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            prompt_chars += len(content)
+    plan = public_request_plan(
+        provider=provider,
+        model=body["model"],
+        kind="text",
+        prompt_chars=prompt_chars,
+        max_tokens=body["max_tokens"],
+    )
     return PreparedChatRequest(
         provider=provider,
         model=body["model"],
         url=url,
         body=body,
         timeout=timeout,
-        metadata={"provider": provider, "model": body["model"]},
+        metadata=plan,
     )
 
 

@@ -75,6 +75,28 @@ VISIONCRAFT_ALLOW_LIVE_LLM=1
 
 才会真正发出 HTTP。P7-A 默认不设置该变量。后续真实前端测试需要用户明确确认 Provider、模型、次数、参数和预算。
 
+文本请求固定：
+
+- `thinking: { "type": "disabled" }`
+- `max_tokens: 4096`（Story Bible / 分镜 JSON 需要比 2048 更宽的余量）
+- 视觉请求：`thinking disabled` + `max_tokens: 2048`
+- 真实文本阶段最多 3 次：改编方案、Story Bible、分镜
+- 视觉 1 次、MiniMax I2V 1 次
+- 本地估算按字符≈token、再加 30% 缓冲，并按 DeepSeek 峰值 cache-miss 美元价 × 7.5 汇率换算人民币
+- MiniMax H3 768P 按官方 0.50 元/秒，最短 4 秒 = 2.00 元
+- 总额若可能超过 5 元，请求前返回 `BLOCKED_BEFORE_CALL`，不发送 HTTP
+- 视频真实提交另需 `VISIONCRAFT_ALLOW_LIVE_VIDEO=1` 或与文本共用的 `VISIONCRAFT_ALLOW_LIVE_LLM=1`
+
+本地 JPEG/PNG 首帧：
+
+- `POST /api/projects/{id}/shots/{shot_id}/keyframes/register-local`（multipart `file`）
+- 只接受 JPEG/PNG 魔数，拒绝 SVG 与项目外路径
+- 复制进当前项目资产目录并登记为 `first-frame` / `first_frame`
+- **不**调用 Ark / Seedream / SiliconFlow 等图片生成接口
+- 镜头工作区可选择本地文件；Vision 与 I2V 仅在 JPEG/PNG 首帧登记后可用
+
+详见 `docs/real-live-test-preflight.md`。
+
 ## 4. 适配器与媒体传递
 
 - 文本：`backend/providers/llm_adapter.py` 只构造 Chat Completions 文本消息。

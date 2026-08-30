@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 
 from ..database import connect, from_json, to_json, utc_now
+from ..providers.live_budget import BudgetBlockedError, assert_live_text_allowed
 from ..providers.llm_adapter import (
     JsonParseError,
     LiveCallNotAuthorized,
@@ -166,6 +167,16 @@ def run_text_stage(
         model=config["model"],
         messages=messages,
     )
+    try:
+        plan = assert_live_text_allowed(
+            project["id"],
+            stage,
+            int(prepared.public_metadata().get("prompt_chars") or 0),
+            planner_context(project),
+        )
+        prepared.metadata.update(plan)
+    except BudgetBlockedError:
+        raise
     public_meta = redact_value(prepared.public_metadata())
     try:
         parsed = complete_json(prepared)
@@ -175,6 +186,8 @@ def run_text_stage(
         return result, lineage
     except (LiveCallNotAuthorized, JsonParseError, ProviderError, ModelConfigError) as exc:
         reason = _safe_error_text(exc)
+        if isinstance(exc, BudgetBlockedError) or getattr(exc, "code", "") == "BLOCKED_BEFORE_CALL":
+            raise
         if mode == "live_strict":
             raise ModelConfigError("LIVE_LLM_FAILED", _strict_failure_message(exc, stage, reason)) from exc
         lineage = lineage_from_config(config, source="local_fallback", used_local_fallback=True)

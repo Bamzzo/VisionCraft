@@ -350,6 +350,26 @@ button:focus-visible,
   font-size: 12px;
 }
 
+.local-keyframe-register {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+
+.local-keyframe-register .mini-btn {
+  margin: 0;
+}
+
+.local-keyframe-thumb {
+  width: 72px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+
 .icon-btn {
   width: 34px;
   padding: 0;

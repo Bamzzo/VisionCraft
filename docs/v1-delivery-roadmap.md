@@ -306,6 +306,19 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - `tools/test_provider_capabilities.py`
 - 既有 P1～P6-E 与改编回归命令仍通过。
 
+### P7-A 护栏：预算上限与本地 JPEG/PNG 首帧
+
+**状态：** 2026-08-30 已完成本地无费用护栏。仍未发起真实付费 API 调用。
+
+**已实现：**
+
+- DeepSeek 文本强制 `thinking disabled` 与 `max_tokens=4096`；视觉保持 thinking disabled 并限制 `max_tokens=2048`；
+- 5 元预算本地估算（30% 缓冲）；超预算或超过三次文本 / 一次视觉 / 一次视频时返回 `BLOCKED_BEFORE_CALL`；
+- 镜头工作区可登记本地 JPEG/PNG 为首帧，不走图片生成 Provider；SVG 不能用于 Vision 或 I2V；
+- 真实 HTTP 仍需 `VISIONCRAFT_ALLOW_LIVE_LLM=1`（视频可另用 `VISIONCRAFT_ALLOW_LIVE_VIDEO=1`）。
+
+**验收：** `tools/test_live_safeguards.py`、`tools/test_local_keyframe_browser.py`
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Body, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,7 @@ from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
 from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
+from .services.local_keyframe_service import LocalKeyframeError, register_local_first_frame
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.model_config_service import list_stage_configs, save_stage_config, set_generation_mode
 from .providers.llm_catalog import ModelConfigError
@@ -531,6 +532,22 @@ def select_keyframes_endpoint(project_id: str, shot_id: str, payload: KeyframeSe
         raise HTTPException(status_code=404, detail="Project not found")
     try:
         return select_shot_keyframes(project_id, shot_id, payload.first_frame_path, payload.last_frame_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/shots/{shot_id}/keyframes/register-local")
+async def register_local_keyframe_endpoint(
+    project_id: str,
+    shot_id: str,
+    file: UploadFile = File(...),
+) -> dict:
+    content = await file.read()
+    try:
+        return register_local_first_frame(project_id, shot_id, content, filename=file.filename or "")
+    except LocalKeyframeError as exc:
+        status = 404 if exc.code in {"PROJECT_NOT_FOUND", "SHOT_NOT_FOUND"} else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

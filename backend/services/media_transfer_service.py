@@ -21,7 +21,10 @@ from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
 
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+REGISTER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 MAX_LOCAL_IMAGE_BYTES = 12 * 1024 * 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 class MediaTransferError(RuntimeError):
@@ -64,13 +67,15 @@ def prepare_image_reference(
             "IMAGE_TOO_LARGE",
             f"Reference image is {len(content)} bytes; limit is {MAX_LOCAL_IMAGE_BYTES} bytes before provider upload.",
         )
+    mime_type, sniffed_suffix = sniff_raster_image(content, allow_webp=True)
     suffix = local_path.suffix.lower()
-    if suffix not in SUPPORTED_IMAGE_SUFFIXES:
+    if suffix == ".svg" or sniffed_suffix == ".svg":
+        raise MediaTransferError("SVG_NOT_ALLOWED", "SVG cannot be sent to Vision or I2V providers.")
+    if suffix not in SUPPORTED_IMAGE_SUFFIXES and sniffed_suffix not in SUPPORTED_IMAGE_SUFFIXES:
         raise MediaTransferError(
             "UNSUPPORTED_IMAGE_FORMAT",
-            f"Reference image format {suffix or 'unknown'} is not supported. Use PNG, JPEG, or WebP.",
+            f"Reference image format {suffix or 'unknown'} is not supported. Use PNG or JPEG.",
         )
-    mime_type = mimetypes.guess_type(local_path.name)[0] or "image/png"
     sha256 = hashlib.sha256(content).hexdigest()
     mode, reference = _compile_reference(content, mime_type, public_path)
     _record_transfer(
@@ -84,6 +89,22 @@ def prepare_image_reference(
     )
     _backfill_asset_metadata(asset["id"], mime_type, len(content), sha256)
     return MediaReference(asset["id"], role, mode, reference, mime_type, sha256, len(content))
+
+
+def sniff_raster_image(content: bytes, *, allow_webp: bool = False, register_only: bool = False) -> tuple[str, str]:
+    """Detect JPEG/PNG from magic bytes. SVG and unknown types are rejected."""
+    if not content:
+        raise MediaTransferError("UNSUPPORTED_IMAGE_FORMAT", "图片内容为空。")
+    if content.startswith(PNG_MAGIC):
+        return "image/png", ".png"
+    if content.startswith(JPEG_MAGIC):
+        return "image/jpeg", ".jpg"
+    if allow_webp and not register_only and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    head = content[:256].lstrip().lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in content[:2048].lower()):
+        raise MediaTransferError("SVG_NOT_ALLOWED", "不能将 SVG 用于视觉检查或 I2V。请登记 JPEG 或 PNG。")
+    raise MediaTransferError("UNSUPPORTED_IMAGE_FORMAT", "只接受 JPEG 或 PNG，且必须与文件内容一致。")
 
 
 def _compile_reference(content: bytes, mime_type: str, public_path: str) -> tuple[str, str]:

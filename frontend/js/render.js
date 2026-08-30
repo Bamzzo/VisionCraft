@@ -70,6 +70,11 @@ function activeVideoTask(shot) {
   return shot?.active_video_task || (shot?.video_tasks || [])[0] || null;
 }
 
+function isI2VFramePath(path) {
+  const suffix = (path || "").split(".").pop()?.toLowerCase();
+  return ["png", "jpg", "jpeg", "webp"].includes(suffix);
+}
+
 function keyframeCandidates() {
   return (state.project?.assets || []).filter((asset) => {
     const suffix = asset.file_path?.split(".").pop()?.toLowerCase();
@@ -1268,7 +1273,8 @@ function shotEditorHtml(project, shot, stage) {
         .join("")}</div>`
     : "";
 
-  const preview = stage === "video" ? videoPreview : keyframePreview;
+  const firstFrameReady = isI2VFramePath(draft.first_frame_path || version?.first_frame_path);
+  const preview = stage === "video" && (realVideo || waitingRemote || !firstFrameReady) ? videoPreview : keyframePreview;
 
   return `
     <div class="asset-detail-head">
@@ -1326,8 +1332,18 @@ function shotEditorHtml(project, shot, stage) {
       </div>
       <p class="muted-text" id="videoCapabilityHint">${escapeHtml(constraint.hint)}</p>
       <label>首帧资产 ${draft.first_frame_path ? "· 已选" : "· 未选"}<select id="firstFrameSelect" data-shot-track>${optionHtml(draft.first_frame_path)}</select></label>
+      <div class="local-keyframe-register">
+        <label class="secondary-btn mini-btn">
+          登记本地 JPEG/PNG 为首帧
+          <input id="localFirstFrameInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" hidden />
+        </label>
+        <span class="status-pill ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "success" : "warning"}" data-first-frame-status>
+          ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "已登记为首帧" : "尚未登记 JPEG/PNG 首帧"}
+        </span>
+        ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? `<img class="local-keyframe-thumb" src="${escapeHtml(draft.first_frame_path || version?.first_frame_path)}" alt="已登记首帧" />` : ""}
+      </div>
       <label>尾帧资产 ${draft.last_frame_path ? "· 已选" : "· 未选"}<select id="lastFrameSelect" data-shot-track>${optionHtml(draft.last_frame_path)}</select></label>
-      ${stage === "keyframes" ? `<div class="button-row compact-row"><button class="secondary-btn mini-btn" data-adapt="vision-review" data-asset-path="${escapeHtml(draft.first_frame_path || version?.first_frame_path || "")}">用视觉模型检查当前首帧</button></div>` : ""}
+      ${stage === "keyframes" ? `<div class="button-row compact-row"><button class="secondary-btn mini-btn" data-adapt="vision-review" data-asset-path="${escapeHtml(draft.first_frame_path || version?.first_frame_path || "")}" ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "" : "disabled"}>用视觉模型检查当前首帧</button></div>` : ""}
       <label>参考图 ${draft.reference_frame_path ? "· 已选" : "· 未选"}<select id="referenceFrameSelect" data-shot-track>${optionHtml(draft.reference_frame_path)}</select></label>
       <div class="button-row compact-row">
         <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存镜头草稿</button>
@@ -1782,7 +1798,7 @@ function evaluateVideoDraft(shot, version, draft) {
   const durations = provider?.supported_durations || [];
   const ratios = provider?.supported_ratios || [];
   const projectRatio = state.project?.aspect_ratio;
-  const firstReady = Boolean(draft.first_frame_path || version?.first_frame_path);
+  const firstReady = isI2VFramePath(draft.first_frame_path || version?.first_frame_path);
   const lastReady = Boolean(draft.last_frame_path || version?.last_frame_path);
   const resolution = models.find((item) => item.id === draft.model)?.default_resolution || provider?.default_resolution || "未声明";
   const hint = [

@@ -527,11 +527,12 @@ async function onAdaptationAction(trigger) {
       state.project = await api.saveGenerationMode(state.project.id, mode);
     } else if (action === "vision-review") {
       const path = trigger.dataset.assetPath;
-      if (!path) {
-        showError("请先选择属于当前项目的关键帧。");
+      if (!path || !/\.(png|jpe?g|webp)$/i.test(path)) {
+        showError("请先登记当前项目的 JPEG 或 PNG 首帧，再进行视觉检查。");
         return;
       }
       state.project = await api.visionReview(state.project.id, { asset_path: path, role: "first_frame" });
+      showSuccess("视觉检查已完成。");
     } else if (action === "regen") {
       // 重做：先保存当前阶段草稿，再从该阶段重新执行（后端会失效必要下游）。
       await redoStage(state.project, trigger.dataset.stage);
@@ -636,6 +637,10 @@ async function redoFrontier(projectId, frontier) {
 function onInspectorChange(event) {
   const target = event.target;
   if (!target || !target.closest("#assetDetail")) return;
+  if (target.id === "localFirstFrameInput") {
+    onRegisterLocalKeyframe(target);
+    return;
+  }
   const ids = [
     "videoModeSelect",
     "videoProviderSelect",
@@ -668,6 +673,11 @@ function onInspectorChange(event) {
 }
 
 async function onInspectorClick(event) {
+  const adapt = event.target.closest("[data-adapt]");
+  if (adapt) {
+    await onAdaptationAction(adapt);
+    return;
+  }
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const shot = selectedShot();
@@ -795,6 +805,32 @@ async function onApplyKeyframes(trigger) {
     await refreshProject();
   } catch (error) {
     showError(`关键帧选择失败：${error.message}`);
+  }
+}
+
+async function onRegisterLocalKeyframe(input) {
+  const shot = selectedShot();
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!state.project || !shot) {
+    showError("请先选择一个镜头，再登记首帧。");
+    return;
+  }
+  if (!file) return;
+  const name = (file.name || "").toLowerCase();
+  if (!/\.(png|jpe?g)$/.test(name) && !["image/png", "image/jpeg"].includes(file.type)) {
+    showError("只接受 JPEG 或 PNG。请重新选择本地图片。");
+    return;
+  }
+  try {
+    const registered = await api.registerLocalKeyframe(state.project.id, shot.id, file);
+    if (state.videoDraft && state.videoDraft.shotId === shot.id && registered?.file_path) {
+      state.videoDraft.first_frame_path = registered.file_path;
+    }
+    await refreshProject();
+    showSuccess("已登记为首帧。");
+  } catch (error) {
+    showError(`登记首帧失败：${error.message}`);
   }
 }
 

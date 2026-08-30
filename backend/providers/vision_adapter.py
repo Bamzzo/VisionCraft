@@ -14,6 +14,7 @@ from ..database import connect
 from ..services.media_transfer_service import MediaTransferError, prepare_image_reference
 from .llm_adapter import JsonParseError, LiveCallNotAuthorized, ProviderError, parse_json_content
 from .llm_catalog import DEEPSEEK_VISION, live_vision_authorized
+from .live_budget import THINKING_DISABLED, VISION_MAX_TOKENS
 
 _DATA_URL_RE = re.compile(r"data:[^,\s]+;base64,[A-Za-z0-9+/=]+", re.I)
 
@@ -106,7 +107,8 @@ def build_vision_request(
             {"role": "user", "content": user_content},
         ],
         "response_format": {"type": "json_object"},
-        "thinking": {"type": "disabled"},
+        "max_tokens": VISION_MAX_TOKENS,
+        "thinking": dict(THINKING_DISABLED),
     }
     metadata = {
         "asset_id": media.asset_id,
@@ -119,6 +121,9 @@ def build_vision_request(
         "height": height,
         "byte_size": media.byte_size,
         "request_id": None,
+        "max_tokens": VISION_MAX_TOKENS,
+        "thinking": "disabled",
+        "kind": "vision",
     }
     _assert_metadata_safe(metadata)
     return PreparedVisionRequest(
@@ -251,6 +256,7 @@ def _chinese_media_error(exc: MediaTransferError) -> str:
         "INVALID_ASSET_PATH": "图片路径超出当前项目，已拒绝。",
         "ASSET_FILE_MISSING": "项目内图片元数据存在，但本地文件缺失。",
         "IMAGE_TOO_LARGE": str(exc),
-        "UNSUPPORTED_IMAGE_FORMAT": str(exc),
+        "UNSUPPORTED_IMAGE_FORMAT": "只接受 JPEG 或 PNG 图片。",
+        "SVG_NOT_ALLOWED": "视觉检查不能使用 SVG，请登记 JPEG 或 PNG 首帧。",
     }
     return mapping.get(exc.code, str(exc))

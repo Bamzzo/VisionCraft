@@ -104,6 +104,9 @@ def init_db() -> None:
         _ensure_assembly_settings(conn)
         _ensure_column(conn, "projects", "generation_mode", "TEXT NOT NULL DEFAULT 'mock'")
         _ensure_column(conn, "projects", "stale_stages", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(conn, "projects", "live_text_call_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "projects", "live_vision_call_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "projects", "live_video_call_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_workflow_model_configs(conn)
         _ensure_vision_reviews(conn)
         for table in ("adaptation_options", "story_bibles", "storyboard_drafts"):
