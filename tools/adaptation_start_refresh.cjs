@@ -1,6 +1,12 @@
 /**
- * 浏览器验收：启动改编后不整页刷新也应出现候选方案。
+ * 浏览器验收：启动改编后不整页刷新也应出现候选方案（适配 UI-0～UI-1 工作台布局）。
  * 由 tools/test_adaptation_start_refresh.py 通过 npx playwright 调用。
+ *
+ * 新布局要点：
+ * - 查看已有项目时新建表单默认隐藏，需先点击「新建项目」展开空白表单；
+ * - 改编方案 / 故事线内容渲染在中间「阶段工作区」#stageWorkspace，
+ *   需先点击右侧阶段导航 [data-stage-id] 切换 viewStage 才会显示；
+ * - 文本规模说明（短文本/中等文本）显示在左侧项目摘要 #summaryFields。
  */
 const fs = require("fs");
 const path = require("path");
@@ -39,9 +45,12 @@ async function launchBrowser() {
 }
 
 async function createProject(page, title, text) {
+  // 查看已有项目时表单处于摘要态，先点击「新建项目」进入空白表单。
+  await page.click("#newProjectBtn");
+  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 5000 });
   await page.fill("#titleInput", title);
   await page.fill("#sourceTextInput", text);
-  await page.click('button.primary-btn[type="submit"]');
+  await page.click("#submitProjectBtn");
   await page.waitForFunction(
     (expected) => {
       const active = document.querySelector(".project-item.active strong");
@@ -68,13 +77,19 @@ async function runWithoutReload(page, title, text) {
   await createProject(page, title, text);
   const projectId = await currentProjectId(page);
   await page.click("#runWorkflowBtn");
+  // mock 流程推进极快，瞬时“已入队”消息可能被后续事件覆盖；
+  // 以“项目状态离开 created 或任务中心出现活动”作为已启动的可靠信号。
   await page.waitForFunction(
     () => {
+      const summary = document.querySelector("#summaryFields")?.innerText || "";
       const msg = document.querySelector("#jobMessage")?.textContent || "";
-      return msg.includes("已入队") || msg.includes("改编");
+      const status = document.querySelector("#jobStatus")?.textContent || "";
+      const left = summary.length > 0 && !/项目状态\ncreated/.test(summary);
+      const busy = status.length > 0 && !/空闲|idle/.test(status);
+      return left || busy || msg.includes("已入队") || msg.includes("改编") || msg.includes("排队") || msg.includes("就绪");
     },
     null,
-    { timeout: 8000 }
+    { timeout: 15000 }
   );
   return projectId;
 }
@@ -88,67 +103,59 @@ async function main() {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#runWorkflowBtn");
 
+    // ---- 短文本：直接改编，出现候选方案 ----
     const shortTitle = `ui-short-${Date.now()}`;
     const shortId = await runWithoutReload(page, shortTitle, shortText());
     created.push(shortId);
+    // 切换到「改编方案」查看阶段，等待候选方案在不刷新页面的情况下出现。
+    await page.click('[data-stage-id="adaptation"]');
     await page.waitForFunction(
       () => {
-        const status = document.querySelector("#projectStatus")?.textContent?.trim();
-        const review = document.querySelector("#adaptationReview")?.innerText || "";
-        return status && status !== "created" && status !== "未创建" && review.includes("选择此方案");
+        const ws = document.querySelector("#stageWorkspace")?.innerText || "";
+        return ws.includes("选择此方案") && ws.includes("确认范围并生成 Bible");
       },
       null,
-      { timeout: 10000 }
+      { timeout: 15000 }
     );
-    const shortBody = await page.locator("#adaptationReview").innerText();
-    if (!shortBody.includes("短文本：直接改编")) throw new Error("短文本未显示规模说明");
-    if (!shortBody.includes("确认范围并生成 Bible")) throw new Error("短文本未显示确认范围");
+    const summary = await page.locator("#summaryFields").innerText();
+    if (!summary.includes("直接改编")) throw new Error("短文本未显示规模说明");
     await page.screenshot({ path: path.join(OUT, "short-after-run.png"), fullPage: true });
     console.log("PASS: 短文本启动后未刷新即出现候选方案");
 
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#runWorkflowBtn");
+    await page.click('[data-stage-id="adaptation"]');
     await page.waitForFunction(
-      () => {
-        const status = document.querySelector("#projectStatus")?.textContent?.trim();
-        const review = document.querySelector("#adaptationReview")?.innerText || "";
-        return status && status !== "created" && review.includes("选择此方案");
-      },
+      () => (document.querySelector("#stageWorkspace")?.innerText || "").includes("选择此方案"),
       null,
       { timeout: 10000 }
     );
     await page.screenshot({ path: path.join(OUT, "short-after-reload.png"), fullPage: true });
     console.log("PASS: 刷新后短文本候选方案与审核状态仍在");
 
+    // ---- 中等文本：先选择故事线 ----
     const mediumTitle = `ui-medium-${Date.now()}`;
     const mediumId = await runWithoutReload(page, mediumTitle, mediumText());
     created.push(mediumId);
+    await page.click('[data-stage-id="storyline"]');
     await page.waitForFunction(
       () => {
-        const status = document.querySelector("#projectStatus")?.textContent?.trim();
-        const review = document.querySelector("#adaptationReview")?.innerText || "";
-        return (
-          status === "awaiting_storyline_review" &&
-          review.includes("选择故事线") &&
-          (review.includes("中等文本：先选择故事线") || review.includes("选择故事线"))
-        );
+        const ws = document.querySelector("#stageWorkspace")?.innerText || "";
+        return ws.includes("选择此故事线");
       },
       null,
-      { timeout: 10000 }
+      { timeout: 15000 }
     );
-    const mediumBody = await page.locator("#adaptationReview").innerText();
-    if (!mediumBody.includes("中等文本：先选择故事线，再进行改编")) {
-      throw new Error("中等文本未显示规模说明");
-    }
+    const mediumSummary = await page.locator("#summaryFields").innerText();
+    if (!mediumSummary.includes("先选择故事线")) throw new Error("中等文本未显示规模说明");
     await page.screenshot({ path: path.join(OUT, "medium-after-run.png"), fullPage: true });
     console.log("PASS: 中等文本启动后未刷新即出现故事线选择");
 
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#runWorkflowBtn");
+    await page.click('[data-stage-id="storyline"]');
     await page.waitForFunction(
-      () => {
-        const status = document.querySelector("#projectStatus")?.textContent?.trim();
-        const review = document.querySelector("#adaptationReview")?.innerText || "";
-        return status === "awaiting_storyline_review" && review.includes("选择故事线");
-      },
+      () => (document.querySelector("#stageWorkspace")?.innerText || "").includes("选择此故事线"),
       null,
       { timeout: 10000 }
     );

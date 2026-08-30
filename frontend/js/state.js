@@ -17,28 +17,29 @@ export const state = {
   refreshInFlight: false,
   observerToken: 0,
   observedProjectId: null,
+
+  /* ---- 查看状态（与执行状态分离，见 ui-layout-interaction-design 第 3 节） ---- */
+  // 用户当前查看的阶段；点击右侧导航只改变它，不触发任何任务。
+  viewStage: "text",
+  // 当前选中的阶段素材：{ stage, key } 或 null。
+  selectedAsset: null,
+  // 每个阶段的素材视图模式：grid（缩略图）或 single（单素材）。
+  assetViewMode: {},
+
+  /* ---- 项目表单状态（新建/创建/查看分离） ---- */
+  // summary：查看已有项目配置摘要；create：空白新建表单；edit：编辑项目设置（原型）。
+  projectFormMode: "summary",
+  // 新建表单是否有未提交输入（用于切换项目时的未保存守卫）。
+  formTouched: false,
+
+  /* ---- 素材编辑状态（脏状态驱动重做按钮） ---- */
+  // { stage, key, baseline, draft, dirty }：baseline 为进入编辑时的快照。
+  stageEdit: null,
+
+  /* ---- 自动/监制流程控制（原型：后端尚无统一自动编排引擎） ---- */
+  // { paused: bool }：仅本页会话内生效的原型暂停标记。
+  workflowControl: { paused: false },
 };
-
-export function workflowSteps(project) {
-  const production = { name: "production", label: "制作镜头", statuses: ["production_ready", "ready_for_review", "video_ready"] };
-  if (project?.text_scale === "medium") {
-    return [
-      { name: "storyline", label: "1. 选择故事线", statuses: ["awaiting_storyline_review"] },
-      { name: "scope", label: "2. 选择故事范围", statuses: ["adaptation_options_ready", "awaiting_scope_review"] },
-      { name: "bible", label: "3. 确认 Story Bible", statuses: ["story_bible_ready", "awaiting_bible_review"] },
-      { name: "storyboard", label: "4. 审核分镜", statuses: ["storyboard_draft_ready", "awaiting_storyboard_review"] },
-      { ...production, label: "5. 制作镜头" },
-    ];
-  }
-  return [
-    { name: "scope", label: "1. 选择故事范围", statuses: ["adaptation_options_ready", "awaiting_scope_review"] },
-    { name: "bible", label: "2. 确认 Story Bible", statuses: ["story_bible_ready", "awaiting_bible_review"] },
-    { name: "storyboard", label: "3. 审核分镜", statuses: ["storyboard_draft_ready", "awaiting_storyboard_review"] },
-    { ...production, label: "4. 制作镜头" },
-  ];
-}
-
-export const agents = workflowSteps(null);
 
 export function selectedShot() {
   if (!state.project) return null;
@@ -53,4 +54,13 @@ export function latestVersion(shot) {
 export function currentVersion(shot) {
   if (!shot || !shot.versions || shot.versions.length === 0) return null;
   return shot.versions.find((item) => item.id === shot.current_version_id) || latestVersion(shot);
+}
+
+/** 重置查看/编辑状态：切换项目或进入无项目状态时调用，避免串项目污染。 */
+export function resetViewState() {
+  state.viewStage = "text";
+  state.selectedAsset = null;
+  state.assetViewMode = {};
+  state.stageEdit = null;
+  state.workflowControl = { paused: false };
 }

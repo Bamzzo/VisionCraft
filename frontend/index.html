@@ -3,17 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VisionCraft</title>
+    <title>VisionCraft · 影视创作工作台</title>
     <link rel="stylesheet" href="./css/style.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div>
+        <div class="topbar-brand">
           <p class="eyebrow">VisionCraft</p>
-          <h1>多智能体 AIGC 影视工作台</h1>
+          <h1>影视创作工作台</h1>
         </div>
         <div class="topbar-actions">
+          <span id="projectModeBadge" class="status-pill neutral" title="自动模式：阶段完成后自动继续；监制模式：阶段完成后等待审核">自动模式</span>
           <span id="connectionStatus" class="status-pill neutral">本地模式</span>
           <button id="refreshBtn" class="icon-btn" title="刷新项目状态">⟳</button>
           <button id="deleteProjectBtn" class="secondary-btn danger-btn">删除项目</button>
@@ -24,20 +25,37 @@
       </header>
 
       <main class="workspace">
+        <!-- 左侧：项目与全局配置 -->
         <aside class="left-panel panel">
-          <section class="panel-section">
+          <section class="panel-section" id="projectSection">
             <div class="section-title">
-              <h2>创建项目</h2>
-              <span id="routingBadge" class="status-pill">Direct</span>
+              <h2 id="projectSectionTitle">项目</h2>
+              <button id="newProjectBtn" class="secondary-btn mini-btn" type="button">新建项目</button>
             </div>
-            <form id="projectForm" class="project-form">
+
+            <!-- 查看已有项目：配置摘要 -->
+            <div id="projectSummaryPanel" class="project-summary">
+              <div id="summaryFields" class="summary-fields empty-state">选择或创建一个项目。</div>
+              <div class="button-row compact-row">
+                <button id="editProjectBtn" class="secondary-btn mini-btn" type="button">编辑项目设置</button>
+                <button id="runWorkflowBtn" class="primary-btn mini-btn" type="button">启动改编流程</button>
+              </div>
+              <div class="button-row compact-row">
+                <button id="resumeWorkflowBtn" class="secondary-btn mini-btn" type="button">恢复流程</button>
+                <button id="retryWorkflowBtn" class="secondary-btn mini-btn" type="button">重试改编范围</button>
+              </div>
+            </div>
+
+            <!-- 新建 / 编辑：表单 -->
+            <form id="projectForm" class="project-form hidden">
+              <p id="formModeNote" class="form-mode-note"></p>
               <label>
                 项目名称
                 <input id="titleInput" maxlength="120" placeholder="输入项目名称" />
               </label>
               <label>
                 原著 / 故事文本
-                <textarea id="sourceTextInput" rows="9" placeholder="粘贴故事文本，或拖拽本地文本文件到下方上传区域"></textarea>
+                <textarea id="sourceTextInput" rows="8" placeholder="粘贴故事文本，或拖拽本地文本文件到下方上传区域"></textarea>
               </label>
               <div id="textDropzone" class="dropzone" role="button" tabindex="0">
                 <input id="textFileInput" type="file" accept=".txt,.md,.markdown,.json,text/plain,text/markdown,application/json" hidden />
@@ -80,8 +98,8 @@
                 <span>监制模式：质检后暂停，等待人工确认再继续</span>
               </label>
               <div class="button-row">
-                <button type="submit" class="primary-btn">创建项目</button>
-                <button id="runWorkflowBtn" type="button" class="secondary-btn">启动改编流程</button>
+                <button id="submitProjectBtn" type="submit" class="primary-btn">创建项目</button>
+                <button id="cancelFormBtn" type="button" class="secondary-btn hidden">取消</button>
               </div>
             </form>
           </section>
@@ -94,67 +112,11 @@
             <div id="projectList" class="project-list"></div>
           </section>
 
-          <section class="panel-section story-section">
-            <div class="section-title">
-              <h2>故事圣经</h2>
-            </div>
-            <div id="storyBible" class="story-bible empty-state">创建并运行项目后显示故事摘要、世界观和风格标签。</div>
-          </section>
-
           <section class="panel-section">
             <div class="section-title">
               <h2>Provider 诊断</h2>
             </div>
             <div id="providerDiagnostics" class="provider-diagnostics empty-state">等待服务状态。</div>
-          </section>
-        </aside>
-
-        <section class="center-panel">
-          <div class="agent-board panel">
-            <div class="section-title">
-              <h2>改编审核</h2>
-              <span id="projectStatus" class="status-pill neutral">未创建</span>
-            </div>
-            <div id="adaptationSteps" class="agent-flow"></div>
-            <div id="adaptationReview" class="adaptation-review empty-state">创建项目并启动改编流程后，在这里选择范围、确认 Story Bible 与分镜。</div>
-            <div id="assetSummaryBar" class="asset-summary-bar empty-state">视觉资产摘要会在项目运行后显示。</div>
-            <div class="workflow-controls">
-              <button id="resumeWorkflowBtn" class="secondary-btn" type="button">恢复流程</button>
-              <button id="retryWorkflowBtn" class="secondary-btn" type="button">重试改编范围</button>
-            </div>
-          </div>
-
-          <div class="shots-panel panel">
-            <div class="section-title">
-              <div>
-                <h2>分镜时间线</h2>
-                <p id="shotSummary" class="muted-text">等待生成分镜。</p>
-              </div>
-              <div class="button-row">
-                <button id="generateAllVideosBtn" class="secondary-btn" type="button">生成全部视频</button>
-                <button id="assembleProjectBtn" class="primary-btn" type="button">合成成片</button>
-              </div>
-            </div>
-            <div id="shotGrid" class="shot-grid empty-state">分镜卡片会出现在这里。</div>
-          </div>
-        </section>
-
-        <aside class="right-panel panel">
-          <section class="panel-section inspector-section">
-            <div class="section-title">
-              <h2>监制控制台</h2>
-              <span id="selectedShotBadge" class="status-pill">未选择</span>
-            </div>
-            <div id="shotInspector" class="shot-inspector empty-state">选择一个镜头查看关键帧、Prompt 和修改历史。</div>
-          </section>
-
-          <section class="panel-section">
-            <div class="section-title">
-              <h2>自然语言反馈</h2>
-            </div>
-            <textarea id="feedbackInput" rows="4" placeholder="例如：这一幕更压抑一点，光线暗一些。"></textarea>
-            <button id="sendFeedbackBtn" class="primary-btn full-width">提交监制意见</button>
-            <div id="feedbackResult" class="feedback-result"></div>
           </section>
 
           <section class="panel-section">
@@ -162,6 +124,15 @@
               <h2>全局约束</h2>
             </div>
             <div id="constraintList" class="constraint-list empty-state">暂无全局约束。</div>
+          </section>
+
+          <section class="panel-section">
+            <div class="section-title">
+              <h2>监制反馈</h2>
+            </div>
+            <textarea id="feedbackInput" rows="3" placeholder="例如：这一幕更压抑一点，光线暗一些。"></textarea>
+            <button id="sendFeedbackBtn" class="primary-btn full-width">提交监制意见</button>
+            <div id="feedbackResult" class="feedback-result"></div>
           </section>
 
           <section class="panel-section">
@@ -174,34 +145,78 @@
             </div>
             <div id="memoryResults" class="memory-results empty-state">等待检索。</div>
           </section>
+        </aside>
 
-          <section class="panel-section">
-            <div class="section-title">
-              <h2>视觉资产库</h2>
-              <span id="assetCount" class="muted-text">0</span>
+        <!-- 中间：当前阶段工作区 -->
+        <section class="center-panel">
+          <div class="panel stage-workspace-panel">
+            <div class="stage-workspace-header">
+              <div class="stage-workspace-heading">
+                <h2 id="stageWorkspaceTitle">文本理解</h2>
+                <p id="stageWorkspaceSubtitle" class="muted-text">当前查看阶段</p>
+              </div>
+              <div class="stage-view-toggle" id="stageViewToggle" role="tablist">
+                <button type="button" data-view="grid" class="toggle-btn active">缩略图</button>
+                <button type="button" data-view="single" class="toggle-btn">单素材</button>
+              </div>
             </div>
-            <div id="assetLibrary" class="asset-library empty-state">运行项目后显示角色、场景与关键帧资产。</div>
+            <div id="stageGateBanner" class="stage-gate-banner"></div>
+            <div id="stageWorkspace" class="stage-workspace empty-state">创建项目并启动改编流程后，这里显示当前阶段的素材。</div>
+            <div id="assetDetail" class="asset-detail"></div>
+          </div>
+        </section>
+
+        <!-- 右侧：完整制作流程导航 -->
+        <aside class="right-panel panel">
+          <section class="panel-section stage-nav-section">
+            <div class="section-title">
+              <h2>制作流程</h2>
+            </div>
+            <p class="muted-text stage-nav-hint">点击阶段只切换查看内容，不会启动任务。</p>
+            <nav id="stageNav" class="stage-nav" aria-label="制作流程导航"></nav>
           </section>
         </aside>
       </main>
 
-      <footer class="task-drawer">
-        <div class="task-drawer-main">
-          <div>
+      <!-- 底部：实时任务中心 -->
+      <footer class="task-drawer" id="taskDrawer">
+        <button type="button" id="taskCenterToggle" class="task-drawer-main" aria-expanded="false">
+          <div class="task-drawer-summary">
             <strong>任务中心</strong>
             <span id="jobMessage" class="muted-text">等待任务。</span>
-            <p id="jobHint" class="muted-text job-hint"></p>
+            <span id="jobHint" class="muted-text job-hint"></span>
           </div>
           <div class="progress-track">
             <div id="jobProgress" class="progress-bar"></div>
           </div>
           <div class="task-drawer-actions">
             <span id="jobStatus" class="status-pill neutral">空闲</span>
-            <button id="jobTimelineToggle" class="secondary-btn mini-btn" type="button">时间线</button>
+            <span id="taskCenterChevron" class="task-chevron">展开</span>
+          </div>
+        </button>
+        <div id="taskCenterBody" class="task-center-body hidden">
+          <div id="jobList" class="job-list"></div>
+          <div class="job-timeline-wrap">
+            <div class="section-title">
+              <h3>最近事件</h3>
+            </div>
+            <div id="jobTimeline" class="job-timeline"></div>
           </div>
         </div>
-        <div id="jobTimeline" class="job-timeline hidden"></div>
       </footer>
+    </div>
+
+    <!-- 未保存修改确认对话框 -->
+    <div id="unsavedModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="unsavedModalTitle">
+      <div class="modal-card">
+        <h3 id="unsavedModalTitle">有未保存的修改</h3>
+        <p id="unsavedModalMessage" class="muted-text">当前有未保存的内容。</p>
+        <div class="button-row">
+          <button id="unsavedSaveBtn" class="primary-btn" type="button">保存并继续</button>
+          <button id="unsavedDiscardBtn" class="secondary-btn danger-btn" type="button">放弃修改</button>
+          <button id="unsavedCancelBtn" class="secondary-btn" type="button">取消</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="./js/app.js"></script>
