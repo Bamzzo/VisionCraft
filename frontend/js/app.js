@@ -841,6 +841,7 @@ async function onSaveAssemblySettings() {
   if (!state.project) return;
   try {
     const saved = await api.saveAssemblySettings(state.project.id, collectAssemblySettings());
+    state.assemblyDraft = { projectId: state.project.id, dirty: false, values: saved.settings || collectAssemblySettings() };
     attachEvents();
     el("jobMessage").textContent = saved.stale
       ? "成片配置已保存。当前成片已过期，需要重新合成。"
@@ -1045,10 +1046,43 @@ function updateShotDirtyUI(shot) {
 function onWorkspaceInput(event) {
   const target = event.target;
   if (!target) return;
-  if (target.closest("[data-bible-track]") || target.closest("[data-bible-card]")) {
+  if (target.closest("#assemblySettingsForm")) {
+    updateAssemblySettingsDirtyUI();
+  } else if (target.closest("[data-bible-track]") || target.closest("[data-bible-card]")) {
     updateFormDirtyUI("bible");
   } else if (target.closest("[data-board-track]") || target.closest("[data-board-id]")) {
     updateFormDirtyUI("storyboard");
+  }
+}
+
+function assemblySettingsEqual(left, right) {
+  const keys = [
+    "subtitle_enabled",
+    "subtitle_text",
+    "subtitle_srt_path",
+    "audio_enabled",
+    "audio_asset_path",
+    "audio_volume",
+    "keep_source_audio",
+    "subtitle_font_size",
+    "subtitle_position",
+  ];
+  return keys.every((key) => String(left?.[key] ?? "") === String(right?.[key] ?? ""));
+}
+
+function savedAssemblySettings() {
+  return state.project?.assembly?.settings || {};
+}
+
+function updateAssemblySettingsDirtyUI() {
+  if (!state.project || !el("assemblySettingsForm")) return;
+  const values = collectAssemblySettings();
+  const dirty = !assemblySettingsEqual(values, savedAssemblySettings());
+  state.assemblyDraft = { projectId: state.project.id, dirty, values };
+  const flag = el("assemblySettingsDirty");
+  if (flag) {
+    flag.className = dirty ? "dirty-flag" : "clean-flag";
+    flag.textContent = dirty ? "有未保存修改" : "配置已同步";
   }
 }
 

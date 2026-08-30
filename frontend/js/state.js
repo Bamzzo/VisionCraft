@@ -39,6 +39,9 @@ export const state = {
   /* ---- 自动/监制流程控制（原型：后端尚无统一自动编排引擎） ---- */
   // { paused: bool }：仅本页会话内生效的原型暂停标记。
   workflowControl: { paused: false },
+
+  /* ---- 成片配置草稿（未保存时刷新/任务更新不丢，切换项目时清空） ---- */
+  assemblyDraft: null,
 };
 
 export function selectedShot() {
@@ -63,4 +66,5 @@ export function resetViewState() {
   state.assetViewMode = {};
   state.stageEdit = null;
   state.workflowControl = { paused: false };
+  state.assemblyDraft = null;
 }

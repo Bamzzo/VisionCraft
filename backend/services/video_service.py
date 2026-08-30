@@ -882,16 +882,27 @@ def _assembly_capabilities() -> dict:
     }
 
 
-def _assembly_note(settings: dict) -> str:
+def _assembly_note(settings: dict, *, source_audio_shot_count: int = 0, shot_count: int = 0) -> str:
     parts = ["当前有效镜头视频是合成的唯一画面来源。"]
-    if not settings.get("audio_enabled") and not settings.get("subtitle_enabled"):
-        parts.append("未启用背景音频和字幕时，行为与 P6-C 一致：只拼接视频流并使用 -an。")
+    keep = bool(settings.get("keep_source_audio"))
+    bg = bool(settings.get("audio_enabled"))
+    sub = bool(settings.get("subtitle_enabled"))
+    if not keep and not bg and not sub:
+        parts.append("未启用背景音频、原声和字幕时，行为与 P6-C 一致：只拼接视频流并使用 -an。")
     else:
-        if settings.get("audio_enabled"):
+        if keep:
+            if source_audio_shot_count:
+                parts.append(
+                    f"将保留 {source_audio_shot_count}/{shot_count or source_audio_shot_count} 个镜头的原声；"
+                    "没有音轨的镜头对应片段为静音，不会伪造原声。"
+                )
+            else:
+                parts.append("已开启保留原声，但当前镜头没有可用音轨，不会伪造原声。")
+        if bg:
             parts.append("背景音频将循环或裁剪到成片时长后混入。")
-        if settings.get("keep_source_audio"):
-            parts.append("若镜头视频没有音轨，将忽略「保留原视频音频」。")
-        if settings.get("subtitle_enabled"):
+        if keep and bg and source_audio_shot_count:
+            parts.append("原声音量 1.0，背景音按配置音量混合。")
+        if sub:
             parts.append("字幕会烧录到画面，不接入字幕大模型。")
     parts.append("不接入真实 TTS 或音乐生成。")
     return "".join(parts)
@@ -1046,6 +1057,31 @@ def get_assembly_status(project_id: str) -> dict:
         "subtitle_assets": [],
         "capabilities": _assembly_capabilities(),
     }
+    shot_payload = []
+    source_audio_shot_count = 0
+    for item in report["shots"]:
+        has_audio = False
+        if item.get("ready") and item.get("video_path"):
+            try:
+                has_audio = _has_audio_stream(_local_asset_path(project_id, item["video_path"]))
+            except AssemblyError:
+                has_audio = False
+        if has_audio:
+            source_audio_shot_count += 1
+        shot_payload.append(
+            {
+                "shot_id": item.get("shot_id"),
+                "shot_index": item.get("shot_index"),
+                "title": item.get("title") or "",
+                "ready": item.get("ready"),
+                "issue": item.get("issue") or "",
+                "video_path": item.get("video_path") or "",
+                "status": item.get("status") or "",
+                "has_audio": has_audio,
+            }
+        )
+    source_audio_available = source_audio_shot_count > 0
+    source_audio_used = bool(settings.get("keep_source_audio") and source_audio_available)
     return {
         "ok": report["ok"],
         "can_assemble": report["ok"] and not settings_errors and report["active_job"] is None,
@@ -1056,8 +1092,15 @@ def get_assembly_status(project_id: str) -> dict:
         "stale": report["stale"],
         "ffmpeg_available": report["ffmpeg_available"],
         "audio_scope": "optional_local",
-        "audio_note": _assembly_note(settings),
+        "audio_note": _assembly_note(
+            settings,
+            source_audio_shot_count=source_audio_shot_count,
+            shot_count=report["shot_count"],
+        ),
         "settings": settings,
+        "source_audio_available": source_audio_available,
+        "source_audio_shot_count": source_audio_shot_count,
+        "source_audio_used": source_audio_used,
         "audio_assets": payload.get("audio_assets") or [],
         "subtitle_assets": payload.get("subtitle_assets") or [],
         "capabilities": payload.get("capabilities") or _assembly_capabilities(),
@@ -1093,18 +1136,7 @@ def get_assembly_status(project_id: str) -> dict:
             }
             for item in report["history"]
         ],
-        "shots": [
-            {
-                "shot_id": item.get("shot_id"),
-                "shot_index": item.get("shot_index"),
-                "title": item.get("title") or "",
-                "ready": item.get("ready"),
-                "issue": item.get("issue") or "",
-                "video_path": item.get("video_path") or "",
-                "status": item.get("status") or "",
-            }
-            for item in report["shots"]
-        ],
+        "shots": shot_payload,
     }
 
 
@@ -1149,7 +1181,7 @@ def _ffprobe_json(path: Path) -> dict:
     exe = _ffprobe_executable()
     if not exe:
         return {}
-    completed = subprocess.run(
+    completed = _QUERY_RUN(
         [exe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
         capture_output=True,
         text=True,
@@ -1208,6 +1240,149 @@ def _subtitles_filter_arg(srt_path: Path, settings: dict) -> str:
     if font:
         fontsdir = f":fontsdir='{_ffmpeg_filter_path(font.parent)}'"
     return f"subtitles='{escaped}':charenc=UTF-8{fontsdir}:force_style='{style}'"
+
+
+_VIDEO_NORM_FILTER = (
+    "scale=1280:720:force_original_aspect_ratio=decrease,"
+    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p"
+)
+
+
+def _run_ffmpeg(command: list[str], fail_message: str) -> None:
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    output = Path(command[-1])
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size <= 0:
+        output.unlink(missing_ok=True)
+        raise RuntimeError(fail_message)
+
+
+def _normalize_shot_clip(ffmpeg_exe: str, src: Path, dest: Path, *, has_audio: bool) -> None:
+    duration = _media_duration(src)
+    if duration <= 0:
+        duration = 1.0
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if has_audio:
+        command = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            str(src),
+            "-vf",
+            _VIDEO_NORM_FILTER,
+            "-af",
+            "aresample=44100,aformat=channel_layouts=stereo,apad",
+            "-t",
+            f"{duration:.3f}",
+            "-r",
+            "24",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-movflags",
+            "+faststart",
+            str(dest),
+        ]
+    else:
+        command = [
+            ffmpeg_exe,
+            "-y",
+            "-i",
+            str(src),
+            "-f",
+            "lavfi",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-vf",
+            _VIDEO_NORM_FILTER,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-t",
+            f"{duration:.3f}",
+            "-r",
+            "24",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(dest),
+        ]
+    _run_ffmpeg(command, "成片合成失败，请检查各镜头视频是否完整后重试。")
+
+
+def _concat_normalized_clips(ffmpeg_exe: str, clip_paths: list[Path], concat_file: Path, output_path: Path) -> None:
+    concat_file.write_text(
+        "\n".join(f"file '{_ffmpeg_concat_path(path)}'" for path in clip_paths),
+        encoding="utf-8",
+    )
+    copy_command = [
+        ffmpeg_exe,
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    completed = subprocess.run(copy_command, check=False, capture_output=True, text=True)
+    if completed.returncode == 0 and output_path.is_file() and output_path.stat().st_size > 0:
+        return
+    output_path.unlink(missing_ok=True)
+    encode_command = [
+        ffmpeg_exe,
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "24",
+        "-c:a",
+        "aac",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    _run_ffmpeg(encode_command, "成片合成失败，请检查各镜头视频是否完整后重试。")
 
 
 def _pack_assembly_output(
@@ -1303,54 +1478,75 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
         project = report["project"]
         video_paths = report["video_paths"]
         settings = report.get("settings") or get_assembly_settings(project_id)
+        local_inputs = [_local_asset_path(project_id, path) for path in video_paths]
+        keep_wanted = bool(settings.get("keep_source_audio"))
+        source_flags = [_has_audio_stream(path) for path in local_inputs] if keep_wanted else [False] * len(local_inputs)
+        keep_source = keep_wanted and any(source_flags)
         update_job(job_id, "running", 30, "正在统一规格并合成镜头视频", stage="concat")
         asset_id = f"asset_{uuid.uuid4().hex[:10]}"
         filename = f"{asset_id}.mp4"
         output_path = PROJECTS_DIR / project_id / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        concat_file = PROJECTS_DIR / project_id / f"{asset_id}_concat.txt"
-        temps.append(concat_file)
-        concat_file.write_text(
-            "\n".join(f"file '{_ffmpeg_concat_path(_local_asset_path(project_id, path))}'" for path in video_paths),
-            encoding="utf-8",
-        )
         ffmpeg_exe = _ffmpeg_executable()
         if not ffmpeg_exe:
             raise RuntimeError("本机未找到 FFmpeg，无法合成成片。请安装 ffmpeg 与 ffprobe 后重试。")
-        command = [
-            ffmpeg_exe,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
-            "-vf",
-            "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-            "-r",
-            "24",
-            "-c:v",
-            "libx264",
-            "-an",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ]
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        concat_file = PROJECTS_DIR / project_id / f"{asset_id}_concat.txt"
+        temps.append(concat_file)
+        if keep_source:
+            update_job(job_id, "running", 40, "正在规范化镜头并保留原声", stage="normalize")
+            norm_paths: list[Path] = []
+            for index, src in enumerate(local_inputs):
+                dest = output_path.parent / f"{asset_id}_norm_{index}.mp4"
+                temps.append(dest)
+                _normalize_shot_clip(ffmpeg_exe, src, dest, has_audio=source_flags[index])
+                norm_paths.append(dest)
+            _concat_normalized_clips(ffmpeg_exe, norm_paths, concat_file, output_path)
+            for path in norm_paths:
+                path.unlink(missing_ok=True)
+                if path in temps:
+                    temps.remove(path)
+        else:
+            concat_file.write_text(
+                "\n".join(f"file '{_ffmpeg_concat_path(path)}'" for path in local_inputs),
+                encoding="utf-8",
+            )
+            command = [
+                ffmpeg_exe,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-vf",
+                "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "-r",
+                "24",
+                "-c:v",
+                "libx264",
+                "-an",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
+            if completed.returncode != 0:
+                if output_path is not None:
+                    output_path.unlink(missing_ok=True)
+                raise RuntimeError("成片合成失败，请检查各镜头视频是否完整后重试。")
         concat_file.unlink(missing_ok=True)
         if concat_file in temps:
             temps.remove(concat_file)
         concat_file = None
-        if completed.returncode != 0:
-            raise RuntimeError("成片合成失败，请检查各镜头视频是否完整后重试。")
         if output_path is None or not output_path.is_file() or output_path.stat().st_size == 0:
             if output_path is not None:
                 output_path.unlink(missing_ok=True)
             raise RuntimeError("成片文件无效，未登记资产。请重新合成。")
-        if settings.get("audio_enabled") or settings.get("subtitle_enabled") or settings.get("keep_source_audio"):
+        need_pack = bool(settings.get("audio_enabled") or settings.get("subtitle_enabled"))
+        if need_pack:
             update_job(job_id, "running", 70, "正在混入音频并烧录字幕", stage="pack")
             try:
                 _pack_assembly_output(ffmpeg_exe, output_path, settings, project_id, temps)
@@ -1365,7 +1561,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             flags.append("bg-audio")
         if settings.get("subtitle_enabled"):
             flags.append("subtitles")
-        if settings.get("keep_source_audio"):
+        if keep_source:
             flags.append("keep-source-audio")
         prompt = "FFmpeg sequence assembly (" + (", ".join(flags) if flags else "video only") + ")"
         with connect() as conn:
@@ -1405,7 +1601,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             temp.unlink(missing_ok=True)
         if concat_file is not None:
             concat_file.unlink(missing_ok=True)
-        if output_path is not None and output_path.exists() and output_path.stat().st_size == 0:
+        if output_path is not None:
             output_path.unlink(missing_ok=True)
         update_job(job_id, "failed", 100, "成片合成失败", _safe_assembly_message(exc), stage="failed")
     else:

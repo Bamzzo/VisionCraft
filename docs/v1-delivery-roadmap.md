@@ -192,7 +192,7 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **目标：** 将若干真实视频片段稳定合成为 30/45/60 秒可播放短片。
 
-**状态：** P6-A / P6-B 本地合成合同已完成。P6-C 真实 FFmpeg 验收已于 2026-08-30 完成本地闭环。P6-D 本地音频、字幕与成片包装基础闭环已于 2026-08-30 完成：项目级 `assembly_settings`、路径归属校验、可选背景音频混入与字幕烧录、配置变化标记 `assembly_stale`、失败不登记成片。无 FFmpeg / 无字幕滤镜或字体时测试必须 `SKIP`，不得把跳过或夹具伪装写成通过。
+**状态：** P6-A / P6-B 本地合成合同已完成。P6-C 真实 FFmpeg 验收已于 2026-08-30 完成本地闭环。P6-D 本地音频、字幕与成片包装基础闭环已于 2026-08-30 完成。P6-E 原声链路已于 2026-08-30 完成：开启「保留原视频音频」时先规范化各镜头再拼接音视频；无音轨镜头不伪造原声；原声可与本地背景音按音量混音；刷新后恢复已保存配置。无 FFmpeg / 无字幕滤镜或字体时测试必须 `SKIP`，不得把跳过或夹具伪装写成通过。
 
 **P6-C 已实现：**
 
@@ -201,7 +201,7 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 浏览器真实预览/下载：`tools/test_p6c_real_assembly_browser.py`（仅在本机有 ffmpeg/ffprobe 时才写 `output/playwright/p6c-real-*.png`）；
 - 可重复演示入口：`tools/prepare_p6c_demo.py`（无 FFmpeg 时 SKIP）。
 
-**当前输出范围：** 合成命令统一到 1280×720、24fps、yuv420p、libx264。默认仍使用 `-an`（与 P6-C 一致）。P6-D 允许在成片层可选混入**当前项目本地音频**并烧录**本地字幕/SRT**，不修改镜头视频版本，不接入 TTS 或音乐生成。设计见 `docs/assembly-audio-subtitle-design.md`。
+**当前输出范围：** 合成命令统一到 1280×720、24fps、yuv420p、libx264。默认仍使用 `-an`（与 P6-C 一致）。P6-D/P6-E 允许在成片层可选保留镜头原声、混入**当前项目本地音频**并烧录**本地字幕/SRT**，不修改镜头视频版本，不接入 TTS 或音乐生成。设计见 `docs/assembly-audio-subtitle-design.md`。
 
 **P6-D 已实现：**
 
@@ -210,6 +210,14 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 音频不足循环、过长裁剪；字幕与音频临时文件成功/失败均清理；失败不登记 `final-video`、不误清 `assembly_stale`；
 - 前端成片工作区配置区、保存后无需刷新即可看到待重新合成、合成中锁定配置；
 - 无费用测试：`tools/test_p6d_assembly.py`、`tools/test_p6d_assembly_browser.py`（无 FFmpeg 或缺少字幕滤镜/字体时必须 `SKIP`）。
+
+**P6-E 已实现：**
+
+- 开启保留原声时：逐镜头规范化视频/音频后拼接，有音轨镜头保留原声，无音轨镜头该段静音且不把静音报告为原声；
+- 原声可单独输出，也可与背景音 `amix`；背景音循环或裁剪到成片时长；
+- `GET /assembly` 增加 `source_audio_available` / `source_audio_shot_count` / `source_audio_used`；
+- 前端刷新恢复原声/背景音/字幕配置，未保存修改显示脏状态，切换项目不串配置；
+- 无费用测试：`tools/test_p6e_source_audio.py`、`tools/test_p6e_source_audio_browser.py`。
 
 **P6-A 已实现：**
 
@@ -222,6 +230,7 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 无费用测试：`tools/test_assembly.py`、`tools/test_assembly_http.py`。
 - P6-C 真实 FFmpeg 测试：`tools/test_p6c_real_assembly.py`、`tools/test_p6c_real_assembly_browser.py`（无 FFmpeg 时必须 `SKIP`，不得记为 `PASS`）。
 - P6-D 本地音频/字幕测试：`tools/test_p6d_assembly.py`、`tools/test_p6d_assembly_browser.py`。
+- P6-E 原声保留与混音测试：`tools/test_p6e_source_audio.py`、`tools/test_p6e_source_audio_browser.py`。
 
 **开发内容：**
 

@@ -211,4 +211,72 @@ def probe_media(path: Path) -> dict:
     audio = [item for item in payload.get("streams") or [] if item.get("codec_type") == "audio"]
     info["has_audio"] = bool(audio)
     info["audio_codec"] = (audio[0].get("codec_name") if audio else "") or ""
+    info["audio_sample_rate"] = int((audio[0].get("sample_rate") if audio else 0) or 0)
+    info["audio_channels"] = int((audio[0].get("channels") if audio else 0) or 0)
+    info["audio_streams"] = len(audio)
     return info
+
+
+def make_color_clip_with_sine(
+    path: Path, *, color: str, size: str, duration: float, frequency: int = 440
+) -> None:
+    exe = ffmpeg_bin()
+    if not exe:
+        raise RuntimeError("ffmpeg 不可用")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        exe,
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c={color}:s={size}:d={duration}",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency={frequency}:sample_rate=44100:duration={duration}",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
+        "-shortest",
+        str(path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0 or not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("生成带音频测试视频夹具失败")
+
+
+def audio_mean_volume(path: Path, *, start: float = 0.0, duration: float = 0.4) -> float:
+    exe = ffmpeg_bin()
+    if not exe:
+        raise RuntimeError("ffmpeg 不可用")
+    command = [
+        exe,
+        "-ss",
+        f"{start:.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(path),
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-",
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    blob = (completed.stderr or "") + (completed.stdout or "")
+    for line in blob.splitlines():
+        if "mean_volume" in line:
+            try:
+                return float(line.rsplit(":", 1)[-1].replace("dB", "").strip())
+            except ValueError:
+                return -120.0
+    return -120.0

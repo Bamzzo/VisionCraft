@@ -103,11 +103,7 @@ async function main() {
     await audioSelect.selectOption({ index: 1 });
     await page.click("#saveAssemblySettingsBtn");
     await page.waitForFunction(
-      () => {
-        const stale = document.querySelector("#assemblyFreshness")?.textContent || "";
-        const msg = document.querySelector("#jobMessage")?.textContent || "";
-        return stale.includes("已过期") || msg.includes("需要重新合成");
-      },
+      () => (document.querySelector("#assemblyFreshness")?.textContent || "").includes("已过期"),
       null,
       { timeout: 10000 }
     );
@@ -116,13 +112,13 @@ async function main() {
 
     await page.click("#assembleProjectBtn");
     await page.waitForFunction(
-      () => document.querySelector("#assemblyFreshness")?.textContent.includes("当前有效"),
+      () => {
+        const fresh = document.querySelector("#assemblyFreshness")?.textContent || "";
+        return fresh.includes("当前有效") && document.querySelectorAll(".assembly-history-item").length >= 1;
+      },
       null,
       { timeout: 45000 }
     );
-    if (!(await page.locator(".assembly-history-item").count())) {
-      throw new Error("配置变化后历史成片未保留");
-    }
     pass("重新合成后当前成片有效，旧成片仍在历史中并曾显示过期");
 
     await page.check("#assemblySubtitleEnabled");

@@ -838,7 +838,12 @@ function assemblyStageHtml(project) {
   const assembly = assemblyStatusOf(project);
   const running = Boolean(assembly.active_job);
   const hasFinal = Boolean(assembly.current_final);
-  const settings = assembly.settings || {};
+  const saved = assembly.settings || {};
+  const draft = state.assemblyDraft;
+  const settings =
+    draft?.dirty && draft.projectId === project?.id && draft.values
+      ? { ...saved, ...draft.values }
+      : saved;
   const settingsErrors = assembly.settings_errors || [];
   const settingsBlocked = settingsErrors.length > 0;
   let buttonLabel = "合成成片";
@@ -858,10 +863,14 @@ function assemblyStageHtml(project) {
   const shotRows = (assembly.shots || [])
     .map((shot) => {
       const index = String(shot.shot_index ?? "").padStart(2, "0");
+      const audioPill = shot.has_audio
+        ? `<span class="status-pill success">有原声</span>`
+        : `<span class="status-pill">无音轨</span>`;
       return `<li class="assembly-shot-row ${shot.ready ? "ready" : "blocked"}">
         <span class="assembly-shot-index">${escapeHtml(index)}</span>
         <span class="assembly-shot-title">${escapeHtml(shot.title || "未命名镜头")}</span>
         <span class="status-pill ${shot.ready ? "success" : "warning"}">${shot.ready ? "视频就绪" : "未就绪"}</span>
+        ${audioPill}
         ${shot.issue ? `<p class="assembly-shot-issue">${escapeHtml(shot.issue)}</p>` : ""}
       </li>`;
     })
@@ -912,6 +921,25 @@ function assemblyStageHtml(project) {
         `<option value="${escapeHtml(item.file_path)}" ${item.file_path === settings.subtitle_srt_path ? "selected" : ""}>${escapeHtml(item.name || item.file_path)}</option>`
     )
     .join("");
+  const sourceCount = Number(assembly.source_audio_shot_count || 0);
+  const shotCount = Number(assembly.shot_count || 0);
+  const keepOn = Boolean(settings.keep_source_audio);
+  const bgOn = Boolean(settings.audio_enabled);
+  const subOn = Boolean(settings.subtitle_enabled);
+  const audioBits = [];
+  if (keepOn) {
+    audioBits.push(
+      sourceCount
+        ? `原声开（${sourceCount}/${shotCount} 个镜头有音轨）`
+        : "原声开（当前镜头无可用原声，不会伪造）"
+    );
+  } else {
+    audioBits.push("原声关");
+  }
+  audioBits.push(bgOn ? "背景音开" : "背景音关");
+  audioBits.push(subOn ? "字幕开" : "字幕关");
+  const audioSummary = `音频配置：${audioBits.join(" · ")}`;
+  const dirty = Boolean(draft?.dirty && draft.projectId === project?.id);
   const locked = running ? "disabled" : "";
   const caps = assembly.capabilities || {};
   const capNote = !caps.subtitles_filter
@@ -929,6 +957,7 @@ function assemblyStageHtml(project) {
         ${current ? `<span class="status-pill ${assembly.stale ? "warning" : "success"}" id="assemblyFreshness">${escapeHtml(staleLabel)}</span>` : ""}
       </div>
       ${assembly.audio_note ? `<p class="muted-text">${escapeHtml(assembly.audio_note)}</p>` : ""}
+      <p class="muted-text" id="assemblyAudioSummary">${escapeHtml(audioSummary)}</p>
       ${failBlock}
       ${settingsErrors.length ? `<div class="prompt-block" id="assemblySettingsErrors">${settingsErrors.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>` : ""}
       <form class="assembly-settings" id="assemblySettingsForm" onsubmit="return false">
@@ -961,8 +990,9 @@ function assemblyStageHtml(project) {
         </select>
         <label class="field-label" for="assemblyAudioVolume">背景音量 ${escapeHtml(String(settings.audio_volume || 0.4))}</label>
         <input id="assemblyAudioVolume" type="range" min="0.05" max="1" step="0.05" value="${escapeHtml(String(settings.audio_volume || 0.4))}" ${locked}>
-        <label class="assembly-check"><input type="checkbox" id="assemblyKeepSourceAudio" ${settings.keep_source_audio ? "checked" : ""} ${locked}>保留原视频音频（若镜头没有音轨则忽略）</label>
+        <label class="assembly-check"><input type="checkbox" id="assemblyKeepSourceAudio" ${settings.keep_source_audio ? "checked" : ""} ${locked}>保留原视频音频（无音轨镜头该段静音，不会伪造原声）</label>
         <div class="button-row compact-row">
+          <span id="assemblySettingsDirty" class="${dirty ? "dirty-flag" : "clean-flag"}">${dirty ? "有未保存修改" : "配置已同步"}</span>
           <button type="button" class="secondary-btn" id="saveAssemblySettingsBtn" data-action="save-assembly-settings" ${locked}>保存配置</button>
         </div>
       </form>
