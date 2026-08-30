@@ -8,9 +8,48 @@ import {
 } from "./jobObserver.js";
 import { renderAll, renderCapabilities, renderFeedbackResult, currentVideoDraftPayload } from "./render.js";
 import { selectedShot, state, resetViewState } from "./state.js";
-import { computeWorkflow } from "./workflowViewModel.js";
+import { computeWorkflow, resolveStageId } from "./workflowViewModel.js";
 
 const el = (id) => document.getElementById(id);
+
+const LAST_PROJECT_KEY = "vc:lastProjectId";
+const VIEW_STORAGE_PREFIX = "vc:view:";
+
+function persistLastProject(projectId) {
+  try {
+    if (projectId) sessionStorage.setItem(LAST_PROJECT_KEY, projectId);
+    else sessionStorage.removeItem(LAST_PROJECT_KEY);
+  } catch {
+    /* sessionStorage 不可用时忽略 */
+  }
+}
+
+function persistViewState() {
+  const projectId = state.project?.id;
+  if (!projectId) return;
+  try {
+    sessionStorage.setItem(
+      VIEW_STORAGE_PREFIX + projectId,
+      JSON.stringify({ viewStage: state.viewStage, selectedAsset: state.selectedAsset })
+    );
+    persistLastProject(projectId);
+  } catch {
+    /* sessionStorage 不可用时忽略 */
+  }
+}
+
+function restoreViewState(project) {
+  if (!project?.id) return;
+  try {
+    const raw = sessionStorage.getItem(VIEW_STORAGE_PREFIX + project.id);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved?.viewStage) state.viewStage = resolveStageId(saved.viewStage, project);
+    if (saved?.selectedAsset) state.selectedAsset = saved.selectedAsset;
+  } catch {
+    /* 损坏的缓存不影响加载 */
+  }
+}
 
 async function init() {
   bindEvents();
@@ -258,6 +297,7 @@ async function onSaveProjectSettings() {
     await loadProjects();
     renderFeedbackResult(null);
     renderAll();
+    showSuccess("项目设置已保存");
   } catch (error) {
     showError(`保存项目设置失败：${error.message}`);
   }
@@ -291,9 +331,11 @@ async function onCreateProject() {
     state.selectedShotId = null;
     state.projectFormMode = "summary";
     state.formTouched = false;
+    persistViewState();
     await loadProjects();
     renderFeedbackResult(null);
     renderAll();
+    showSuccess("项目已创建");
   } catch (error) {
     showError(`创建失败：${error.message}`);
   }
@@ -318,11 +360,13 @@ async function switchProject(nextId) {
     if (!isLiveSession(state, token, nextId)) return;
     state.project = project;
     resetViewState();
+    restoreViewState(project);
     state.selectedShotId = state.project.shots?.[0]?.id || null;
     state.memoryResults = [];
     state.videoDraft = null;
     state.projectFormMode = "summary";
     state.formTouched = false;
+    persistViewState();
     renderFeedbackResult(null);
     restoreJobObservation();
     renderAll();
@@ -383,7 +427,8 @@ function hasUnsavedShotDraft() {
 /* ================================================================== */
 
 async function setViewStage(stageId) {
-  if (state.viewStage === stageId) return;
+  const resolved = resolveStageId(stageId, state.project);
+  if (state.viewStage === resolved) return;
   // 离开有未保存修改的阶段前给出守卫。
   const dirty = (state.viewStage === "video" || state.viewStage === "keyframes") && hasUnsavedShotDraft();
   if (dirty) {
@@ -391,8 +436,9 @@ async function setViewStage(stageId) {
     if (choice === "cancel") return;
     if (choice === "discard") state.videoDraft = null;
   }
-  state.viewStage = stageId;
+  state.viewStage = resolved;
   state.selectedAsset = null;
+  persistViewState();
   renderAll();
 }
 
@@ -405,6 +451,11 @@ function onWorkspaceClick(event) {
   const card = event.target.closest("[data-asset-key]");
   if (card) {
     selectAsset(card.dataset.stage, card.dataset.assetKey);
+    return;
+  }
+  const exportKind = event.target.closest("[data-action='export-json'], [data-action='export-md']");
+  if (exportKind) {
+    exportProject(exportKind.dataset.action === "export-json" ? "json" : "markdown");
     return;
   }
   const assemble = event.target.closest("[data-action='assemble-project']");
@@ -427,9 +478,10 @@ function onWorkspaceClick(event) {
 function selectAsset(stage, key) {
   if (state.selectedAsset?.stage === stage && state.selectedAsset?.key === key) {
     state.selectedAsset = null; // 再次点击取消选中
-  } else {
+    } else {
     state.selectedAsset = { stage, key };
   }
+  persistViewState();
   renderAll();
 }
 
@@ -472,6 +524,9 @@ async function onAdaptationAction(trigger) {
     }
     attachEvents();
     renderAll();
+    if (["save-bible", "save-storyboard", "save-medium-scope"].includes(action)) {
+      showSuccess("草稿已保存");
+    }
   } catch (error) {
     showError(error.message);
   } finally {
@@ -534,7 +589,7 @@ async function onFlowAction(event) {
 async function adoptFrontier(projectId, frontier) {
   if (frontier === "storyline") {
     state.project = await api.confirmMediumScope(projectId);
-  } else if (frontier === "adaptation") {
+  } else if (frontier === "text" || frontier === "adaptation") {
     state.project = await api.confirmScope(projectId);
   } else if (frontier === "bible") {
     state.project = await api.confirmBible(projectId);
@@ -551,7 +606,7 @@ async function adoptFrontier(projectId, frontier) {
 async function redoFrontier(projectId, frontier) {
   if (frontier === "storyline") {
     state.project = await api.regenerateMedium(projectId, "analysis");
-  } else if (frontier === "adaptation") {
+  } else if (frontier === "text" || frontier === "adaptation") {
     state.project = await api.regenerateAdaptation(projectId, "scope");
   } else if (frontier === "bible") {
     state.project = await api.regenerateAdaptation(projectId, "bible");
@@ -684,6 +739,7 @@ async function onSaveShotDraft(trigger) {
     if (state.videoDraft) state.videoDraft.dirty = false;
     state.stageEdit = null;
     await refreshProject({ preserveObservation: true });
+    showSuccess("镜头草稿已保存");
   } catch (error) {
     showError(`保存镜头草稿失败：${error.message}`);
   }
@@ -850,6 +906,7 @@ async function onAssembleProject() {
       ? result.message || "成片合成任务已在进行中"
       : result.message || `成片合成任务 ${result.job_id} 已入队`;
     state.viewStage = "assembly";
+    persistViewState();
     await refreshProject();
   } catch (error) {
     showError(`成片合成失败：${error.message}`);
@@ -882,6 +939,16 @@ async function onSaveAssemblySettings() {
       ? "成片配置已保存。当前成片已过期，需要重新合成。"
       : "成片配置已保存。";
     await refreshProject();
+    state.statusNotice = saved.stale
+      ? "成片配置已保存。当前成片已过期，需要重新合成。"
+      : "成片配置已保存。";
+    el("jobMessage").textContent = state.statusNotice;
+    showSuccess("成片配置已保存");
+    window.setTimeout(() => {
+      if (state.statusNotice && state.statusNotice.includes("成片配置已保存")) {
+        state.statusNotice = null;
+      }
+    }, 6000);
   } catch (error) {
     showError(`保存成片配置失败：${error.message}`);
   }
@@ -1188,9 +1255,18 @@ async function checkHealth() {
 async function loadProjects() {
   state.projects = await api.listProjects();
   if (!state.project && state.projects.length) {
-    const token = startSessionForProject(state.projects[0].id);
-    state.project = await api.getProject(state.projects[0].id);
-    if (!isLiveSession(state, token, state.projects[0].id)) return;
+    let preferred = "";
+    try {
+      preferred = sessionStorage.getItem(LAST_PROJECT_KEY) || "";
+    } catch {
+      preferred = "";
+    }
+    const match = state.projects.find((item) => item.id === preferred) || state.projects[0];
+    const token = startSessionForProject(match.id);
+    state.project = await api.getProject(match.id);
+    if (!isLiveSession(state, token, match.id)) return;
+    restoreViewState(state.project);
+    persistViewState();
     state.selectedShotId = state.project.shots?.[0]?.id || null;
   }
   restoreJobObservation();
@@ -1208,6 +1284,7 @@ function stopJobObservation() {
 }
 
 function startSessionForProject(projectId) {
+  persistLastProject(projectId);
   return beginObservation(state, projectId, observerTimers());
 }
 
@@ -1457,6 +1534,24 @@ init().catch((error) => {
 
 function showError(message) {
   el("feedbackResult").innerHTML = `<div class="prompt-block"><strong>操作提示</strong><br />${escapeHtml(message)}</div>`;
+  showToast(message, "error");
+}
+
+function showSuccess(message) {
+  showToast(message, "ok");
+}
+
+let toastTimer = 0;
+function showToast(message, kind = "ok") {
+  const node = el("statusToast");
+  if (!node) return;
+  node.hidden = false;
+  node.className = `status-toast ${kind}`;
+  node.textContent = String(message || "");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    node.hidden = true;
+  }, 2400);
 }
 
 function escapeHtml(value) {

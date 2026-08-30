@@ -108,11 +108,11 @@ async function main() {
     const shortId = await runWithoutReload(page, shortTitle, shortText());
     created.push(shortId);
     // 切换到「改编方案」查看阶段，等待候选方案在不刷新页面的情况下出现。
-    await page.click('[data-stage-id="adaptation"]');
+    await page.click('[data-stage-id="text"]');
     await page.waitForFunction(
       () => {
         const ws = document.querySelector("#stageWorkspace")?.innerText || "";
-        return ws.includes("选择此方案") && ws.includes("确认范围并生成 Bible");
+        return ws.includes("选择此方案") && ws.includes("确认范围并生成 Story Bible");
       },
       null,
       { timeout: 15000 }
@@ -124,7 +124,7 @@ async function main() {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("#runWorkflowBtn");
-    await page.click('[data-stage-id="adaptation"]');
+    await page.click('[data-stage-id="text"]');
     await page.waitForFunction(
       () => (document.querySelector("#stageWorkspace")?.innerText || "").includes("选择此方案"),
       null,

@@ -125,7 +125,7 @@ async function main() {
     pass("刷新页面后项目摘要和配置仍存在");
 
     await page.click("#runWorkflowBtn");
-    await openStage(page, "adaptation");
+    await openStage(page, "text");
     await waitAdapt(page, "confirm-scope", 30000);
     await page.screenshot({ path: path.join(OUT, "v1-adaptation-options-1440.png"), fullPage: true });
     pass("短文本改编方案可见");

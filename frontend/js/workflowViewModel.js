@@ -12,13 +12,30 @@
 export const STAGES = [
   { id: "text", label: "文本理解", index: 0 },
   { id: "storyline", label: "故事线选择", index: 1 },
-  { id: "adaptation", label: "改编方案", index: 2 },
-  { id: "bible", label: "Story Bible", index: 3 },
-  { id: "storyboard", label: "分镜设计", index: 4 },
-  { id: "keyframes", label: "关键帧制作", index: 5 },
-  { id: "video", label: "镜头视频", index: 6 },
-  { id: "assembly", label: "成片合成", index: 7 },
+  { id: "bible", label: "Story Bible", index: 2 },
+  { id: "storyboard", label: "分镜设计", index: 3 },
+  { id: "keyframes", label: "关键帧", index: 4 },
+  { id: "video", label: "镜头视频", index: 5 },
+  { id: "assembly", label: "成片合成", index: 6 },
+  { id: "export", label: "导出与交付", index: 7 },
 ];
+
+/** 旧导航 id 兼容：改编方案已并入文本理解（短文本）或故事线选择（中等文本）。 */
+export const LEGACY_STAGE_ALIAS = {
+  adaptation: "text",
+  keyframes_legacy: "keyframes",
+};
+
+export const STAGE_STATE_MARKS = {
+  not_started: "○",
+  processing: "…",
+  awaiting_review: "!",
+  completed: "✓",
+  modified: "✎",
+  invalidated: "↩",
+  failed: "×",
+  skipped: "–",
+};
 
 export const STAGE_STATE = {
   NOT_STARTED: "not_started",
@@ -46,6 +63,16 @@ export function stageStateLabel(state) {
   return STAGE_STATE_LABELS[state] || "未开始";
 }
 
+export function stageStateMark(state) {
+  return STAGE_STATE_MARKS[state] || STAGE_STATE_MARKS.not_started;
+}
+
+export function resolveStageId(stageId, project) {
+  if (stageId === "adaptation") return isMedium(project) ? "storyline" : "text";
+  if (STAGES.some((stage) => stage.id === stageId)) return stageId;
+  return LEGACY_STAGE_ALIAS[stageId] || "text";
+}
+
 /** 阶段状态对应的视觉色调：进行/选中用蓝绿，等待审核用琥珀，失败/风险用红。 */
 export function stageStateTone(state) {
   switch (state) {
@@ -70,12 +97,76 @@ export function stageStateTone(state) {
 
 const ADAPTATION_STATUS_STAGE = {
   awaiting_storyline_review: "storyline",
-  adaptation_options_ready: "adaptation",
-  awaiting_scope_review: "adaptation",
   story_bible_ready: "bible",
   awaiting_bible_review: "bible",
   storyboard_draft_ready: "storyboard",
   awaiting_storyboard_review: "storyboard",
+};
+
+const STAGE_JOB_TYPES = {
+  text: ["adaptation_workflow", "adaptation_regen_scope"],
+  storyline: ["adaptation_workflow", "medium_analysis"],
+  bible: ["adaptation_bible", "adaptation_regen_bible"],
+  storyboard: ["adaptation_storyboard", "adaptation_regen_storyboard", "adaptation_production"],
+  keyframes: ["keyframe_redraw"],
+  video: ["video_generation", "batch_video_generation", "video_safety_retry", "video_task_refresh"],
+  assembly: ["sequence_assembly"],
+  export: ["project_settings"],
+};
+
+const STAGE_GOALS = {
+  text: "理解原文规模、人物与冲突，并产出可审核的改编依据。",
+  storyline: "从候选故事线或改编方案中确认本次短片范围。",
+  bible: "锁定角色、场景与视觉规则，作为后续镜头的锚点。",
+  storyboard: "确认镜头顺序、动作与原文依据，再进入制作。",
+  keyframes: "为每个镜头准备首帧与尾帧，供视频生成引用。",
+  video: "按镜头选择 Provider/模型并生成或回滚视频版本。",
+  assembly: "按镜头顺序合成成片，并配置字幕、背景音与原声。",
+  export: "检查当前有效成片规格并下载交付文件。",
+};
+
+const STAGE_INPUTS = {
+  text: "项目原文与规模判断。",
+  storyline: "文本理解结果与候选故事线。",
+  bible: "已确认的改编范围。",
+  storyboard: "已确认的 Story Bible。",
+  keyframes: "已确认的分镜镜头。",
+  video: "镜头草稿、关键帧与模型选择。",
+  assembly: "各镜头当前有效视频与成片配置。",
+  export: "当前有效成片与项目规格。",
+};
+
+const STAGE_OUTPUTS = {
+  text: "摘要、人物、场景、事件，以及短文本改编方案。",
+  storyline: "已选故事线、事件范围，以及中等文本改编方案。",
+  bible: "角色卡、场景卡与视觉规则。",
+  storyboard: "可审核的分镜草案或已入制作镜头。",
+  keyframes: "每镜首帧与尾帧。",
+  video: "镜头视频版本、Provider 与模型。",
+  assembly: "成片文件、字幕/音频配置与合成历史。",
+  export: "可下载成片与交付检查结果。",
+};
+
+const STAGE_NEXT = {
+  text: "启动改编流程，或确认改编范围。",
+  storyline: "选择故事线并确认范围。",
+  bible: "确认 Story Bible 并生成分镜。",
+  storyboard: "确认分镜并进入制作。",
+  keyframes: "补齐或重绘关键帧。",
+  video: "生成、回滚或仅重生成此镜头。",
+  assembly: "保存成片配置并合成成片。",
+  export: "下载当前有效成片，或回到成片合成重新导出。",
+};
+
+const STAGE_LOCKED_HINT = {
+  text: "请先创建项目并启动改编流程。",
+  storyline: "请先完成文本理解。",
+  bible: "请先确认改编范围。",
+  storyboard: "请先确认 Story Bible。",
+  keyframes: "请先确认分镜并进入制作。",
+  video: "请先确认分镜并进入制作。",
+  assembly: "请先完成各镜头视频。",
+  export: "请先合成成片。",
 };
 
 const PRODUCTION_STATUSES = new Set([
@@ -135,6 +226,9 @@ function hasRunningJob(project, types) {
 export function executionStageId(project) {
   if (!project) return "text";
   const status = project.status || "created";
+  if (status === "awaiting_scope_review" || status === "adaptation_options_ready") {
+    return isMedium(project) ? "storyline" : "text";
+  }
   if (ADAPTATION_STATUS_STAGE[status]) return ADAPTATION_STATUS_STAGE[status];
   if (PRODUCTION_STATUSES.has(status) || status === "failed") return productionFrontier(project);
   // created / draft / running / paused 等：仍处于文本理解。
@@ -150,7 +244,7 @@ function productionFrontier(project) {
   if (!allKeyframes) return "keyframes";
   const allVideos = shots.every((shot) => shotHasRealVideo(project, shot));
   if (!allVideos) return "video";
-  if (finalAsset && !project?.assembly_stale) return "assembly";
+  if (finalAsset && !project?.assembly_stale) return "export";
   return "assembly";
 }
 
@@ -174,11 +268,9 @@ function stageHasData(project, stageId) {
   const assets = project?.assets || [];
   switch (stageId) {
     case "text":
-      return Boolean(project?.source_text);
+      return Boolean(project?.source_text) || (project?.adaptation_options || []).length > 0;
     case "storyline":
-      return (project?.storylines || []).length > 0;
-    case "adaptation":
-      return (project?.adaptation_options || []).length > 0;
+      return (project?.storylines || []).length > 0 || (isMedium(project) && (project?.adaptation_options || []).length > 0);
     case "bible":
       return Boolean(project?.story_bible);
     case "storyboard":
@@ -191,6 +283,7 @@ function stageHasData(project, stageId) {
       return shots.some((shot) => (shot.versions || []).some((v) => v.video_path)) ||
         assets.some((asset) => asset.type === "video");
     case "assembly":
+    case "export":
       return assets.some((asset) => asset.type === "final-video");
     default:
       return false;
@@ -203,12 +296,17 @@ function frontierState(project, stageId) {
   if (status === "failed") return STAGE_STATE.FAILED;
   switch (stageId) {
     case "text":
-      return status === "running" || hasRunningJob(project, ["adaptation_workflow"])
-        ? STAGE_STATE.PROCESSING
-        : STAGE_STATE.NOT_STARTED;
+      if (status === "running" || hasRunningJob(project, ["adaptation_workflow", "adaptation_regen_scope"])) {
+        return STAGE_STATE.PROCESSING;
+      }
+      if (status === "awaiting_scope_review" || status === "adaptation_options_ready") {
+        return STAGE_STATE.AWAITING_REVIEW;
+      }
+      return STAGE_STATE.NOT_STARTED;
     case "storyline":
-      return STAGE_STATE.AWAITING_REVIEW;
-    case "adaptation":
+      if (hasRunningJob(project, ["adaptation_workflow", "medium_analysis", "adaptation_regen_scope"])) {
+        return STAGE_STATE.PROCESSING;
+      }
       return STAGE_STATE.AWAITING_REVIEW;
     case "bible":
       return STAGE_STATE.AWAITING_REVIEW;
@@ -243,6 +341,13 @@ function frontierState(project, stageId) {
       if (finalAsset) return project?.review_mode ? STAGE_STATE.AWAITING_REVIEW : STAGE_STATE.COMPLETED;
       return STAGE_STATE.NOT_STARTED;
     }
+    case "export": {
+      const finalAsset = (project?.assets || []).find((asset) => asset.type === "final-video");
+      if (hasRunningJob(project, ["sequence_assembly"])) return STAGE_STATE.PROCESSING;
+      if (finalAsset && project?.assembly_stale) return STAGE_STATE.MODIFIED;
+      if (finalAsset) return STAGE_STATE.COMPLETED;
+      return STAGE_STATE.NOT_STARTED;
+    }
     default:
       return STAGE_STATE.NOT_STARTED;
   }
@@ -267,7 +372,7 @@ function completedStageModified(project, stageId) {
 
 /**
  * 计算完整阶段导航视图模型。
- * 返回 { executionStage, stages: [{ id, label, index, state, stateLabel, tone, summary, skippedReason, current }] }。
+ * 返回 { executionStage, stages: [{ id, label, index, state, stateLabel, tone, summary, skippedReason, current, ... }] }。
  */
 export function computeWorkflow(project) {
   const medium = isMedium(project);
@@ -277,15 +382,12 @@ export function computeWorkflow(project) {
 
   const stages = STAGES.map((stage) => {
     if (stage.id === "storyline" && !medium) {
-      return {
-        ...stage,
+      return decorateStage(project, stage, {
         state: STAGE_STATE.SKIPPED,
-        stateLabel: stageStateLabel(STAGE_STATE.SKIPPED),
-        tone: stageStateTone(STAGE_STATE.SKIPPED),
         summary: "当前文本无需此步骤",
         skippedReason: "短文本直接进入改编方案，无需故事线选择。",
         current: false,
-      };
+      });
     }
     let state;
     if (stage.index < frontierIndex) {
@@ -295,18 +397,82 @@ export function computeWorkflow(project) {
     } else {
       state = stageHasData(project, stage.id) ? STAGE_STATE.INVALIDATED : STAGE_STATE.NOT_STARTED;
     }
-    return {
-      ...stage,
+    return decorateStage(project, stage, {
       state,
-      stateLabel: stageStateLabel(state),
-      tone: stageStateTone(state),
       summary: stageSummary(project, stage.id, state),
       skippedReason: "",
       current: stage.index === frontierIndex,
-    };
+    });
   });
 
   return { executionStage: frontierId, stages };
+}
+
+function decorateStage(project, stage, extra) {
+  const state = extra.state;
+  const assetCount = stageAssetCount(project, stage.id);
+  const jobCount = stageJobCount(project, stage.id);
+  const executing = Boolean(extra.current && state === STAGE_STATE.PROCESSING);
+  const awaitingReview = state === STAGE_STATE.AWAITING_REVIEW;
+  const flags = [];
+  if (extra.current) flags.push("系统执行到此阶段");
+  if (executing) flags.push("正在执行");
+  if (awaitingReview) flags.push("等待用户审核");
+  if (state === STAGE_STATE.COMPLETED) flags.push("已完成");
+  if (state === STAGE_STATE.MODIFIED) flags.push("已修改");
+  if (state === STAGE_STATE.INVALIDATED) flags.push("因上游修改而失效");
+  if (state === STAGE_STATE.FAILED) flags.push("失败");
+  if (state === STAGE_STATE.SKIPPED) flags.push("跳过");
+  flags.push("可点击查看");
+  const ariaLabel = `${stage.label}，${stageStateLabel(state)}。素材 ${assetCount}，任务 ${jobCount}。${flags.join("，")}。`;
+  return {
+    ...stage,
+    ...extra,
+    state,
+    stateLabel: stageStateLabel(state),
+    tone: stageStateTone(state),
+    mark: stageStateMark(state),
+    viewable: true,
+    executing,
+    awaitingReview,
+    canExecute: Boolean(extra.current && state !== STAGE_STATE.NOT_STARTED && state !== STAGE_STATE.SKIPPED),
+    assetCount,
+    jobCount,
+    goal: STAGE_GOALS[stage.id] || "",
+    lockedHint: !extra.current && state === STAGE_STATE.NOT_STARTED ? stageLockedHint(stage.id) : "",
+    ariaLabel,
+  };
+}
+
+export function stageLockedHint(stageId) {
+  return STAGE_LOCKED_HINT[stageId] || "请先完成前置阶段。";
+}
+
+export function stageBriefModel(project, stageId, stageVm) {
+  return {
+    goal: STAGE_GOALS[stageId] || "",
+    input: STAGE_INPUTS[stageId] || "",
+    output: STAGE_OUTPUTS[stageId] || "",
+    nextAction: STAGE_NEXT[stageId] || "",
+    stateLabel: stageVm?.stateLabel || "",
+    lockedHint: stageVm?.lockedHint || "",
+  };
+}
+
+function stageJobCount(project, stageId) {
+  const types = STAGE_JOB_TYPES[stageId] || [];
+  return (project?.jobs || []).filter((job) => types.includes(job.type)).length;
+}
+
+function stageAssetCount(project, stageId) {
+  if (!project) return 0;
+  if (stageId === "text" && !isMedium(project)) {
+    return textAssets(project).length + (project?.adaptation_options || []).length;
+  }
+  if (stageId === "storyline" && isMedium(project)) {
+    return storylineAssets(project).length + (project?.adaptation_options || []).length;
+  }
+  return stageAssets(project, stageId).length;
 }
 
 function stageIndex(stageId) {
@@ -320,15 +486,16 @@ function stageSummary(project, stageId, state) {
   switch (stageId) {
     case "text": {
       const len = (project?.source_text || "").length;
-      return len ? `${project?.text_scale_label || "文本"} · ${len} 字` : "等待原文";
+      const options = isMedium(project) ? 0 : (project?.adaptation_options || []).length;
+      const scale = project?.text_scale_label || "文本";
+      if (options) return `${scale} · ${len} 字 · ${options} 个方案`;
+      return len ? `${scale} · ${len} 字` : "等待原文";
     }
     case "storyline": {
       const count = (project?.storylines || []).length;
+      const options = isMedium(project) ? (project?.adaptation_options || []).length : 0;
+      if (options) return `${count} 条故事线 · ${options} 个改编方案`;
       return count ? `${count} 条候选故事线` : "等待故事线";
-    }
-    case "adaptation": {
-      const count = (project?.adaptation_options || []).length;
-      return count ? `${count} 个候选方案` : "等待改编方案";
     }
     case "bible":
       return project?.story_bible ? "角色/场景/风格已就绪" : "等待 Story Bible";
@@ -345,7 +512,17 @@ function stageSummary(project, stageId, state) {
       return shots.length ? `${ready}/${shots.length} 镜头视频` : "等待视频";
     }
     case "assembly":
-      return (project?.assets || []).some((asset) => asset.type === "final-video") ? "成片已生成" : "等待合成";
+      return (project?.assets || []).some((asset) => asset.type === "final-video")
+        ? project?.assembly_stale
+          ? "成片已过期"
+          : "成片已生成"
+        : "等待合成";
+    case "export":
+      return (project?.assets || []).some((asset) => asset.type === "final-video")
+        ? project?.assembly_stale
+          ? "成片已过期，需重新合成"
+          : `${project?.output_resolution || "1280x720"} · 可下载`
+        : "等待可交付成片";
     default:
       return "";
   }
@@ -379,9 +556,15 @@ export function stageAssets(project, stageId) {
       return videoAssets(project);
     case "assembly":
       return assemblyAssets(project);
+    case "export":
+      return exportAssets(project);
     default:
       return [];
   }
+}
+
+function exportAssets(project) {
+  return assemblyAssets(project).filter((card) => card.kind === "final");
 }
 
 function baseCard(kind, title, ref) {

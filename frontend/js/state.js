@@ -42,6 +42,7 @@ export const state = {
 
   /* ---- 成片配置草稿（未保存时刷新/任务更新不丢，切换项目时清空） ---- */
   assemblyDraft: null,
+  statusNotice: null,
 };
 
 export function selectedShot() {
@@ -67,4 +68,5 @@ export function resetViewState() {
   state.stageEdit = null;
   state.workflowControl = { paused: false };
   state.assemblyDraft = null;
+  state.statusNotice = null;
 }

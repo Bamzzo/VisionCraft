@@ -5,8 +5,10 @@ import {
   computeWorkflow,
   jobCenterRows,
   jobStatusLabel,
+  resolveStageId,
   stageAssets,
-  stageStateLabel,
+  stageBriefModel,
+  stageLockedHint,
 } from "./workflowViewModel.js";
 
 const el = (id) => document.getElementById(id);
@@ -279,8 +281,8 @@ function projectStageLabel(project) {
     draft: "文本理解",
     running: "文本理解",
     awaiting_storyline_review: "故事线选择",
-    adaptation_options_ready: "改编方案",
-    awaiting_scope_review: "改编方案",
+    adaptation_options_ready: project.text_scale === "medium" ? "故事线选择" : "文本理解",
+    awaiting_scope_review: project.text_scale === "medium" ? "故事线选择" : "文本理解",
     story_bible_ready: "Story Bible",
     awaiting_bible_review: "Story Bible",
     storyboard_draft_ready: "分镜设计",
@@ -289,7 +291,7 @@ function projectStageLabel(project) {
     ready_for_review: "镜头制作",
     review_pending: "镜头制作",
     video_ready: "镜头视频",
-    completed: "成片合成",
+    completed: "导出与交付",
     failed: "失败",
   };
   return map[project.status] || "文本理解";
@@ -318,22 +320,29 @@ function renderStageNav() {
   nav.innerHTML = workflow.stages
     .map((stage) => {
       const viewing = state.viewStage === stage.id;
-      const executing = stage.current && !["skipped"].includes(stage.state);
+      const executing = Boolean(stage.executing || (stage.current && stage.state === STAGE_STATE.PROCESSING));
       const classes = ["stage-node", `tone-${stage.tone}`];
       if (viewing) classes.push("viewing");
       if (executing) classes.push("executing");
+      if (stage.current) classes.push("current");
       if (stage.state === STAGE_STATE.SKIPPED) classes.push("skipped");
       if (stage.state === STAGE_STATE.INVALIDATED) classes.push("invalidated");
+      if (stage.state === STAGE_STATE.FAILED) classes.push("failed");
+      const countBits = [];
+      if (stage.assetCount) countBits.push(`${stage.assetCount} 素材`);
+      if (stage.jobCount) countBits.push(`${stage.jobCount} 任务`);
+      const countText = countBits.length ? countBits.join(" · ") : "暂无素材";
       return `
-      <button type="button" class="${classes.join(" ")}" data-stage-id="${stage.id}" title="${escapeHtml(stage.skippedReason || stage.stateLabel)}">
-        <span class="stage-index">${stage.index + 1}</span>
+      <button type="button" class="${classes.join(" ")}" data-stage-id="${stage.id}" data-state="${escapeHtml(stage.state)}" data-viewable="true" data-executing="${executing ? "true" : "false"}" data-awaiting-review="${stage.awaitingReview ? "true" : "false"}" data-current="${stage.current ? "true" : "false"}" aria-current="${viewing ? "true" : "false"}" aria-label="${escapeHtml(stage.ariaLabel || stage.label)}">
+        <span class="stage-index" aria-hidden="true">${stage.index + 1}</span>
         <span class="stage-node-body">
           <span class="stage-node-label">${escapeHtml(stage.label)}</span>
           <span class="stage-node-summary">${escapeHtml(stage.summary)}</span>
+          <span class="stage-node-count">${escapeHtml(countText)}</span>
         </span>
         <span class="stage-node-state">
+          <span class="stage-state-mark" aria-hidden="true">${escapeHtml(stage.mark || "")}</span>
           <span class="stage-state-label tone-${stage.tone}">${escapeHtml(stage.stateLabel)}</span>
-          <span class="stage-state-dot tone-${stage.tone}"></span>
         </span>
       </button>`;
     })
@@ -346,7 +355,8 @@ function renderStageNav() {
 
 function renderStageWorkspace() {
   const project = state.project;
-  const stage = state.viewStage;
+  const stage = resolveStageId(state.viewStage, project);
+  if (stage !== state.viewStage) state.viewStage = stage;
   const stageDef = STAGES.find((s) => s.id === stage) || STAGES[0];
   el("stageWorkspaceTitle").textContent = stageDef.label;
 
@@ -382,7 +392,7 @@ function renderStageWorkspace() {
       : "";
 
   const body = stageBodyHtml(project, stage, stageVm);
-  workspace.innerHTML = `${invalidatedNotice}${skippedNotice}${body}`;
+  workspace.innerHTML = `${stageBriefHtml(project, stage, stageVm)}${invalidatedNotice}${skippedNotice}${body}`;
 
   renderAssetDetail(project, stage);
 }
@@ -425,8 +435,8 @@ function renderGateBanner(project, workflow) {
           <span class="gate-title">「${escapeHtml(stageLabel)}」已完成，等待审核</span>
           <span>监制模式：确认后才会进入下一阶段。可查看生成依据、修改后重做，或采用并继续。</span>
           <div class="button-row compact-row">
-            <button class="primary-btn mini-btn" data-flow="adopt">采用并继续</button>
-            <button class="secondary-btn mini-btn" data-flow="redo">修改后重做</button>
+            <button class="primary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
+            <button class="secondary-btn mini-btn" data-flow="redo">基于已保存内容重做此阶段</button>
           </div>
         </div>`;
     } else {
@@ -435,7 +445,7 @@ function renderGateBanner(project, workflow) {
           <span class="gate-title">「${escapeHtml(stageLabel)}」已完成，自动模式将继续</span>
           <span>自动模式：确认后进入下一阶段。可随时暂停流程进行人工干预。</span>
           <div class="button-row compact-row">
-            <button class="primary-btn mini-btn" data-flow="adopt">采用并继续</button>
+            <button class="primary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
             <button class="secondary-btn mini-btn" data-flow="pause">暂停流程</button>
           </div>
         </div>`;
@@ -458,8 +468,36 @@ function renderGateBanner(project, workflow) {
   banner.innerHTML = "";
 }
 
+function adoptLabel(stageId) {
+  return {
+    text: "确认范围并生成 Story Bible",
+    storyline: "确认范围并进入改编",
+    bible: "确认 Story Bible 并生成分镜",
+    storyboard: "确认分镜并进入制作",
+    video: "合成成片",
+    assembly: "合成成片",
+    export: "下载当前成片",
+  }[stageId] || "确认当前阶段并继续";
+}
+
+function stageBriefHtml(project, stage, stageVm) {
+  const brief = stageBriefModel(project, stage, stageVm);
+  if (!brief.goal) return "";
+  return `<section class="stage-brief" data-stage-brief="${escapeHtml(stage)}">
+    <p><strong>阶段目标</strong> ${escapeHtml(brief.goal)}</p>
+    <p><strong>当前输入</strong> ${escapeHtml(brief.input)}</p>
+    <p><strong>当前输出</strong> ${escapeHtml(brief.output)}</p>
+    <p><strong>下一步</strong> ${escapeHtml(brief.lockedHint || brief.nextAction)}</p>
+    ${brief.stateLabel ? `<p><strong>当前状态</strong> ${escapeHtml(brief.stateLabel)}</p>` : ""}
+  </section>`;
+}
+
 /* ---- 阶段工作区主体 ---- */
 function stageBodyHtml(project, stage, stageVm) {
+  const locked = stageVm?.state === STAGE_STATE.NOT_STARTED && !stageVm?.current && !stageHasWorkspaceData(project, stage);
+  if (locked && stage !== "assembly" && stage !== "export") {
+    return `<div class="empty-state stage-locked" data-stage-locked="1">${escapeHtml(stageVm.lockedHint || stageLockedHint(stage))}</div>`;
+  }
   switch (stage) {
     case "text":
       return textStageHtml(project);
@@ -476,9 +514,21 @@ function stageBodyHtml(project, stage, stageVm) {
       return assetGridHtml(project, stage);
     case "assembly":
       return assemblyStageHtml(project);
+    case "export":
+      return exportStageHtml(project, stageVm);
     default:
       return `<div class="empty-state">该阶段暂无内容。</div>`;
   }
+}
+
+function stageHasWorkspaceData(project, stage) {
+  if (stage === "text") return Boolean(project?.source_text);
+  if (stage === "storyline") return (project?.storylines || []).length > 0 || (project?.adaptation_options || []).length > 0;
+  if (stage === "bible") return Boolean(project?.story_bible);
+  if (stage === "storyboard") return (project?.storyboard_drafts || []).length > 0 || (project?.shots || []).length > 0;
+  if (stage === "keyframes" || stage === "video") return (project?.shots || []).length > 0;
+  if (stage === "assembly" || stage === "export") return (project?.assets || []).some((asset) => asset.type === "final-video") || (project?.shots || []).length > 0;
+  return false;
 }
 
 function assetGridHtml(project, stage) {
@@ -499,9 +549,12 @@ function assetCardHtml(card, stage, invalidated = false) {
   const classes = ["asset-card"];
   if (selected) classes.push("selected");
   if (invalidated) classes.push("invalidated");
-  const thumb = card.preview
-    ? `<div class="asset-thumb">${renderAssetMedia(card.preview, card.title, assetForPath(card.preview))}</div>`
-    : "";
+  let thumb = "";
+  if (card.preview) {
+    thumb = `<div class="asset-thumb">${renderAssetMedia(card.preview, card.title, assetForPath(card.preview))}</div>`;
+  } else if (card.tone === "active" && ["video", "frame", "final"].includes(card.kind)) {
+    thumb = `<div class="asset-thumb"><div class="asset-thumb-empty skeleton">生成中</div></div>`;
+  }
   const meta = Object.entries(card.meta || {})
     .filter(([, value]) => value)
     .map(([key, value]) => `<span class="tag">${escapeHtml(key)}：${escapeHtml(String(value))}</span>`)
@@ -526,12 +579,12 @@ function stageEmptyText(stage) {
   return {
     text: "启动改编流程后显示文本理解结果（摘要、人物、场景、事件与引用）。",
     storyline: "中等文本启动改编后，这里出现 2～3 条候选故事线。",
-    adaptation: "启动改编流程后，这里出现候选改编方案。",
     bible: "选定改编方案并确认范围后，这里生成 Story Bible。",
     storyboard: "确认 Story Bible 后，这里生成分镜草案。",
     keyframes: "确认分镜后，这里显示每个镜头的首帧、尾帧与参考图。",
     video: "确认分镜后，这里显示每个镜头的视频、Provider、模型与任务进度。",
     assembly: "各镜头视频就绪后，这里合成并预览成片。",
+    export: "成片合成完成后，这里检查规格并下载交付文件。",
   }[stage] || "该阶段暂无内容。";
 }
 
@@ -539,8 +592,9 @@ function stageEmptyText(stage) {
 function textStageHtml(project) {
   const cards = stageAssets(project, "text");
   const scaleLine = `<div class="prompt-block"><strong>原文规模</strong><br />${escapeHtml(project.text_scale_label || "")} · 共 ${escapeHtml(String((project.source_text || "").length))} 字</div>`;
-  if (!cards.length) return `${scaleLine}<div class="empty-state">启动改编流程后显示文本理解结果。</div>`;
-  return `${scaleLine}${assetGridHtml(project, "text")}`;
+  const options = project.text_scale === "medium" ? "" : adaptationStageHtml(project, { embedded: true });
+  if (!cards.length && !options) return `${scaleLine}<div class="empty-state">启动改编流程后显示文本理解结果。</div>`;
+  return `${scaleLine}${assetGridHtml(project, "text")}${options}`;
 }
 
 /* ---- 故事线选择（中等文本） ---- */
@@ -602,16 +656,18 @@ function storylineStageHtml(project) {
         </div>
       </div>`
     : `<p class="muted-text">请先选择一条故事线。</p>`;
-  return `<div class="asset-grid single">${cards}</div>${scopePanel}`;
+  const options = (project.adaptation_options || []).length ? adaptationStageHtml(project, { embedded: true }) : "";
+  return `<div class="asset-grid single">${cards}</div>${scopePanel}${options}`;
 }
 
 /* ---- 改编方案 ---- */
-function adaptationStageHtml(project) {
-  const options = project.adaptation_options || [];
-  if (!options.length) {
+function adaptationStageHtml(project, options = {}) {
+  const items = project.adaptation_options || [];
+  if (!items.length) {
+    if (options.embedded) return "";
     return `<div class="empty-state">启动改编流程后，这里出现候选改编方案。当前状态：${escapeHtml(project.status || "")}</div>`;
   }
-  const cards = options
+  const cards = items
     .map(
       (item) => `
       <article class="option-card ${item.selected ? "active" : ""}">
@@ -625,14 +681,14 @@ function adaptationStageHtml(project) {
         <blockquote>引用：「${escapeHtml(item.source_excerpt)}」</blockquote>
         <div class="button-row compact-row">
           <button class="secondary-btn mini-btn" data-adapt="select-option" data-option-id="${escapeHtml(item.id)}">选择此方案</button>
-          <button class="primary-btn mini-btn" data-adapt="confirm-scope" data-option-id="${escapeHtml(item.id)}">确认范围并生成 Bible</button>
+          <button class="primary-btn mini-btn" data-adapt="confirm-scope" data-option-id="${escapeHtml(item.id)}">确认范围并生成 Story Bible</button>
         </div>
       </article>`
     )
     .join("");
   return `<div class="asset-grid single">${cards}</div>
     <div class="button-row compact-row">
-      <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="scope">修改后重生成改编方案</button>
+      <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="scope">基于当前修改重生成改编方案</button>
     </div>`;
 }
 
@@ -685,9 +741,9 @@ function bibleStageHtml(project) {
         <span id="bibleDirty" class="clean-flag">草稿已同步</span>
       </div>
       <div class="button-row compact-row">
-        <button class="secondary-btn mini-btn" data-adapt="save-bible">保存草稿</button>
-        <button class="primary-btn mini-btn" data-adapt="confirm-bible">采用并继续（确认并生成分镜）</button>
-        <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="bible" data-redo-btn disabled>从此处重做并继续</button>
+        <button class="secondary-btn mini-btn" data-adapt="save-bible">保存 Story Bible 草稿</button>
+        <button class="primary-btn mini-btn" data-adapt="confirm-bible">确认 Story Bible 并生成分镜</button>
+        <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="bible" data-redo-btn disabled>基于当前草稿重做 Story Bible</button>
         <button class="secondary-btn mini-btn" data-adapt="discard-bible">放弃修改</button>
       </div>
     </div>`;
@@ -729,9 +785,9 @@ function storyboardStageHtml(project) {
     </div>
     <div class="asset-grid single">${rows}</div>
     <div class="button-row compact-row">
-      <button class="secondary-btn mini-btn" data-adapt="save-storyboard">保存草稿</button>
-      <button class="primary-btn mini-btn" data-adapt="confirm-storyboard">采用并继续（确认分镜）</button>
-      <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="storyboard" data-redo-btn disabled>从此处重做并继续</button>
+      <button class="secondary-btn mini-btn" data-adapt="save-storyboard">保存分镜草稿</button>
+      <button class="primary-btn mini-btn" data-adapt="confirm-storyboard">确认分镜并进入制作</button>
+      <button class="secondary-btn mini-btn" data-adapt="regen" data-stage="storyboard" data-redo-btn disabled>基于当前草稿重做分镜</button>
       <button class="secondary-btn mini-btn" data-adapt="discard-storyboard">放弃修改</button>
     </div>`;
 }
@@ -810,7 +866,20 @@ function genericDetailHtml(card, stage) {
 }
 
 function assemblyStatusOf(project) {
-  if (project?.assembly) return project.assembly;
+  const derivedAudio = (project?.assets || [])
+    .filter((asset) => asset.type === "audio")
+    .map((asset) => ({ id: asset.id, name: asset.name || asset.file_path, file_path: asset.file_path }));
+  const derivedSubtitles = (project?.assets || [])
+    .filter((asset) => asset.type === "subtitle")
+    .map((asset) => ({ id: asset.id, name: asset.name || asset.file_path, file_path: asset.file_path }));
+  if (project?.assembly) {
+    const assembly = project.assembly;
+    return {
+      ...assembly,
+      audio_assets: assembly.audio_assets?.length ? assembly.audio_assets : derivedAudio,
+      subtitle_assets: assembly.subtitle_assets?.length ? assembly.subtitle_assets : derivedSubtitles,
+    };
+  }
   const shots = (project?.shots || []).slice().sort((a, b) => Number(a.shot_index || 0) - Number(b.shot_index || 0));
   const mapped = shots.map((shot) => {
     const ready = shotHasRealVideo(project, shot);
@@ -842,6 +911,8 @@ function assemblyStatusOf(project) {
       : null,
     history: finals.slice(1),
     shots: mapped,
+    audio_assets: derivedAudio,
+    subtitle_assets: derivedSubtitles,
   };
 }
 
@@ -903,7 +974,7 @@ function assemblyStageHtml(project) {
   const preview = current
     ? `<div class="assembly-preview">
         <div class="asset-detail-preview">
-          <video src="${escapeHtml(current.file_path)}" controls playsinline></video>
+          <video src="${escapeHtml(current.file_path)}" controls playsinline preload="auto"></video>
         </div>
         <div class="button-row compact-row">
           <a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" download>下载成片</a>
@@ -1004,7 +1075,7 @@ function assemblyStageHtml(project) {
         <label class="assembly-check"><input type="checkbox" id="assemblyKeepSourceAudio" ${settings.keep_source_audio ? "checked" : ""} ${locked}>保留原视频音频（无音轨镜头该段静音，不会伪造原声）</label>
         <div class="button-row compact-row">
           <span id="assemblySettingsDirty" class="${dirty ? "dirty-flag" : "clean-flag"}">${dirty ? "有未保存修改" : "配置已同步"}</span>
-          <button type="button" class="secondary-btn" id="saveAssemblySettingsBtn" data-action="save-assembly-settings" ${locked}>保存配置</button>
+          <button type="button" class="secondary-btn" id="saveAssemblySettingsBtn" data-action="save-assembly-settings" ${locked}>保存成片配置</button>
         </div>
       </form>
       <ol class="assembly-shot-list">${shotRows || "<li class='muted-text'>暂无制作镜头。</li>"}</ol>
@@ -1019,6 +1090,71 @@ function assemblyStageHtml(project) {
       </div>
       ${history ? `<div class="assembly-history"><h3>历史成片</h3><ul>${history}</ul></div>` : ""}
     </section>`;
+}
+
+function exportStageHtml(project, stageVm) {
+  const assembly = assemblyStatusOf(project);
+  const current = assembly.current_final;
+  const stale = Boolean(assembly.stale);
+  const ready = Boolean(current) && !stale;
+  const checks = [
+    { ok: (assembly.shot_count || 0) > 0, label: (assembly.shot_count || 0) > 0 ? `已有 ${assembly.shot_count} 个制作镜头` : "尚无制作镜头，请先确认分镜并进入制作" },
+    { ok: (assembly.ready_count || 0) > 0 && assembly.ready_count === assembly.shot_count, label: `${assembly.ready_count || 0}/${assembly.shot_count || 0} 个镜头视频就绪` },
+    { ok: Boolean(current), label: current ? "已有成片文件" : "请先合成成片" },
+    { ok: Boolean(current) && !stale, label: stale ? "当前成片已失效，需重新合成" : current ? "当前成片有效" : "等待有效成片" },
+  ];
+  const checkList = checks
+    .map(
+      (item) => `<li class="export-check ${item.ok ? "ok" : "blocked"}">
+        <span class="export-check-mark" aria-hidden="true">${item.ok ? "✓" : "!"}</span>
+        <span>${escapeHtml(item.label)}</span>
+      </li>`
+    )
+    .join("");
+  const preview = current
+    ? `<div class="assembly-preview">
+        <div class="asset-detail-preview">
+          <video src="${escapeHtml(current.file_path)}" controls playsinline preload="auto"></video>
+        </div>
+        <div class="button-row compact-row">
+          <a class="primary-btn mini-btn" href="${escapeHtml(current.file_path)}" download ${ready ? "" : "aria-disabled='true'"}>下载当前有效成片</a>
+          <a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" target="_blank" rel="noopener">打开成片</a>
+          <button type="button" class="secondary-btn mini-btn" data-action="export-json">导出项目 JSON</button>
+          <button type="button" class="secondary-btn mini-btn" data-action="export-md">导出项目 Markdown</button>
+        </div>
+        ${stale ? `<p class="muted-text">此成片已过期，仅作历史参考。请到「成片合成」重新合成。</p>` : ""}
+      </div>`
+    : `<div class="empty-state stage-locked" data-stage-locked="1">${escapeHtml(stageVm?.lockedHint || "请先合成成片。")}</div>
+      <div class="button-row compact-row">
+        <button type="button" class="secondary-btn mini-btn" data-action="export-json">导出项目 JSON</button>
+        <button type="button" class="secondary-btn mini-btn" data-action="export-md">导出项目 Markdown</button>
+      </div>`;
+  const history = (assembly.history || [])
+    .map(
+      (item) => `<li class="assembly-history-item">
+        <span>${escapeHtml(formatTime(item.created_at))}</span>
+        <a href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">查看历史版本</a>
+      </li>`
+    )
+    .join("");
+  const specRows = [
+    ["输出分辨率", project.output_resolution || "1280x720"],
+    ["画幅比例", project.aspect_ratio || "16:9"],
+    ["单镜时长", `${project.duration_seconds || 5}s`],
+    ["镜头数量", String(assembly.shot_count || 0)],
+    ["成片状态", ready ? "可交付" : stale ? "已失效" : "尚未合成"],
+  ]
+    .map(([key, value]) => `<div class="summary-row"><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+    .join("");
+  return `<section class="assembly-panel export-panel" id="exportPanel">
+    <div class="prompt-block">
+      <strong>交付检查</strong>
+      <ul class="export-check-list">${checkList}</ul>
+    </div>
+    <div class="summary-fields">${specRows}</div>
+    ${preview}
+    ${history ? `<div class="assembly-history"><h3>历史成片</h3><ul>${history}</ul></div>` : ""}
+  </section>`;
 }
 
 function assemblyDetailHtml(project) {
@@ -1115,7 +1251,7 @@ function shotEditorHtml(project, shot, stage) {
           <span class="muted-text">${escapeHtml(item.provider || "未记录")} · ${escapeHtml(item.model || "未记录")} · ${escapeHtml(item.video_mode || "t2v")} · ${escapeHtml(String(item.duration_seconds || "-"))}s</span>
           <p class="muted-text">关键帧：${escapeHtml(frameStatusLabel(item))}</p>
         </div>
-        <button class="secondary-btn mini-btn" data-action="rollback-version" data-version-id="${escapeHtml(item.id)}" ${item.id === shot.current_version_id ? "disabled" : ""}>回滚至此版本</button>
+        <button class="secondary-btn mini-btn" data-action="rollback-version" data-version-id="${escapeHtml(item.id)}" ${item.id === shot.current_version_id ? "disabled" : ""}>回滚到此版本</button>
       </div>`
     )
     .join("");
@@ -1188,10 +1324,10 @@ function shotEditorHtml(project, shot, stage) {
       <label>尾帧资产 ${draft.last_frame_path ? "· 已选" : "· 未选"}<select id="lastFrameSelect" data-shot-track>${optionHtml(draft.last_frame_path)}</select></label>
       <label>参考图 ${draft.reference_frame_path ? "· 已选" : "· 未选"}<select id="referenceFrameSelect" data-shot-track>${optionHtml(draft.reference_frame_path)}</select></label>
       <div class="button-row compact-row">
-        <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存草稿</button>
-        <button class="secondary-btn mini-btn" data-action="redo-shot" data-redo-btn disabled>从此处重做并继续</button>
+        <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存镜头草稿</button>
+        <button class="secondary-btn mini-btn" data-action="redo-shot" data-redo-btn disabled>基于当前草稿生成新版本</button>
         <button class="secondary-btn mini-btn" data-action="discard-shot">放弃修改</button>
-        <button class="secondary-btn mini-btn" data-action="freeze-shot-version">基于草稿冻结新版本</button>
+        <button class="secondary-btn mini-btn" data-action="freeze-shot-version">基于当前草稿冻结新版本</button>
       </div>
       <div class="button-row compact-row">
         <button class="secondary-btn mini-btn" data-action="apply-keyframes">写入关键帧到草稿</button>
@@ -1199,13 +1335,13 @@ function shotEditorHtml(project, shot, stage) {
         <button class="secondary-btn mini-btn" data-action="redraw-keyframe" data-target="last">重绘尾帧</button>
         ${waitingRemote ? `<button class="secondary-btn mini-btn" data-action="refresh-video-tasks">立即刷新云端任务</button>` : ""}
       </div>
-      <button class="primary-btn full-width" data-action="generate-video" ${constraint.ok ? "" : "disabled"} title="${escapeHtml(constraint.reason || "")}">${constraint.ok ? "仅重生成此镜头视频" : escapeHtml(constraint.reason)}</button>
+      <button class="primary-btn full-width" data-action="generate-video" ${constraint.ok ? "" : "disabled"} title="${escapeHtml(constraint.reason || "")}">${constraint.ok ? "仅重生成此镜头" : escapeHtml(constraint.reason)}</button>
     </div>
 
     ${taskBlock}
     ${diagnosisBlock}
     ${evidenceBlock}
-    <div class="prompt-block version-list"><strong>版本历史</strong>${versions || "<p class='muted-text'>暂无版本</p>"}</div>`;
+    <div class="prompt-block version-list"><strong>查看历史版本</strong>${versions || "<p class='muted-text'>暂无版本</p>"}</div>`;
 }
 
 /* ================================================================== */
@@ -1295,7 +1431,7 @@ function renderJob() {
   const project = state.project;
   const job = (project?.active_jobs || [])[0] || project?.jobs?.[0];
   const latest = state.jobEvents[state.jobEvents.length - 1];
-  const message = latest?.message || job?.message || "等待任务。";
+  const message = state.statusNotice || latest?.message || job?.message || "等待任务。";
   const status = latest?.status || job?.status || "idle";
   const progress = latest?.progress ?? job?.progress ?? 0;
   const waiting = status === "waiting_remote";
