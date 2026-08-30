@@ -824,7 +824,7 @@ function assemblyStatusOf(project) {
     shot_count: mapped.length,
     ready_count: mapped.filter((item) => item.ready).length,
     stale: Boolean(project?.assembly_stale),
-    audio_note: "当前合成只拼接并统一视频流规格，不混音、不加旁白或配乐。",
+    audio_note: "当前有效镜头视频是合成的唯一画面来源。未启用背景音频和字幕时，只拼接视频流。",
     active_job: active || null,
     current_final: finals[0]
       ? { id: finals[0].id, file_path: finals[0].file_path, created_at: finals[0].created_at, description: finals[0].description }
@@ -838,15 +838,20 @@ function assemblyStageHtml(project) {
   const assembly = assemblyStatusOf(project);
   const running = Boolean(assembly.active_job);
   const hasFinal = Boolean(assembly.current_final);
+  const settings = assembly.settings || {};
+  const settingsErrors = assembly.settings_errors || [];
+  const settingsBlocked = settingsErrors.length > 0;
   let buttonLabel = "合成成片";
-  let buttonDisabled = !assembly.ok || running;
+  let buttonDisabled = !assembly.ok || settingsBlocked || running;
   if (running) buttonLabel = "正在合成";
   else if (hasFinal) {
     buttonLabel = "重新合成";
-    buttonDisabled = !assembly.ok;
+    buttonDisabled = !assembly.ok || settingsBlocked;
   }
   const disableReason = running
     ? "合成任务进行中。"
+    : settingsBlocked
+    ? settingsErrors[0]
     : assembly.ok
     ? ""
     : assembly.errors[0] || "镜头视频尚未全部就绪。";
@@ -871,7 +876,7 @@ function assemblyStageHtml(project) {
   const failedJob = (project.jobs || []).find((job) => job.type === "sequence_assembly" && job.status === "failed");
   const failBlock =
     !running && failedJob?.error_message
-      ? `<div class="prompt-block failure-diagnosis"><strong>最近一次合成失败</strong><p>${escapeHtml(failedJob.error_message)}</p></div>`
+      ? `<div class="prompt-block failure-diagnosis" id="assemblyFailure"><strong>最近一次合成失败</strong><p>${escapeHtml(failedJob.error_message)}</p></div>`
       : "";
   const current = assembly.current_final;
   const staleLabel = assembly.stale ? "已过期" : "当前有效";
@@ -895,6 +900,25 @@ function assemblyStageHtml(project) {
       </li>`
     )
     .join("");
+  const audioOptions = (assembly.audio_assets || [])
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.file_path)}" ${item.file_path === settings.audio_asset_path ? "selected" : ""}>${escapeHtml(item.name || item.file_path)}</option>`
+    )
+    .join("");
+  const srtOptions = (assembly.subtitle_assets || [])
+    .map(
+      (item) =>
+        `<option value="${escapeHtml(item.file_path)}" ${item.file_path === settings.subtitle_srt_path ? "selected" : ""}>${escapeHtml(item.name || item.file_path)}</option>`
+    )
+    .join("");
+  const locked = running ? "disabled" : "";
+  const caps = assembly.capabilities || {};
+  const capNote = !caps.subtitles_filter
+    ? "当前 FFmpeg 可能无法烧录字幕。"
+    : !caps.font_available
+    ? "本机未检测到可用字幕字体。"
+    : "字幕与背景音频仅使用本地文件，不调用 TTS 或音乐生成。";
   return `
     <section class="assembly-panel" id="assemblyPanel">
       <div class="assembly-head">
@@ -906,6 +930,42 @@ function assemblyStageHtml(project) {
       </div>
       ${assembly.audio_note ? `<p class="muted-text">${escapeHtml(assembly.audio_note)}</p>` : ""}
       ${failBlock}
+      ${settingsErrors.length ? `<div class="prompt-block" id="assemblySettingsErrors">${settingsErrors.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}</div>` : ""}
+      <form class="assembly-settings" id="assemblySettingsForm" onsubmit="return false">
+        <h3>成片包装</h3>
+        <p class="muted-text">${escapeHtml(capNote)}</p>
+        ${running ? `<p class="muted-text" id="assemblySettingsLocked">合成进行中，配置已锁定。</p>` : ""}
+        <label class="assembly-check"><input type="checkbox" id="assemblySubtitleEnabled" ${settings.subtitle_enabled ? "checked" : ""} ${locked}>启用字幕</label>
+        <label class="field-label" for="assemblySubtitleText">字幕文本</label>
+        <textarea id="assemblySubtitleText" rows="3" ${locked} placeholder="本地字幕，将烧录到成片">${escapeHtml(settings.subtitle_text || "")}</textarea>
+        <label class="field-label" for="assemblySubtitleSrt">SRT 文件</label>
+        <select id="assemblySubtitleSrt" ${locked}>
+          <option value="">不使用 SRT 文件</option>
+          ${srtOptions}
+        </select>
+        <div class="assembly-settings-row">
+          <label class="field-label" for="assemblySubtitleSize">字号</label>
+          <input id="assemblySubtitleSize" type="number" min="16" max="64" value="${escapeHtml(String(settings.subtitle_font_size || 28))}" ${locked}>
+          <label class="field-label" for="assemblySubtitlePosition">位置</label>
+          <select id="assemblySubtitlePosition" ${locked}>
+            <option value="bottom" ${settings.subtitle_position === "bottom" ? "selected" : ""}>底部</option>
+            <option value="top" ${settings.subtitle_position === "top" ? "selected" : ""}>顶部</option>
+            <option value="center" ${settings.subtitle_position === "center" ? "selected" : ""}>居中</option>
+          </select>
+        </div>
+        <label class="assembly-check"><input type="checkbox" id="assemblyAudioEnabled" ${settings.audio_enabled ? "checked" : ""} ${locked}>启用背景音频</label>
+        <label class="field-label" for="assemblyAudioPath">背景音频</label>
+        <select id="assemblyAudioPath" ${locked}>
+          <option value="">选择当前项目音频</option>
+          ${audioOptions}
+        </select>
+        <label class="field-label" for="assemblyAudioVolume">背景音量 ${escapeHtml(String(settings.audio_volume || 0.4))}</label>
+        <input id="assemblyAudioVolume" type="range" min="0.05" max="1" step="0.05" value="${escapeHtml(String(settings.audio_volume || 0.4))}" ${locked}>
+        <label class="assembly-check"><input type="checkbox" id="assemblyKeepSourceAudio" ${settings.keep_source_audio ? "checked" : ""} ${locked}>保留原视频音频（若镜头没有音轨则忽略）</label>
+        <div class="button-row compact-row">
+          <button type="button" class="secondary-btn" id="saveAssemblySettingsBtn" data-action="save-assembly-settings" ${locked}>保存配置</button>
+        </div>
+      </form>
       <ol class="assembly-shot-list">${shotRows || "<li class='muted-text'>暂无制作镜头。</li>"}</ol>
       ${progress}
       <div class="button-row compact-row">

@@ -727,6 +727,50 @@ button:disabled {
   border-radius: var(--radius-sm);
 }
 
+.assembly-settings {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 10px;
+}
+
+.assembly-settings textarea,
+.assembly-settings select,
+.assembly-settings input[type="number"],
+.assembly-settings input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.assembly-settings-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.assembly-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1100px) {
+  .assembly-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* 素材网格 */
 .asset-grid {
   display: grid;

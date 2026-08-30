@@ -106,6 +106,18 @@ class DemoCleanupRequest(BaseModel):
     remove_invalid_videos: bool = True
 
 
+class AssemblySettingsUpdate(BaseModel):
+    subtitle_enabled: bool = False
+    subtitle_text: str = Field(default="", max_length=2000)
+    subtitle_srt_path: str = Field(default="", max_length=260)
+    audio_enabled: bool = False
+    audio_asset_path: str = Field(default="", max_length=260)
+    audio_volume: float = Field(default=0.4, ge=0.05, le=1.0)
+    keep_source_audio: bool = False
+    subtitle_font_size: int = Field(default=28, ge=16, le=64)
+    subtitle_position: Literal["bottom", "top", "center"] = "bottom"
+
+
 class ProjectSummary(BaseModel):
     id: str
     title: str

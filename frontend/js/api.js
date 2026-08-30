@@ -106,6 +106,13 @@ export const api = {
       method: "POST",
     }),
   getAssembly: (projectId) => request(`/api/projects/${projectId}/assembly`),
+  getAssemblySettings: (projectId) => request(`/api/projects/${projectId}/assembly-settings`),
+  saveAssemblySettings: (projectId, payload) =>
+    request(`/api/projects/${projectId}/assembly-settings`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload || {}),
+    }),
   assembleProject: (projectId) =>
     request(`/api/projects/${projectId}/assemble`, {
       method: "POST",

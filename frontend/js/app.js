@@ -377,6 +377,11 @@ function onWorkspaceClick(event) {
     onAssembleProject();
     return;
   }
+  const saveAssembly = event.target.closest("[data-action='save-assembly-settings']");
+  if (saveAssembly && !saveAssembly.disabled) {
+    onSaveAssemblySettings();
+    return;
+  }
   // 阶段操作（改编 / 故事线 / Bible / 分镜）
   const trigger = event.target.closest("[data-adapt]");
   if (trigger) {
@@ -574,6 +579,7 @@ async function onInspectorClick(event) {
   if (action === "discard-shot") return onDiscardShot();
   if (action === "redo-shot") return onRedoShot(trigger);
   if (action === "assemble-project") return onAssembleProject();
+  if (action === "save-assembly-settings") return onSaveAssemblySettings();
   if (action === "generate-video") return onGenerateVideo(trigger, shot);
 }
 
@@ -812,6 +818,36 @@ async function onAssembleProject() {
     await refreshProject();
   } catch (error) {
     showError(`成片合成失败：${error.message}`);
+  }
+}
+
+function collectAssemblySettings() {
+  const checked = (id) => Boolean(el(id)?.checked);
+  const valueOf = (id) => (el(id)?.value || "").trim();
+  return {
+    subtitle_enabled: checked("assemblySubtitleEnabled"),
+    subtitle_text: el("assemblySubtitleText")?.value || "",
+    subtitle_srt_path: valueOf("assemblySubtitleSrt"),
+    audio_enabled: checked("assemblyAudioEnabled"),
+    audio_asset_path: valueOf("assemblyAudioPath"),
+    audio_volume: Number(el("assemblyAudioVolume")?.value || 0.4),
+    keep_source_audio: checked("assemblyKeepSourceAudio"),
+    subtitle_font_size: Number(el("assemblySubtitleSize")?.value || 28),
+    subtitle_position: valueOf("assemblySubtitlePosition") || "bottom",
+  };
+}
+
+async function onSaveAssemblySettings() {
+  if (!state.project) return;
+  try {
+    const saved = await api.saveAssemblySettings(state.project.id, collectAssemblySettings());
+    attachEvents();
+    el("jobMessage").textContent = saved.stale
+      ? "成片配置已保存。当前成片已过期，需要重新合成。"
+      : "成片配置已保存。";
+    await refreshProject();
+  } catch (error) {
+    showError(`保存成片配置失败：${error.message}`);
   }
 }
 

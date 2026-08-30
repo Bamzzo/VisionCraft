@@ -13,6 +13,7 @@ from .providers.llm_provider import live_llm_available
 from .schemas import (
     AdaptationRegenerateRequest,
     AdaptationSelectRequest,
+    AssemblySettingsUpdate,
     DemoCleanupRequest,
     FeedbackCreate,
     KeyframeRedrawRequest,
@@ -70,9 +71,11 @@ from .services.video_service import (
     enqueue_project_assembly,
     generate_project_videos,
     generate_shot_video,
+    get_assembly_settings_payload,
     get_assembly_status,
     prepare_shot_video_generation,
     refresh_project_video_tasks,
+    save_assembly_settings,
     safe_retry_shot_video,
 )
 from .services.checkpoint_service import get_paused_checkpoint
@@ -577,6 +580,23 @@ def assembly_status_endpoint(project_id: str) -> dict:
     if not get_project(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     return get_assembly_status(project_id)
+
+
+@app.get("/api/projects/{project_id}/assembly-settings")
+def get_assembly_settings_endpoint(project_id: str) -> dict:
+    if not get_project(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在。")
+    return get_assembly_settings_payload(project_id)
+
+
+@app.put("/api/projects/{project_id}/assembly-settings")
+def put_assembly_settings_endpoint(project_id: str, payload: AssemblySettingsUpdate) -> dict:
+    if not get_project(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在。")
+    try:
+        return save_assembly_settings(project_id, payload.model_dump())
+    except AssemblyError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
 
 
 @app.post("/api/projects/{project_id}/assemble")

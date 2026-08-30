@@ -100,6 +100,7 @@ def init_db() -> None:
         _ensure_column(conn, "adaptation_options", "scope_id", "TEXT")
         _ensure_column(conn, "story_bibles", "scope_id", "TEXT")
         _ensure_column(conn, "storyboard_drafts", "scope_id", "TEXT")
+        _ensure_assembly_settings(conn)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -354,5 +355,25 @@ def _ensure_medium_text_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_adaptation_scopes_project ON adaptation_scopes(project_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptation_scopes_project_unique ON adaptation_scopes(project_id);
+        """
+    )
+
+
+def _ensure_assembly_settings(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assembly_settings (
+          project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+          subtitle_enabled INTEGER NOT NULL DEFAULT 0,
+          subtitle_text TEXT NOT NULL DEFAULT '',
+          subtitle_srt_path TEXT NOT NULL DEFAULT '',
+          audio_enabled INTEGER NOT NULL DEFAULT 0,
+          audio_asset_path TEXT NOT NULL DEFAULT '',
+          audio_volume REAL NOT NULL DEFAULT 0.4,
+          keep_source_audio INTEGER NOT NULL DEFAULT 0,
+          subtitle_font_size INTEGER NOT NULL DEFAULT 28,
+          subtitle_position TEXT NOT NULL DEFAULT 'bottom',
+          updated_at TEXT NOT NULL
+        )
         """
     )

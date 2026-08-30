@@ -399,3 +399,17 @@ CREATE TABLE IF NOT EXISTS provider_capabilities (
   supported_resolutions TEXT NOT NULL,
   mode TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS assembly_settings (
+  project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  subtitle_enabled INTEGER NOT NULL DEFAULT 0,
+  subtitle_text TEXT NOT NULL DEFAULT '',
+  subtitle_srt_path TEXT NOT NULL DEFAULT '',
+  audio_enabled INTEGER NOT NULL DEFAULT 0,
+  audio_asset_path TEXT NOT NULL DEFAULT '',
+  audio_volume REAL NOT NULL DEFAULT 0.4,
+  keep_source_audio INTEGER NOT NULL DEFAULT 0,
+  subtitle_font_size INTEGER NOT NULL DEFAULT 28,
+  subtitle_position TEXT NOT NULL DEFAULT 'bottom',
+  updated_at TEXT NOT NULL
+);

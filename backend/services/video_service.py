@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -597,18 +598,18 @@ def _is_real_shot_video(embedding_ref: str | None) -> bool:
     return embedding_ref.startswith("provider:")
 
 
-def _local_asset_path(project_id: str, public_path: str) -> Path:
+def _local_asset_path(project_id: str, public_path: str, *, label: str = "视频") -> Path:
     expected_prefix = f"/assets/{project_id}/"
     raw = str(public_path or "").replace("\\", "/")
     if not raw.startswith(expected_prefix):
-        raise AssemblyError(f"视频路径不属于当前项目资产目录。")
+        raise AssemblyError(f"{label}路径不属于当前项目资产目录。")
     filename = raw[len(expected_prefix) :].split("/", 1)[0]
     if not filename or filename in {".", ".."} or ".." in filename:
-        raise AssemblyError("视频路径无效。")
+        raise AssemblyError(f"{label}路径无效。")
     project_dir = (PROJECTS_DIR / project_id).resolve()
     resolved = (project_dir / filename).resolve()
     if resolved.parent != project_dir:
-        raise AssemblyError("视频路径超出当前项目资产目录。")
+        raise AssemblyError(f"{label}路径超出当前项目资产目录。")
     return resolved
 
 
@@ -643,6 +644,257 @@ def _ffmpeg_executable() -> str | None:
 def _ffmpeg_concat_path(path: Path) -> str:
     # concat demuxer 用单引号包裹；路径中的单引号按 ffmpeg 规则转义。
     return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
+
+
+DEFAULT_ASSEMBLY_SETTINGS = {
+    "subtitle_enabled": False,
+    "subtitle_text": "",
+    "subtitle_srt_path": "",
+    "audio_enabled": False,
+    "audio_asset_path": "",
+    "audio_volume": 0.4,
+    "keep_source_audio": False,
+    "subtitle_font_size": 28,
+    "subtitle_position": "bottom",
+}
+
+_AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".aac", ".ogg"}
+_SRT_EXTS = {".srt"}
+_SUBTITLE_ALIGN = {"bottom": "2", "top": "8", "center": "5"}
+
+
+def _ffprobe_executable() -> str | None:
+    ffmpeg = _ffmpeg_executable()
+    if ffmpeg:
+        probe = Path(ffmpeg).with_name("ffprobe.exe" if os.name == "nt" else "ffprobe")
+        if probe.is_file():
+            return str(probe)
+    return shutil.which("ffprobe")
+
+
+_FILTER_CACHE: dict[str, bool] = {}
+# 能力探测绑定原始 run，避免测试 mock 成片 subprocess.run 时误伤 -filters。
+_QUERY_RUN = subprocess.run
+
+
+def _ffmpeg_has_filter(name: str) -> bool:
+    if name in _FILTER_CACHE:
+        return _FILTER_CACHE[name]
+    exe = _ffmpeg_executable()
+    if not exe:
+        _FILTER_CACHE[name] = False
+        return False
+    completed = _QUERY_RUN([exe, "-hide_banner", "-filters"], capture_output=True, text=True, check=False)
+    blob = completed.stdout or ""
+    found = False
+    for line in blob.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == name:
+            found = True
+            break
+    _FILTER_CACHE[name] = found
+    return found
+
+
+def _subtitle_font_file() -> Path | None:
+    candidates = [
+        Path(r"C:\Windows\Fonts\msyh.ttc"),
+        Path(r"C:\Windows\Fonts\msyh.ttf"),
+        Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _row_to_settings(row) -> dict:
+    if not row:
+        return dict(DEFAULT_ASSEMBLY_SETTINGS)
+    item = dict(row)
+    return {
+        "subtitle_enabled": bool(item.get("subtitle_enabled")),
+        "subtitle_text": str(item.get("subtitle_text") or ""),
+        "subtitle_srt_path": str(item.get("subtitle_srt_path") or ""),
+        "audio_enabled": bool(item.get("audio_enabled")),
+        "audio_asset_path": str(item.get("audio_asset_path") or ""),
+        "audio_volume": float(item.get("audio_volume") or 0.4),
+        "keep_source_audio": bool(item.get("keep_source_audio")),
+        "subtitle_font_size": int(item.get("subtitle_font_size") or 28),
+        "subtitle_position": item.get("subtitle_position") or "bottom",
+    }
+
+
+def get_assembly_settings(project_id: str) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM assembly_settings WHERE project_id = ?", (project_id,)).fetchone()
+    return _row_to_settings(row)
+
+
+def _resolve_owned_media(project_id: str, public_path: str, *, kind: str) -> Path:
+    local = _local_asset_path(project_id, public_path, label="音频" if kind == "audio" else "字幕")
+    suffix = local.suffix.lower()
+    allowed = _AUDIO_EXTS if kind == "audio" else _SRT_EXTS
+    if suffix not in allowed:
+        raise AssemblyError("音频文件格式不受支持。" if kind == "audio" else "字幕文件必须是 SRT。")
+    if not local.is_file() or local.stat().st_size <= 0:
+        raise AssemblyError("背景音频文件不存在或已失效。" if kind == "audio" else "字幕文件不存在或已失效。")
+    with connect() as conn:
+        asset = conn.execute(
+            "SELECT id, type FROM assets WHERE project_id = ? AND file_path = ?",
+            (project_id, str(public_path).replace("\\", "/")),
+        ).fetchone()
+    expected_type = "audio" if kind == "audio" else "subtitle"
+    if not asset or asset["type"] != expected_type:
+        raise AssemblyError("只能使用当前项目已登记的音频资产。" if kind == "audio" else "只能使用当前项目已登记的字幕文件。")
+    return local
+
+
+def validate_assembly_settings(project_id: str, settings: dict | None = None) -> list[str]:
+    settings = settings or get_assembly_settings(project_id)
+    errors: list[str] = []
+    if settings.get("audio_enabled"):
+        path = str(settings.get("audio_asset_path") or "").strip()
+        if not path:
+            errors.append("已启用背景音频，请选择当前项目中的音频文件。")
+        else:
+            try:
+                _resolve_owned_media(project_id, path, kind="audio")
+            except AssemblyError as exc:
+                errors.append(exc.message)
+    if settings.get("subtitle_enabled"):
+        text = str(settings.get("subtitle_text") or "").strip()
+        srt_path = str(settings.get("subtitle_srt_path") or "").strip()
+        if not text and not srt_path:
+            errors.append("已启用字幕，请填写字幕文本或选择当前项目的 SRT 文件。")
+        if srt_path:
+            try:
+                _resolve_owned_media(project_id, srt_path, kind="subtitle")
+            except AssemblyError as exc:
+                errors.append(exc.message)
+        if text or srt_path:
+            if not _ffmpeg_has_filter("subtitles"):
+                errors.append("本机 FFmpeg 未启用字幕滤镜，无法烧录字幕。请关闭字幕或更换带 libass 的 FFmpeg 后重试。")
+            elif _subtitle_font_file() is None:
+                errors.append("本机没有可用的字幕字体，无法烧录中文字幕。请关闭字幕或安装系统字体后重试。")
+    return errors
+
+
+def save_assembly_settings(project_id: str, payload: dict) -> dict:
+    with connect() as conn:
+        exists = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not exists:
+        raise AssemblyError("项目不存在。")
+    merged = dict(DEFAULT_ASSEMBLY_SETTINGS)
+    merged.update({key: payload.get(key, merged[key]) for key in DEFAULT_ASSEMBLY_SETTINGS})
+    if merged["subtitle_position"] not in _SUBTITLE_ALIGN:
+        raise AssemblyError("字幕位置只能是底部、顶部或居中。")
+    merged["audio_volume"] = min(1.0, max(0.05, float(merged["audio_volume"])))
+    merged["subtitle_font_size"] = min(64, max(16, int(merged["subtitle_font_size"])))
+    errors = validate_assembly_settings(project_id, merged)
+    if errors:
+        raise AssemblyError(errors[0])
+    previous = get_assembly_settings(project_id)
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO assembly_settings
+            (project_id, subtitle_enabled, subtitle_text, subtitle_srt_path, audio_enabled,
+             audio_asset_path, audio_volume, keep_source_audio, subtitle_font_size, subtitle_position, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET
+              subtitle_enabled = excluded.subtitle_enabled,
+              subtitle_text = excluded.subtitle_text,
+              subtitle_srt_path = excluded.subtitle_srt_path,
+              audio_enabled = excluded.audio_enabled,
+              audio_asset_path = excluded.audio_asset_path,
+              audio_volume = excluded.audio_volume,
+              keep_source_audio = excluded.keep_source_audio,
+              subtitle_font_size = excluded.subtitle_font_size,
+              subtitle_position = excluded.subtitle_position,
+              updated_at = excluded.updated_at
+            """,
+            (
+                project_id,
+                1 if merged["subtitle_enabled"] else 0,
+                merged["subtitle_text"],
+                merged["subtitle_srt_path"],
+                1 if merged["audio_enabled"] else 0,
+                merged["audio_asset_path"],
+                merged["audio_volume"],
+                1 if merged["keep_source_audio"] else 0,
+                merged["subtitle_font_size"],
+                merged["subtitle_position"],
+                now,
+            ),
+        )
+        finals = conn.execute(
+            "SELECT COUNT(*) AS n FROM assets WHERE project_id = ? AND type = 'final-video'",
+            (project_id,),
+        ).fetchone()["n"]
+        changed = previous != merged
+        if finals and changed:
+            conn.execute("UPDATE projects SET assembly_stale = 1, updated_at = ? WHERE id = ?", (now, project_id))
+    return get_assembly_settings_payload(project_id)
+
+
+def get_assembly_settings_payload(project_id: str) -> dict:
+    settings = get_assembly_settings(project_id)
+    errors = validate_assembly_settings(project_id, settings)
+    with connect() as conn:
+        project = conn.execute("SELECT assembly_stale FROM projects WHERE id = ?", (project_id,)).fetchone()
+        audio_assets = [
+            {"id": row["id"], "name": row["name"], "file_path": row["file_path"]}
+            for row in conn.execute(
+                "SELECT id, name, file_path FROM assets WHERE project_id = ? AND type = 'audio' ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        ]
+        subtitle_assets = [
+            {"id": row["id"], "name": row["name"], "file_path": row["file_path"]}
+            for row in conn.execute(
+                "SELECT id, name, file_path FROM assets WHERE project_id = ? AND type = 'subtitle' ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        ]
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "settings": settings,
+        "stale": bool(project and project["assembly_stale"]),
+        "audio_assets": audio_assets,
+        "subtitle_assets": subtitle_assets,
+        "capabilities": _assembly_capabilities(),
+    }
+
+
+def _assembly_capabilities() -> dict:
+    ffmpeg = bool(_ffmpeg_executable())
+    return {
+        "ffmpeg_available": ffmpeg,
+        "subtitles_filter": _ffmpeg_has_filter("subtitles") if ffmpeg else False,
+        "font_available": _subtitle_font_file() is not None,
+        "local_audio": True,
+        "tts": False,
+        "music_generation": False,
+    }
+
+
+def _assembly_note(settings: dict) -> str:
+    parts = ["当前有效镜头视频是合成的唯一画面来源。"]
+    if not settings.get("audio_enabled") and not settings.get("subtitle_enabled"):
+        parts.append("未启用背景音频和字幕时，行为与 P6-C 一致：只拼接视频流并使用 -an。")
+    else:
+        if settings.get("audio_enabled"):
+            parts.append("背景音频将循环或裁剪到成片时长后混入。")
+        if settings.get("keep_source_audio"):
+            parts.append("若镜头视频没有音轨，将忽略「保留原视频音频」。")
+        if settings.get("subtitle_enabled"):
+            parts.append("字幕会烧录到画面，不接入字幕大模型。")
+    parts.append("不接入真实 TTS 或音乐生成。")
+    return "".join(parts)
 
 
 def _latest_final_assets(project_id: str) -> list[dict]:
@@ -688,6 +940,8 @@ def validate_assembly(project_id: str) -> dict:
                 "active_job": None,
                 "project": None,
                 "ffmpeg_available": bool(_ffmpeg_executable()),
+                "settings": dict(DEFAULT_ASSEMBLY_SETTINGS),
+                "settings_errors": [],
             }
         rows = conn.execute(
             """
@@ -758,6 +1012,8 @@ def validate_assembly(project_id: str) -> dict:
         item["ready"] = not issue
         shot_rows.append(item)
 
+    settings = get_assembly_settings(project_id)
+    settings_errors = validate_assembly_settings(project_id, settings)
     finals = _latest_final_assets(project_id)
     current_final = dict(finals[0]) if finals else None
     history = [dict(item) for item in finals[1:]]
@@ -775,22 +1031,36 @@ def validate_assembly(project_id: str) -> dict:
         "active_job": dict(active) if active else None,
         "project": dict(project),
         "ffmpeg_available": bool(_ffmpeg_executable()),
+        "settings": settings,
+        "settings_errors": settings_errors,
     }
 
 
 def get_assembly_status(project_id: str) -> dict:
     report = validate_assembly(project_id)
     current = report["current_final"]
+    settings = report.get("settings") or dict(DEFAULT_ASSEMBLY_SETTINGS)
+    settings_errors = report.get("settings_errors") or []
+    payload = get_assembly_settings_payload(project_id) if report.get("project") else {
+        "audio_assets": [],
+        "subtitle_assets": [],
+        "capabilities": _assembly_capabilities(),
+    }
     return {
         "ok": report["ok"],
-        "can_assemble": report["ok"] and report["active_job"] is None,
+        "can_assemble": report["ok"] and not settings_errors and report["active_job"] is None,
         "errors": report["errors"],
+        "settings_errors": settings_errors,
         "shot_count": report["shot_count"],
         "ready_count": report["ready_count"],
         "stale": report["stale"],
         "ffmpeg_available": report["ffmpeg_available"],
-        "audio_scope": "video_only",
-        "audio_note": "当前合成只拼接并统一视频流规格，不混音、不加旁白或配乐。",
+        "audio_scope": "optional_local",
+        "audio_note": _assembly_note(settings),
+        "settings": settings,
+        "audio_assets": payload.get("audio_assets") or [],
+        "subtitle_assets": payload.get("subtitle_assets") or [],
+        "capabilities": payload.get("capabilities") or _assembly_capabilities(),
         "active_job": (
             {
                 "id": report["active_job"]["id"],
@@ -853,6 +1123,9 @@ def enqueue_project_assembly(project_id: str) -> dict:
     report = validate_assembly(project_id)
     if not report["ok"]:
         raise AssemblyError(report["errors"][0] if report["errors"] else "当前项目不满足合成条件。")
+    settings_errors = report.get("settings_errors") or []
+    if settings_errors:
+        raise AssemblyError(settings_errors[0])
     active = report["active_job"]
     if active:
         return {
@@ -872,22 +1145,171 @@ def enqueue_project_assembly(project_id: str) -> dict:
     }
 
 
+def _ffprobe_json(path: Path) -> dict:
+    exe = _ffprobe_executable()
+    if not exe:
+        return {}
+    completed = subprocess.run(
+        [exe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return {}
+    try:
+        return json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _media_duration(path: Path) -> float:
+    payload = _ffprobe_json(path)
+    return float((payload.get("format") or {}).get("duration") or 0)
+
+
+def _has_audio_stream(path: Path) -> bool:
+    payload = _ffprobe_json(path)
+    return any(stream.get("codec_type") == "audio" for stream in payload.get("streams") or [])
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    total_ms = max(0, int(round(seconds * 1000)))
+    hours, rem = divmod(total_ms, 3600_000)
+    minutes, rem = divmod(rem, 60_000)
+    secs, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _write_plain_srt(path: Path, text: str, duration: float) -> None:
+    body = (text or "").strip() or " "
+    end = max(duration, 0.5)
+    path.write_text(
+        f"1\n00:00:00,000 --> {_format_srt_timestamp(end)}\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def _ffmpeg_filter_path(path: Path) -> str:
+    return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
+def _subtitles_filter_arg(srt_path: Path, settings: dict) -> str:
+    escaped = _ffmpeg_filter_path(srt_path)
+    font = _subtitle_font_file()
+    font_name = "Microsoft YaHei" if font and "msyh" in font.name.lower() else "Arial"
+    align = _SUBTITLE_ALIGN.get(settings.get("subtitle_position") or "bottom", "2")
+    size = int(settings.get("subtitle_font_size") or 28)
+    style = (
+        f"FontName={font_name},FontSize={size},Alignment={align},MarginV=36,"
+        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2"
+    )
+    fontsdir = ""
+    if font:
+        fontsdir = f":fontsdir='{_ffmpeg_filter_path(font.parent)}'"
+    return f"subtitles='{escaped}':charenc=UTF-8{fontsdir}:force_style='{style}'"
+
+
+def _pack_assembly_output(
+    ffmpeg_exe: str,
+    video_path: Path,
+    settings: dict,
+    project_id: str,
+    temps: list[Path],
+) -> None:
+    duration = _media_duration(video_path)
+    if duration <= 0:
+        duration = 1.0
+    command = [ffmpeg_exe, "-y", "-i", str(video_path)]
+    audio_input = None
+    if settings.get("audio_enabled"):
+        audio_input = _resolve_owned_media(project_id, settings["audio_asset_path"], kind="audio")
+        command.extend(["-stream_loop", "-1", "-i", str(audio_input)])
+    vf = None
+    if settings.get("subtitle_enabled"):
+        srt_temp = video_path.with_name(f"{video_path.stem}_pack.srt")
+        temps.append(srt_temp)
+        srt_path = str(settings.get("subtitle_srt_path") or "").strip()
+        if srt_path:
+            source = _resolve_owned_media(project_id, srt_path, kind="subtitle")
+            srt_temp.write_bytes(source.read_bytes())
+        else:
+            _write_plain_srt(srt_temp, settings.get("subtitle_text") or "", duration)
+        vf = _subtitles_filter_arg(srt_temp, settings)
+    keep_source = bool(settings.get("keep_source_audio")) and _has_audio_stream(video_path)
+    volume = float(settings.get("audio_volume") or 0.4)
+    filter_parts: list[str] = []
+    video_map = "0:v:0"
+    audio_map = None
+    if vf:
+        filter_parts.append(f"[0:v]{vf}[vout]")
+        video_map = "[vout]"
+    if audio_input and keep_source:
+        filter_parts.append(f"[1:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,volume={volume}[bg]")
+        filter_parts.append("[0:a]volume=1.0[src]")
+        filter_parts.append("[src][bg]amix=inputs=2:duration=first:dropout_transition=0[aout]")
+        audio_map = "[aout]"
+    elif audio_input:
+        filter_parts.append(f"[1:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,volume={volume}[aout]")
+        audio_map = "[aout]"
+    elif keep_source:
+        audio_map = "0:a:0"
+    packed = video_path.with_name(f"{video_path.stem}_packed.mp4")
+    temps.append(packed)
+    if filter_parts:
+        command.extend(["-filter_complex", ";".join(filter_parts)])
+    command.extend(["-map", video_map])
+    if vf:
+        command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24"])
+    else:
+        command.extend(["-c:v", "copy"])
+    if audio_map:
+        command.extend(["-map", audio_map, "-c:a", "aac", "-ac", "2", "-ar", "44100"])
+    else:
+        command.append("-an")
+    command.extend(["-movflags", "+faststart", "-t", f"{duration:.3f}", str(packed)])
+    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    if completed.returncode != 0 or not packed.is_file() or packed.stat().st_size <= 0:
+        packed.unlink(missing_ok=True)
+        raise RuntimeError("成片合成失败，请检查音频、字幕和镜头视频后重试。")
+    video_path.unlink(missing_ok=True)
+    packed.replace(video_path)
+    if packed in temps:
+        temps.remove(packed)
+
+
+def _safe_assembly_message(exc: Exception) -> str:
+    message = str(exc)
+    lowered = message.lower()
+    if any(token in lowered for token in ("ffmpeg", "ffprobe", "http", "token", "secret", "api_key", "signed")):
+        return "成片合成失败，请检查镜头视频、音频和字幕配置后重试。"
+    if "\\" in message or ":/" in lowered:
+        return "成片合成失败，请检查镜头视频、音频和字幕配置后重试。"
+    return message
+
+
 def assemble_project_video(project_id: str, job_id: str) -> None:
     concat_file: Path | None = None
     output_path: Path | None = None
+    temps: list[Path] = []
     update_job(job_id, "running", 8, "正在检查成片合成条件", stage="validate_inputs")
     try:
         report = validate_assembly(project_id)
         if not report["ok"]:
             raise RuntimeError(" ".join(report["errors"]))
+        settings_errors = report.get("settings_errors") or []
+        if settings_errors:
+            raise RuntimeError(settings_errors[0])
         project = report["project"]
         video_paths = report["video_paths"]
+        settings = report.get("settings") or get_assembly_settings(project_id)
         update_job(job_id, "running", 30, "正在统一规格并合成镜头视频", stage="concat")
         asset_id = f"asset_{uuid.uuid4().hex[:10]}"
         filename = f"{asset_id}.mp4"
         output_path = PROJECTS_DIR / project_id / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
         concat_file = PROJECTS_DIR / project_id / f"{asset_id}_concat.txt"
+        temps.append(concat_file)
         concat_file.write_text(
             "\n".join(f"file '{_ffmpeg_concat_path(_local_asset_path(project_id, path))}'" for path in video_paths),
             encoding="utf-8",
@@ -917,20 +1339,35 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             "+faststart",
             str(output_path),
         ]
-        try:
-            completed = subprocess.run(command, check=False, capture_output=True, text=True)
-        finally:
-            if concat_file is not None:
-                concat_file.unlink(missing_ok=True)
-                concat_file = None
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        concat_file.unlink(missing_ok=True)
+        if concat_file in temps:
+            temps.remove(concat_file)
+        concat_file = None
         if completed.returncode != 0:
             raise RuntimeError("成片合成失败，请检查各镜头视频是否完整后重试。")
         if output_path is None or not output_path.is_file() or output_path.stat().st_size == 0:
             if output_path is not None:
                 output_path.unlink(missing_ok=True)
             raise RuntimeError("成片文件无效，未登记资产。请重新合成。")
+        if settings.get("audio_enabled") or settings.get("subtitle_enabled") or settings.get("keep_source_audio"):
+            update_job(job_id, "running", 70, "正在混入音频并烧录字幕", stage="pack")
+            try:
+                _pack_assembly_output(ffmpeg_exe, output_path, settings, project_id, temps)
+            except Exception:
+                if output_path is not None:
+                    output_path.unlink(missing_ok=True)
+                raise
         video_path = public_asset_path(project_id, filename)
         shot_count = len(video_paths)
+        flags = []
+        if settings.get("audio_enabled"):
+            flags.append("bg-audio")
+        if settings.get("subtitle_enabled"):
+            flags.append("subtitles")
+        if settings.get("keep_source_audio"):
+            flags.append("keep-source-audio")
+        prompt = "FFmpeg sequence assembly (" + (", ".join(flags) if flags else "video only") + ")"
         with connect() as conn:
             conn.execute(
                 """
@@ -944,7 +1381,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
                     "final-video",
                     f"{project['title']} Final Cut",
                     f"Assembled final cut from {shot_count} shot videos.",
-                    "FFmpeg sequence assembly (video only)",
+                    prompt,
                     video_path,
                     "provider:ffmpeg:sequence-assembly",
                     utc_now(),
@@ -964,14 +1401,16 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             detail={"asset_path": video_path, "shot_count": shot_count},
         )
     except Exception as exc:
+        for temp in list(temps):
+            temp.unlink(missing_ok=True)
         if concat_file is not None:
             concat_file.unlink(missing_ok=True)
         if output_path is not None and output_path.exists() and output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
-        message = str(exc)
-        if "ffmpeg" in message.lower() and "成片合成失败" not in message:
-            message = "成片合成失败，请检查各镜头视频是否完整后重试。"
-        update_job(job_id, "failed", 100, "成片合成失败", message, stage="failed")
+        update_job(job_id, "failed", 100, "成片合成失败", _safe_assembly_message(exc), stage="failed")
+    else:
+        for temp in list(temps):
+            temp.unlink(missing_ok=True)
 
 
 def _safe_video_mode(video_mode: str | None) -> str:

@@ -192,7 +192,7 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **目标：** 将若干真实视频片段稳定合成为 30/45/60 秒可播放短片。
 
-**状态：** P6-A / P6-B 本地合成合同已完成。P6-C 真实 FFmpeg 验收已于 2026-08-30 完成本地闭环：四镜头 lavfi 夹具经真实 concat 合成，`ffprobe` 校验 1280×720 yuv420p，浏览器无需刷新即可看到排队→处理中→完成，成片可预览/下载，替换镜头后旧成片过期并保留历史。无 FFmpeg 时测试必须 `SKIP`，不得把跳过或夹具伪装写成通过。
+**状态：** P6-A / P6-B 本地合成合同已完成。P6-C 真实 FFmpeg 验收已于 2026-08-30 完成本地闭环。P6-D 本地音频、字幕与成片包装基础闭环已于 2026-08-30 完成：项目级 `assembly_settings`、路径归属校验、可选背景音频混入与字幕烧录、配置变化标记 `assembly_stale`、失败不登记成片。无 FFmpeg / 无字幕滤镜或字体时测试必须 `SKIP`，不得把跳过或夹具伪装写成通过。
 
 **P6-C 已实现：**
 
@@ -201,7 +201,15 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 浏览器真实预览/下载：`tools/test_p6c_real_assembly_browser.py`（仅在本机有 ffmpeg/ffprobe 时才写 `output/playwright/p6c-real-*.png`）；
 - 可重复演示入口：`tools/prepare_p6c_demo.py`（无 FFmpeg 时 SKIP）。
 
-**当前输出范围：** 合成命令统一到 1280×720、24fps、yuv420p、libx264，并使用 `-an`。**当前 P6 不处理音频**，不混音、不加旁白或配乐。
+**当前输出范围：** 合成命令统一到 1280×720、24fps、yuv420p、libx264。默认仍使用 `-an`（与 P6-C 一致）。P6-D 允许在成片层可选混入**当前项目本地音频**并烧录**本地字幕/SRT**，不修改镜头视频版本，不接入 TTS 或音乐生成。设计见 `docs/assembly-audio-subtitle-design.md`。
+
+**P6-D 已实现：**
+
+- 项目级 `assembly_settings`：字幕开关/文本/SRT、背景音频开关/资产路径/音量、是否保留原视频音频、字号与位置；
+- `GET/PUT /api/projects/{id}/assembly-settings`，`GET .../assembly` 返回配置摘要、校验错误与能力提示；`POST .../assemble` 使用已保存配置；
+- 音频不足循环、过长裁剪；字幕与音频临时文件成功/失败均清理；失败不登记 `final-video`、不误清 `assembly_stale`；
+- 前端成片工作区配置区、保存后无需刷新即可看到待重新合成、合成中锁定配置；
+- 无费用测试：`tools/test_p6d_assembly.py`、`tools/test_p6d_assembly_browser.py`（无 FFmpeg 或缺少字幕滤镜/字体时必须 `SKIP`）。
 
 **P6-A 已实现：**
 
@@ -213,11 +221,12 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 合成失败、缺失镜头和不可用视频使用中文且可执行的错误信息；
 - 无费用测试：`tools/test_assembly.py`、`tools/test_assembly_http.py`。
 - P6-C 真实 FFmpeg 测试：`tools/test_p6c_real_assembly.py`、`tools/test_p6c_real_assembly_browser.py`（无 FFmpeg 时必须 `SKIP`，不得记为 `PASS`）。
+- P6-D 本地音频/字幕测试：`tools/test_p6d_assembly.py`、`tools/test_p6d_assembly_browser.py`。
 
 **开发内容：**
 
 - 合成前校验：视频有效、比例/分辨率/时长、镜头排序。
-- 统一规格、基础转场、片头/片尾；预留字幕、旁白、音乐接口。
+- 统一规格、基础转场、片头/片尾。P6-D 已提供本地音频/字幕包装；完整旁白、配乐生成与字幕编辑器仍属后续。
 - 成片预览、下载、合成任务状态与失败说明。
 - 固定演示样本：短文本完整闭环、不同模型同镜头对比、失败恢复案例。
 

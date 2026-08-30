@@ -177,3 +177,38 @@ def probe_video(path: Path) -> dict:
         "size": int(fmt.get("size") or 0),
         "has_video": bool(stream.get("codec_name")),
     }
+
+
+def make_sine_wav(path: Path, *, duration: float, frequency: int = 440) -> None:
+    exe = ffmpeg_bin()
+    if not exe:
+        raise RuntimeError("ffmpeg 不可用")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        exe,
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency={frequency}:sample_rate=44100:duration={duration}",
+        str(path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0 or not path.is_file() or path.stat().st_size <= 0:
+        raise RuntimeError("生成测试音频夹具失败")
+
+
+def probe_media(path: Path) -> dict:
+    info = probe_video(path)
+    exe = ffprobe_bin()
+    completed = subprocess.run(
+        [exe, "-v", "error", "-show_streams", "-of", "json", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(completed.stdout or "{}") if completed.returncode == 0 else {}
+    audio = [item for item in payload.get("streams") or [] if item.get("codec_type") == "audio"]
+    info["has_audio"] = bool(audio)
+    info["audio_codec"] = (audio[0].get("codec_name") if audio else "") or ""
+    return info
