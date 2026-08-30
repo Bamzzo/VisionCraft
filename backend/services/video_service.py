@@ -1242,10 +1242,29 @@ def _subtitles_filter_arg(srt_path: Path, settings: dict) -> str:
     return f"subtitles='{escaped}':charenc=UTF-8{fontsdir}:force_style='{style}'"
 
 
-_VIDEO_NORM_FILTER = (
-    "scale=1280:720:force_original_aspect_ratio=decrease,"
-    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p"
-)
+_RESOLUTION_CANVAS = {
+    "1280x720": (1280, 720),
+    "1920x1080": (1920, 1080),
+    "720x1280": (720, 1280),
+    "1080x1080": (1080, 1080),
+    "720x720": (720, 720),
+}
+
+
+def assembly_canvas(project: dict | None) -> tuple[int, int]:
+    data = dict(project) if project is not None else {}
+    raw = str(data.get("output_resolution") or "1280x720").lower().replace(" ", "")
+    return _RESOLUTION_CANVAS.get(raw, (1280, 720))
+
+
+def _video_norm_filter(width: int, height: int) -> str:
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p"
+    )
+
+
+_VIDEO_NORM_FILTER = _video_norm_filter(1280, 720)
 
 
 def _run_ffmpeg(command: list[str], fail_message: str) -> None:
@@ -1256,11 +1275,20 @@ def _run_ffmpeg(command: list[str], fail_message: str) -> None:
         raise RuntimeError(fail_message)
 
 
-def _normalize_shot_clip(ffmpeg_exe: str, src: Path, dest: Path, *, has_audio: bool) -> None:
+def _normalize_shot_clip(
+    ffmpeg_exe: str,
+    src: Path,
+    dest: Path,
+    *,
+    has_audio: bool,
+    width: int = 1280,
+    height: int = 720,
+) -> None:
     duration = _media_duration(src)
     if duration <= 0:
         duration = 1.0
     dest.parent.mkdir(parents=True, exist_ok=True)
+    vf = _video_norm_filter(width, height)
     if has_audio:
         command = [
             ffmpeg_exe,
@@ -1268,7 +1296,7 @@ def _normalize_shot_clip(ffmpeg_exe: str, src: Path, dest: Path, *, has_audio: b
             "-i",
             str(src),
             "-vf",
-            _VIDEO_NORM_FILTER,
+            vf,
             "-af",
             "aresample=44100,aformat=channel_layouts=stereo,apad",
             "-t",
@@ -1302,7 +1330,7 @@ def _normalize_shot_clip(ffmpeg_exe: str, src: Path, dest: Path, *, has_audio: b
             "-i",
             "anullsrc=channel_layout=stereo:sample_rate=44100",
             "-vf",
-            _VIDEO_NORM_FILTER,
+            vf,
             "-map",
             "0:v:0",
             "-map",
@@ -1482,6 +1510,8 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
         keep_wanted = bool(settings.get("keep_source_audio"))
         source_flags = [_has_audio_stream(path) for path in local_inputs] if keep_wanted else [False] * len(local_inputs)
         keep_source = keep_wanted and any(source_flags)
+        canvas_w, canvas_h = assembly_canvas(project)
+        vf = _video_norm_filter(canvas_w, canvas_h).replace(",fps=24", "")
         update_job(job_id, "running", 30, "正在统一规格并合成镜头视频", stage="concat")
         asset_id = f"asset_{uuid.uuid4().hex[:10]}"
         filename = f"{asset_id}.mp4"
@@ -1498,7 +1528,14 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             for index, src in enumerate(local_inputs):
                 dest = output_path.parent / f"{asset_id}_norm_{index}.mp4"
                 temps.append(dest)
-                _normalize_shot_clip(ffmpeg_exe, src, dest, has_audio=source_flags[index])
+                _normalize_shot_clip(
+                    ffmpeg_exe,
+                    src,
+                    dest,
+                    has_audio=source_flags[index],
+                    width=canvas_w,
+                    height=canvas_h,
+                )
                 norm_paths.append(dest)
             _concat_normalized_clips(ffmpeg_exe, norm_paths, concat_file, output_path)
             for path in norm_paths:
@@ -1520,7 +1557,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
                 "-i",
                 str(concat_file),
                 "-vf",
-                "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                vf,
                 "-r",
                 "24",
                 "-c:v",

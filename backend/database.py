@@ -44,6 +44,7 @@ def init_db() -> None:
         _ensure_column(conn, "projects", "archived", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "shots", "rag_evidence", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(conn, "projects", "assembly_stale", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "projects", "output_resolution", "TEXT NOT NULL DEFAULT '1280x720'")
         _ensure_column(conn, "shot_versions", "video_mode", "TEXT NOT NULL DEFAULT 't2v'")
         _ensure_column(conn, "shot_versions", "provider", "TEXT")
         _ensure_column(conn, "shot_versions", "model", "TEXT")

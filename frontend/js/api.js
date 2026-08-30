@@ -40,6 +40,12 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify(payload),
     }),
+  patchProject: (id, payload) =>
+    request(`/api/projects/${id}`, {
+      method: "PATCH",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    }),
   runProject: (id) =>
     request(`/api/projects/${id}/run`, {
       method: "POST",

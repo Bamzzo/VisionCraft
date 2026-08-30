@@ -35,7 +35,7 @@ function bindEvents() {
   el("cancelFormBtn").addEventListener("click", onCancelForm);
   el("editProjectBtn").addEventListener("click", onEditProject);
   el("projectForm").addEventListener("input", () => {
-    if (state.projectFormMode === "create") state.formTouched = true;
+    if (state.projectFormMode === "create" || state.projectFormMode === "edit") state.formTouched = true;
   });
 
   // 工作流控制
@@ -186,12 +186,13 @@ function resetProjectForm() {
   el("reviewModeInput").checked = false;
   if (el("ratioInput").options.length) el("ratioInput").selectedIndex = 0;
   if (el("durationInput").options.length) el("durationInput").selectedIndex = 0;
+  if (el("resolutionInput")?.options.length) setSelectValue(el("resolutionInput"), "1280x720");
 }
 
 function onEditProject() {
   if (!state.project) return;
-  // 编辑项目设置：表单填入当前配置；后端暂无更新接口，保存禁用（缺口 GAP-1）。
   state.projectFormMode = "edit";
+  state.formTouched = false;
   populateFormFromProject(state.project);
   renderAll();
 }
@@ -206,6 +207,7 @@ function populateFormFromProject(project) {
   el("reviewModeInput").checked = Boolean(project.review_mode);
   setSelectValue(el("ratioInput"), project.aspect_ratio);
   setSelectValue(el("durationInput"), project.duration_seconds);
+  setSelectValue(el("resolutionInput"), project.output_resolution || "1280x720");
   el("uploadStatus").textContent = "已载入当前项目原文";
 }
 
@@ -225,10 +227,40 @@ function onCancelForm() {
 async function onSubmitProjectForm(event) {
   event.preventDefault();
   if (state.projectFormMode === "edit") {
-    showError("后端暂不支持修改项目设置（缺口 GAP-1）。请新建项目使用新配置。");
+    await onSaveProjectSettings();
     return;
   }
   await onCreateProject();
+}
+
+function collectProjectSettingsPayload() {
+  return {
+    title: el("titleInput").value.trim(),
+    aspect_ratio: el("ratioInput").value,
+    duration_seconds: Number(el("durationInput").value),
+    output_resolution: el("resolutionInput")?.value || "1280x720",
+  };
+}
+
+async function onSaveProjectSettings() {
+  if (!state.project) return;
+  const payload = collectProjectSettingsPayload();
+  if (!payload.title) {
+    showError("项目名称不能为空。");
+    return;
+  }
+  try {
+    await flushShotDraft();
+    const updated = await api.patchProject(state.project.id, payload);
+    state.project = updated;
+    state.projectFormMode = "summary";
+    state.formTouched = false;
+    await loadProjects();
+    renderFeedbackResult(null);
+    renderAll();
+  } catch (error) {
+    showError(`保存项目设置失败：${error.message}`);
+  }
 }
 
 async function onCreateProject() {
@@ -244,6 +276,7 @@ async function onCreateProject() {
     style: el("styleInput").value,
     aspect_ratio: el("ratioInput").value,
     duration_seconds: Number(el("durationInput").value),
+    output_resolution: el("resolutionInput")?.value || "1280x720",
     shot_count_mode: mode,
     requested_shot_count: mode === "manual" ? Number(el("shotCountInput").value) : null,
     review_mode: el("reviewModeInput").checked,
@@ -302,10 +335,12 @@ async function switchProject(nextId) {
 let unsavedResolver = null;
 
 function guardUnsavedChanges() {
-  const newProjectDraft = state.projectFormMode === "create" && state.formTouched;
+  const newProjectDraft = (state.projectFormMode === "create" || state.projectFormMode === "edit") && state.formTouched;
   const shotDirty = hasUnsavedShotDraft();
   if (!newProjectDraft && !shotDirty) return Promise.resolve("proceed");
-  const message = newProjectDraft
+  const message = state.projectFormMode === "edit" && state.formTouched
+    ? "当前有未保存的项目设置。切换会丢弃这些修改；镜头版本和成片不会被删除。"
+    : newProjectDraft && state.projectFormMode === "create"
     ? "当前有未提交的新项目草稿。切换项目会丢弃该草稿；当前项目不受影响。"
     : "当前镜头有未保存的修改。";
   return openUnsavedModal(message, { canSave: shotDirty && !newProjectDraft });

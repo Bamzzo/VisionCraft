@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectCreate(BaseModel):
@@ -9,9 +9,18 @@ class ProjectCreate(BaseModel):
     style: str = Field(default="cinematic clean realism")
     aspect_ratio: str = Field(default="16:9")
     duration_seconds: int = Field(default=5, ge=5, le=10)
+    output_resolution: str = Field(default="1280x720", max_length=16)
     shot_count_mode: str = Field(default="auto")
     requested_shot_count: int | None = Field(default=None, ge=1, le=12)
     review_mode: bool = Field(default=False)
+
+
+class ProjectSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    title: str | None = Field(default=None, max_length=120)
+    aspect_ratio: str | None = Field(default=None, max_length=16)
+    duration_seconds: Any | None = None
+    output_resolution: str | None = Field(default=None, max_length=16)
 
 
 class FeedbackCreate(BaseModel):

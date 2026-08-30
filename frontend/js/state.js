@@ -27,7 +27,7 @@ export const state = {
   assetViewMode: {},
 
   /* ---- 项目表单状态（新建/创建/查看分离） ---- */
-  // summary：查看已有项目配置摘要；create：空白新建表单；edit：编辑项目设置（原型）。
+  // summary：查看已有项目配置摘要；create：空白新建表单；edit：编辑已保存的项目设置。
   projectFormMode: "summary",
   // 新建表单是否有未提交输入（用于切换项目时的未保存守卫）。
   formTouched: false,

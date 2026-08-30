@@ -300,6 +300,11 @@ button:focus-visible,
   background: var(--active-bg);
 }
 
+.dropzone.disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 /* ---------- 按钮 ---------- */
 .primary-btn,
 .secondary-btn,

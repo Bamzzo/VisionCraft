@@ -4,7 +4,7 @@ from typing import Any
 
 from ..database import connect, from_json, to_json, utc_now
 from ..config import PROJECTS_DIR
-from ..schemas import ProjectCreate
+from ..schemas import ProjectCreate, ProjectSettingsUpdate
 
 
 def _row_to_dict(row: Any) -> dict:
@@ -41,11 +41,11 @@ def create_project(payload: ProjectCreate) -> dict:
         conn.execute(
             """
             INSERT INTO projects (
-              id, title, source_text, style, aspect_ratio, duration_seconds,
+              id, title, source_text, style, aspect_ratio, duration_seconds, output_resolution,
               shot_count_mode, requested_shot_count, review_mode, status, routing_mode,
               created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
@@ -54,6 +54,7 @@ def create_project(payload: ProjectCreate) -> dict:
                 payload.style,
                 payload.aspect_ratio,
                 payload.duration_seconds,
+                _normalize_output_resolution(getattr(payload, "output_resolution", None)),
                 payload.shot_count_mode,
                 payload.requested_shot_count,
                 1 if payload.review_mode else 0,
@@ -63,6 +64,93 @@ def create_project(payload: ProjectCreate) -> dict:
                 now,
             ),
         )
+    return get_project(project_id)
+
+
+ALLOWED_ASPECT_RATIOS = {"16:9", "9:16", "1:1"}
+ALLOWED_DURATIONS = {5, 6, 7, 8, 9, 10}
+ALLOWED_RESOLUTIONS = {"1280x720", "1920x1080", "720x1280", "1080x1080", "720x720"}
+ASSEMBLY_SPEC_FIELDS = {"aspect_ratio", "duration_seconds", "output_resolution"}
+DEFAULT_OUTPUT_RESOLUTION = "1280x720"
+
+
+def _normalize_output_resolution(value: str | None) -> str:
+    resolution = str(value or DEFAULT_OUTPUT_RESOLUTION).strip().lower().replace(" ", "")
+    return resolution if resolution in ALLOWED_RESOLUTIONS else DEFAULT_OUTPUT_RESOLUTION
+
+
+class ProjectSettingsError(Exception):
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+def update_project_settings(project_id: str, payload: ProjectSettingsUpdate | dict) -> dict:
+    data = payload.model_dump(exclude_unset=True) if isinstance(payload, ProjectSettingsUpdate) else dict(payload or {})
+    allowed = {"title", "aspect_ratio", "duration_seconds", "output_resolution"}
+    unknown = set(data) - allowed
+    if unknown:
+        raise ProjectSettingsError("只能修改项目名称、目标时长、画幅比例或输出分辨率。")
+    if not data:
+        raise ProjectSettingsError("没有可保存的项目设置。")
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not row:
+        raise ProjectSettingsError("项目不存在。", 404)
+    current = dict(row)
+    updates: dict = {}
+    if "title" in data:
+        title = str(data.get("title") or "").strip()
+        if not title:
+            raise ProjectSettingsError("项目名称不能为空。")
+        updates["title"] = title[:120]
+    if "aspect_ratio" in data:
+        ratio = str(data.get("aspect_ratio") or "").strip()
+        if ratio not in ALLOWED_ASPECT_RATIOS:
+            raise ProjectSettingsError("画幅比例无效。可用：16:9、9:16、1:1。")
+        updates["aspect_ratio"] = ratio
+    if "duration_seconds" in data:
+        try:
+            duration = int(data.get("duration_seconds"))
+        except (TypeError, ValueError):
+            raise ProjectSettingsError("目标时长无效。可用：5、6、7、8、9、10 秒。") from None
+        if duration not in ALLOWED_DURATIONS:
+            raise ProjectSettingsError("目标时长无效。可用：5、6、7、8、9、10 秒。")
+        updates["duration_seconds"] = duration
+    if "output_resolution" in data:
+        resolution = str(data.get("output_resolution") or "").strip().lower().replace(" ", "")
+        if resolution not in ALLOWED_RESOLUTIONS:
+            raise ProjectSettingsError("输出分辨率无效。可用：1280x720、1920x1080、720x1280、1080x1080。")
+        updates["output_resolution"] = resolution
+    if not updates:
+        raise ProjectSettingsError("没有可保存的项目设置。")
+    spec_changed = any(current.get(key) != updates[key] for key in updates if key in ASSEMBLY_SPEC_FIELDS)
+    now = utc_now()
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    values = list(updates.values())
+    with connect() as conn:
+        finals = conn.execute(
+            "SELECT COUNT(*) AS n FROM assets WHERE project_id = ? AND type = 'final-video'",
+            (project_id,),
+        ).fetchone()["n"]
+        stale_sql = ", assembly_stale = 1" if spec_changed and finals else ""
+        conn.execute(
+            f"UPDATE projects SET {assignments}{stale_sql}, updated_at = ? WHERE id = ?",
+            (*values, now, project_id),
+        )
+    from .job_service import create_job, update_job
+
+    job_id = create_job(project_id, "project_settings", "项目设置已保存")
+    update_job(
+        job_id,
+        "completed",
+        100,
+        "项目设置已更新，工作区将同步最新配置",
+        stage="settings",
+        event_type="project.refresh_required",
+        detail={"fields": sorted(updates), "assembly_stale": bool(spec_changed and finals)},
+    )
     return get_project(project_id)
 
 
@@ -161,6 +249,8 @@ def get_project(project_id: str) -> dict:
         ).fetchall()
 
     result = _row_to_dict(project)
+    if not result.get("output_resolution"):
+        result["output_resolution"] = "1280x720"
     result["story_bible"] = _row_to_dict(bible) if bible else None
     if result["story_bible"]:
         result["story_bible"]["style_tags"] = from_json(result["story_bible"]["style_tags"], [])

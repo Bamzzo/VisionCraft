@@ -238,12 +238,33 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 统一规格、基础转场、片头/片尾。P6-D 已提供本地音频/字幕包装；完整旁白、配乐生成与字幕编辑器仍属后续。
 - 成片预览、下载、合成任务状态与失败说明。
 - 固定演示样本：短文本完整闭环、不同模型同镜头对比、失败恢复案例。
+- V1 演示收口：`PATCH /api/projects/{id}` 项目设置落库、固定 `v1demo_main` 演示项目、全链路 Playwright 验收。见 `docs/v1-demo-project.md`。
 
 **验收：**
 
 - 4～10 个镜头可合成 30/45/60 秒 MP4。
 - 替换一个镜头后只重新合成，不重生成其他视频。
 - 浏览器预览与下载可用，失败素材不会进入成片。
+
+### V1 演示收口（固定样本、项目设置、全链路验收）
+
+**状态：** 2026-08-30 已完成本地无费用切片。不调用付费图片、视频、语音、音乐或 LLM API。
+
+**已实现：**
+
+- `PATCH /api/projects/{project_id}` 只允许修改标题、目标时长、画幅比例、输出分辨率；未提供字段保持不变；
+- 空标题、非法时长/比例/分辨率返回中文 400；项目不存在返回中文 404；
+- `projects.output_resolution` 默认 `1280x720`，未修改时成片规格与 P6-C/E 一致；
+- 影响成片规格的修改在已有 `final-video` 时设置 `assembly_stale=1`，不改写 `shot_versions`、视频任务、成片历史和素材；
+- 保存后写入 `project.refresh_required`，任务中心和工作区自动同步；
+- 固定演示项目脚本 `tools/prepare_v1_demo.py`：只创建/重置 `v1demo_main`，`--clean` 只删除 `v1demo_*`；
+- 全链路浏览器验收 `tools/test_v1_demo_browser.py`（截图仅 `output/`，无 FFmpeg 时成片步骤必须 `SKIP`）。
+
+**验收：**
+
+- `tools/test_project_settings.py`
+- `tools/test_v1_demo_browser.py`
+- 既有 P6 与改编回归命令仍通过。
 
 ### P7：部署和非核心扩展（最后）
 

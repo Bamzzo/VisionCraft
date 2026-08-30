@@ -183,9 +183,9 @@ function renderProjectSection() {
     if (mode === "edit") {
       title.textContent = "编辑项目设置";
       note.className = "form-mode-note warning";
-      note.textContent = "后端暂不支持修改已创建项目的设置（缺口 GAP-1 已记录）。可查看当前配置；如需变更，请新建项目。";
-      submit.textContent = "保存设置（暂不支持）";
-      submit.disabled = true;
+      note.textContent = "可修改项目名称、目标时长、画幅比例和输出分辨率。原文、风格和镜头策略需新建项目。修改成片规格后，已有成片将标记为需要重新合成。";
+      submit.textContent = "保存设置";
+      submit.disabled = false;
       cancel.classList.remove("hidden");
     } else {
       title.textContent = "新建项目";
@@ -198,6 +198,16 @@ function renderProjectSection() {
       cancel.classList.toggle("hidden", !hasProject);
     }
   }
+  setProjectCreateOnlyFieldsDisabled(mode === "edit");
+}
+
+function setProjectCreateOnlyFieldsDisabled(disabled) {
+  ["sourceTextInput", "styleInput", "shotModeInput", "shotCountInput", "reviewModeInput"].forEach((id) => {
+    const node = el(id);
+    if (node) node.disabled = disabled;
+  });
+  const drop = el("textDropzone");
+  if (drop) drop.classList.toggle("disabled", disabled);
 }
 
 function renderSummaryFields() {
@@ -215,6 +225,7 @@ function renderSummaryFields() {
     ["视觉风格", project.style],
     ["视频比例", project.aspect_ratio],
     ["单镜时长", `${project.duration_seconds}s`],
+    ["输出分辨率", project.output_resolution || "1280x720"],
     ["镜头策略", project.shot_count_mode === "manual" ? `手动 · ${project.requested_shot_count || "-"} 镜` : "自动"],
     ["运行模式", project.review_mode ? "监制模式" : "自动模式"],
     ["原文规模", `${project.text_scale_label || ""} · ${(project.source_text || "").length} 字`],
@@ -1366,13 +1377,22 @@ export function renderCapabilities() {
   const videos = state.capabilities?.video || [];
   const ratioInput = el("ratioInput");
   const durationInput = el("durationInput");
+  const resolutionInput = el("resolutionInput");
   ratioInput.innerHTML = "";
   durationInput.innerHTML = "";
+  if (resolutionInput) resolutionInput.innerHTML = "";
   uniqueValues(videos.flatMap((item) => item.supported_ratios || [])).forEach((ratio) => {
     ratioInput.append(new Option(ratio, ratio));
   });
   uniqueValues(videos.flatMap((item) => item.supported_durations || [])).forEach((duration) => {
     durationInput.append(new Option(`${duration}s`, duration));
+  });
+  const allowedResolutions = ["1280x720", "1920x1080", "720x1280", "1080x1080", "720x720"];
+  const fromProviders = uniqueValues(videos.flatMap((item) => item.supported_resolutions || []));
+  const resolutions = (fromProviders.length ? fromProviders : allowedResolutions)
+    .filter((item) => allowedResolutions.includes(item));
+  (resolutions.length ? resolutions : allowedResolutions).forEach((value) => {
+    if (resolutionInput) resolutionInput.append(new Option(value, value));
   });
   if (!ratioInput.options.length) {
     ["16:9", "9:16", "1:1"].forEach((ratio) => ratioInput.append(new Option(ratio, ratio)));
@@ -1380,6 +1400,16 @@ export function renderCapabilities() {
   if (!durationInput.options.length) {
     [5].forEach((duration) => durationInput.append(new Option(`${duration}s`, duration)));
   }
+  if (resolutionInput && !resolutionInput.options.length) {
+    allowedResolutions.forEach((value) => resolutionInput.append(new Option(value, value)));
+  }
+  if (resolutionInput) setSelectValueSafe(resolutionInput, "1280x720");
+}
+
+function setSelectValueSafe(select, value) {
+  if (!select || value === undefined || value === null) return;
+  const match = [...select.options].find((opt) => opt.value === String(value));
+  if (match) select.value = match.value;
 }
 
 export function renderFeedbackResult(result) {

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS projects (
   style TEXT NOT NULL,
   aspect_ratio TEXT NOT NULL,
   duration_seconds INTEGER NOT NULL,
+  output_resolution TEXT NOT NULL DEFAULT '1280x720',
   shot_count_mode TEXT NOT NULL,
   requested_shot_count INTEGER,
   review_mode INTEGER NOT NULL DEFAULT 0,

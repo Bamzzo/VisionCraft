@@ -25,6 +25,7 @@ docs/*.docx
 
 # Local browser/test artifacts
 .playwright-cli/
+output/
 
 # Logs and temporary files
 *.log

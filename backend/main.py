@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -56,7 +56,15 @@ from .services.feedback_service import apply_feedback
 from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
 from .services.memory_service import index_project_memory, search_project_memory
-from .services.project_service import cleanup_demo_data, create_project, delete_project, get_project, list_projects
+from .services.project_service import (
+    ProjectSettingsError,
+    cleanup_demo_data,
+    create_project,
+    delete_project,
+    get_project,
+    list_projects,
+    update_project_settings,
+)
 from .services.shot_edit_service import (
     ShotEditError,
     freeze_shot_version,
@@ -129,6 +137,14 @@ def get_project_endpoint(project_id: str) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+@app.patch("/api/projects/{project_id}")
+def patch_project_endpoint(project_id: str, payload: dict = Body(default={})) -> dict:
+    try:
+        return update_project_settings(project_id, payload or {})
+    except ProjectSettingsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @app.delete("/api/projects/{project_id}")
