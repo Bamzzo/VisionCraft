@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import uuid
@@ -611,6 +612,34 @@ def _local_asset_path(project_id: str, public_path: str) -> Path:
     return resolved
 
 
+def _ffmpeg_executable() -> str | None:
+    """定位 ffmpeg。优先 PATH，再检查工作区便携目录，不改系统 PATH。"""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    env_dir = os.environ.get("VISIONCRAFT_FFMPEG_DIR", "").strip()
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = []
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.extend(
+        [
+            repo_root.parent / ".tools" / "ffmpeg" / "bin",
+            repo_root.parent / ".tools" / "ffmpeg",
+            repo_root / ".tools" / "ffmpeg" / "bin",
+            repo_root.parent / "tools" / "ffmpeg" / "bin",
+            Path(r"C:\ffmpeg\bin"),
+        ]
+    )
+    exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    for directory in candidates:
+        for folder in (directory, directory / "bin"):
+            exe = folder / exe_name
+            if exe.is_file():
+                return str(exe)
+    return None
+
+
 def _ffmpeg_concat_path(path: Path) -> str:
     # concat demuxer 用单引号包裹；路径中的单引号按 ffmpeg 规则转义。
     return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
@@ -658,7 +687,7 @@ def validate_assembly(project_id: str) -> dict:
                 "history": [],
                 "active_job": None,
                 "project": None,
-                "ffmpeg_available": bool(shutil.which("ffmpeg")),
+                "ffmpeg_available": bool(_ffmpeg_executable()),
             }
         rows = conn.execute(
             """
@@ -745,7 +774,7 @@ def validate_assembly(project_id: str) -> dict:
         "history": history,
         "active_job": dict(active) if active else None,
         "project": dict(project),
-        "ffmpeg_available": bool(shutil.which("ffmpeg")),
+        "ffmpeg_available": bool(_ffmpeg_executable()),
     }
 
 
@@ -863,8 +892,11 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
             "\n".join(f"file '{_ffmpeg_concat_path(_local_asset_path(project_id, path))}'" for path in video_paths),
             encoding="utf-8",
         )
+        ffmpeg_exe = _ffmpeg_executable()
+        if not ffmpeg_exe:
+            raise RuntimeError("本机未找到 FFmpeg，无法合成成片。请安装 ffmpeg 与 ffprobe 后重试。")
         command = [
-            "ffmpeg",
+            ffmpeg_exe,
             "-y",
             "-f",
             "concat",

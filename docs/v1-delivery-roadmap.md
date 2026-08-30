@@ -192,7 +192,16 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **目标：** 将若干真实视频片段稳定合成为 30/45/60 秒可播放短片。
 
-**状态：** P6-A 合成可靠性基础已完成；P6-B 本地多镜头合成与导出闭环已完成（无 FFmpeg 环境以下静态校验与 mock 成功路径验收）。规格扩展、真实 30/45/60 秒包装和演示样本仍待完成。
+**状态：** P6-A / P6-B 本地合成合同已完成。P6-C 真实 FFmpeg 验收已于 2026-08-30 完成本地闭环：四镜头 lavfi 夹具经真实 concat 合成，`ffprobe` 校验 1280×720 yuv420p，浏览器无需刷新即可看到排队→处理中→完成，成片可预览/下载，替换镜头后旧成片过期并保留历史。无 FFmpeg 时测试必须 `SKIP`，不得把跳过或夹具伪装写成通过。
+
+**P6-C 已实现：**
+
+- 真实 lavfi 四镜头夹具生成与 ffprobe 校验：`tools/p6c_ffmpeg.py`、`tools/test_p6c_real_assembly.py`；
+- 服务层真实合成、替换镜头、并发复用与入队前 400；工作区便携 FFmpeg（如 `../.tools/ffmpeg/bin`）可在不改系统 PATH 时被发现；
+- 浏览器真实预览/下载：`tools/test_p6c_real_assembly_browser.py`（仅在本机有 ffmpeg/ffprobe 时才写 `output/playwright/p6c-real-*.png`）；
+- 可重复演示入口：`tools/prepare_p6c_demo.py`（无 FFmpeg 时 SKIP）。
+
+**当前输出范围：** 合成命令统一到 1280×720、24fps、yuv420p、libx264，并使用 `-an`。**当前 P6 不处理音频**，不混音、不加旁白或配乐。
 
 **P6-A 已实现：**
 
@@ -202,7 +211,8 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 - 成功后登记 `final-video` 资产并清除 `projects.assembly_stale`；
 - 通过 `asset.ready` 事件通知任务中心和前端刷新成片预览；
 - 合成失败、缺失镜头和不可用视频使用中文且可执行的错误信息；
-- 无费用测试：`tools/test_assembly.py`。
+- 无费用测试：`tools/test_assembly.py`、`tools/test_assembly_http.py`。
+- P6-C 真实 FFmpeg 测试：`tools/test_p6c_real_assembly.py`、`tools/test_p6c_real_assembly_browser.py`（无 FFmpeg 时必须 `SKIP`，不得记为 `PASS`）。
 
 **开发内容：**
 
