@@ -199,11 +199,14 @@ async function main() {
     }
     const exportLocked = await page.locator("#stageWorkspace [data-stage-locked]").count();
     const exportHint = await page.locator("#stageWorkspace").innerText();
-    if (!exportLocked && !exportHint.includes("请先合成成片")) {
+    if (!exportLocked && !exportHint.includes("请先合成成片") && !exportHint.includes("前往成片合成")) {
       throw new Error("未开始的导出阶段应给出可执行提示");
     }
     if (await page.locator("#assembleProjectBtn").count()) {
       throw new Error("导出阶段不应直接提供合成按钮");
+    }
+    if (!exportHint.includes("前往成片合成")) {
+      throw new Error("无成片的导出页应显示前往成片合成");
     }
     pass("点击阶段只切换查看；未开始阶段可查看但不能执行非法操作");
 

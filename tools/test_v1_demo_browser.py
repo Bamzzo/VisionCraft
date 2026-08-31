@@ -41,6 +41,17 @@ def skip(msg: str) -> None:
     print(f"SKIP: {msg}")
 
 
+def _strip_live(env: dict[str, str]) -> dict[str, str]:
+    cleaned = dict(env)
+    for key in list(cleaned):
+        if key.startswith("VISIONCRAFT_ALLOW_LIVE"):
+            cleaned.pop(key, None)
+    cleaned["VISIONCRAFT_ALLOW_LIVE_LLM"] = "0"
+    cleaned["VISIONCRAFT_ALLOW_LIVE_VISION"] = "0"
+    cleaned["VISIONCRAFT_ALLOW_LIVE_VIDEO"] = "0"
+    return cleaned
+
+
 def _health_ok(base: str) -> bool:
     try:
         with urllib.request.urlopen(f"{base}/api/health", timeout=2) as response:
@@ -166,7 +177,7 @@ def _ensure_playwright(harness: Path) -> None:
 def _start_backend() -> tuple[subprocess.Popen, str]:
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     exe = str(python if python.exists() else sys.executable)
-    env = os.environ.copy()
+    env = _strip_live(os.environ.copy())
     for port in range(8013, 8019):
         if _port_in_use(port):
             continue
@@ -217,7 +228,7 @@ def main() -> None:
     server = None
     try:
         server, base = _start_backend()
-        env = os.environ.copy()
+        env = _strip_live(os.environ.copy())
         env["NODE_PATH"] = str(harness / "node_modules")
         env["VISIONCRAFT_BASE_URL"] = base
         env["V1_READY_ID"] = ready_id
@@ -225,6 +236,7 @@ def main() -> None:
         env["V1_HAS_FFMPEG"] = "1" if has_ffmpeg else "0"
         script = ROOT / "tools" / "v1_demo.cjs"
         print("RUN: node", script)
+        print("INFO: live_network=否 cost_cny=0")
         completed = subprocess.run(["node", str(script)], cwd=ROOT, env=env, check=False)
         if completed.returncode != 0:
             raise SystemExit(completed.returncode)

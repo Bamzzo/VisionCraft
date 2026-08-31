@@ -52,9 +52,9 @@ def get_provider_capabilities() -> dict:
         "mode_requirements": MODE_REQUIREMENTS,
         "default_video_provider": default_video_provider(),
         "generation_modes": [
-            {"id": "mock", "label": "本地确定性（Mock）", "is_default": True},
-            {"id": "live_strict", "label": "严格真实（失败即失败）", "is_default": False},
-            {"id": "live_with_local_fallback", "label": "真实优先，允许本地回退", "is_default": False},
+            {"id": "mock", "label": "本地演示（不调用真实模型）", "is_default": True},
+            {"id": "live_strict", "label": "真实模型模式（失败即失败）", "is_default": False},
+            {"id": "live_with_local_fallback", "label": "真实模型模式（允许本地回退）", "is_default": False},
         ],
         "llm_providers": [
             {
@@ -72,6 +72,7 @@ def get_provider_capabilities() -> dict:
         ],
         "llm": _llm_models_payload(),
         "stages": _stage_defaults_payload(),
+        "live_access": _live_access_payload(),
         "image": [
             {
                 "id": "ark_image",
@@ -180,9 +181,10 @@ def get_provider_diagnostics() -> dict:
     }.get(canonical_video, siliconflow_key or ark_video_key)
     return {
         "llm": {
-            "configured": deepseek_key or siliconflow_key,
-            "provider": "deepseek" if deepseek_key else "siliconflow" if siliconflow_key else "mock",
-            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash") if deepseek_key else os.getenv("SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2"),
+            "configured": deepseek_key,
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "status_label": "已配置" if deepseek_key else "未配置",
         },
         "image": {
             "configured": image_configured,
@@ -190,18 +192,13 @@ def get_provider_diagnostics() -> dict:
             "model": (os.getenv("VOLC_IMAGE_MODEL") or os.getenv("DOUBAO_IMAGE_ENDPOINT", "doubao-seedream-5-0-260128"))
             if image_provider in {"ark", "volc"}
             else os.getenv("SILICONFLOW_IMAGE_MODEL", "Qwen/Qwen-Image"),
-            "size": os.getenv("VOLC_IMAGE_SIZE", "2K")
-            if image_provider in {"ark", "volc"}
-            else os.getenv("SILICONFLOW_IMAGE_SIZE", "1024x576"),
-            "fallback": "local SVG placeholder",
+            "status_label": "已配置" if image_configured else "未配置",
         },
         "video": {
             "configured": bool(video_configured),
             "provider": canonical_video,
             "model": _default_model_for_provider(canonical_video),
-            "size": os.getenv("SILICONFLOW_VIDEO_SIZE", "1280x720"),
-            "poll_seconds": int(os.getenv("VOLC_VIDEO_POLL_SECONDS", os.getenv("SILICONFLOW_VIDEO_POLL_SECONDS", "180"))),
-            "fallback": "disabled: live video generation must succeed",
+            "status_label": "已配置" if video_configured else "未配置",
             "available_providers": {
                 "ark": ark_video_key,
                 "dashscope": dashscope_key,
@@ -338,6 +335,28 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "minimax":
         return os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     return os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
+
+
+def _live_access_payload() -> dict:
+    from .llm_catalog import deepseek_configured, live_llm_authorized, live_vision_authorized
+    from .live_budget import live_video_authorized
+
+    text_ready = bool(live_llm_authorized() and deepseek_configured())
+    vision_ready = bool(live_vision_authorized() and deepseek_configured())
+    video_ready = bool(live_video_authorized() and os.getenv("MINIMAX_API_KEY"))
+    ready = text_ready or vision_ready or video_ready
+    hint = (
+        "真实模型已开通。严格真实失败会标记任务失败；允许本地回退时会明确写明「已使用本地回退」。"
+        if ready
+        else "真实模型访问尚未开通。当前可以用本地演示走完整流程；如需真实生成，请由开发者完成服务配置后再切换模式。"
+    )
+    return {
+        "ready": ready,
+        "text_ready": text_ready,
+        "vision_ready": vision_ready,
+        "video_ready": video_ready,
+        "hint": hint,
+    }
 
 
 def _llm_models_payload() -> list[dict]:

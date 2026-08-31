@@ -21,6 +21,7 @@ COUNT_FIELDS = (
     "text_calls_total",
     "vision_calls_total",
     "video_submits_new",
+    "preexisting_remote_tasks",
     "video_tasks_reused",
     "unique_remote_tasks",
     "remote_tasks_completed",
@@ -28,6 +29,12 @@ COUNT_FIELDS = (
     "duplicate_submits",
     "duplicate_assets",
 )
+COUNT_LABELS = {
+    "video_submits_new": "本次新提交任务",
+    "preexisting_remote_tasks": "中断前已有任务",
+    "video_tasks_reused": "复用任务",
+    "unique_remote_tasks": "唯一远程任务",
+}
 LAST_LIVE_RUN = {
     "project_id": "project_9ab7c27740",
     "title": "闭环LIVE 春秋蝉鸣少年归",
@@ -37,13 +44,19 @@ LAST_LIVE_RUN = {
     "text_calls_total": 3,
     "vision_calls_total": 1,
     "video_submits_new": 4,
+    "preexisting_remote_tasks": 1,
     "video_tasks_reused": 1,
     "unique_remote_tasks": 5,
     "remote_tasks_completed": 5,
     "downloaded_videos": 5,
     "duplicate_submits": 0,
     "duplicate_assets": 0,
-    "resume_note": "镜头 1 来自中断前已提交的 MiniMax 任务；镜头 2～5 是续跑时新提交。",
+    "ffmpeg_ran": True,
+    "final_cut": True,
+    "preview_ok": True,
+    "download_ok": True,
+    "cleanup_verified": True,
+    "resume_note": "镜头 1 来自中断前已提交的 MiniMax 任务；镜头 2～5 是续跑时新提交。MiniMax 新提交 4，复用 1，唯一任务 5。",
 }
 
 _RAW_DATA_URL = re.compile(r"data:[^,\s]+;base64,[a-z0-9+/]{40,}", re.I)
@@ -53,6 +66,8 @@ _SIGNED = re.compile(r"x-amz-(?:signature|credential)|[?&]signature=", re.I)
 
 def redact_remote_task_id(value: str | None) -> str:
     text = str(value or "")
+    if "…" in text or "..." in text:
+        return text
     if len(text) <= 8:
         return text
     return f"{text[:4]}…{text[-4:]}"
@@ -104,10 +119,12 @@ def normalize_live_run_counts(data: dict[str, Any]) -> dict[str, int]:
     new_submits = int(new_submits)
     if reused == 0 and unique and new_submits and unique > new_submits:
         reused = unique - new_submits
+    preexisting = int(data.get("preexisting_remote_tasks") or reused)
     return {
         "text_calls_total": text,
         "vision_calls_total": vision,
         "video_submits_new": new_submits,
+        "preexisting_remote_tasks": preexisting,
         "video_tasks_reused": reused,
         "unique_remote_tasks": unique,
         "remote_tasks_completed": completed,
@@ -147,18 +164,30 @@ def summarize_ffprobe(path: Path) -> dict[str, Any]:
     streams = payload.get("streams") or []
     video = next((item for item in streams if item.get("codec_type") == "video"), {})
     fmt = payload.get("format") or {}
+    audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+    duration = _as_float(fmt.get("duration"))
+    size = path.stat().st_size
+    codec = video.get("codec_name")
+    frame_rate = video.get("avg_frame_rate")
     return {
         "ok": True,
         "path": path.name,
-        "byte_size": path.stat().st_size,
-        "duration_seconds": _as_float(fmt.get("duration")),
+        "format": fmt.get("format_name"),
         "format_name": fmt.get("format_name"),
+        "duration": duration,
+        "duration_seconds": duration,
+        "size": size,
+        "byte_size": size,
+        "video_codec": codec,
+        "codec_name": codec,
         "width": video.get("width"),
         "height": video.get("height"),
-        "codec_name": video.get("codec_name"),
+        "frame_rate": frame_rate,
+        "avg_frame_rate": frame_rate,
         "pix_fmt": video.get("pix_fmt"),
-        "avg_frame_rate": video.get("avg_frame_rate"),
-        "has_audio": any(item.get("codec_type") == "audio" for item in streams),
+        "audio_stream": bool(audio),
+        "audio_codec": (audio or {}).get("codec_name"),
+        "has_audio": bool(audio),
         "encoder": ((video.get("tags") or {}).get("encoder") or (fmt.get("tags") or {}).get("encoder")),
     }
 
@@ -207,12 +236,37 @@ def collect_project_lineage(project_id: str) -> dict[str, Any]:
             (project_id,),
         )]
     videos = [row for row in assets if row["type"] == "video"]
+    frames = [row for row in assets if row["type"] in {"first-frame", "first_frame"}]
     finals = [row for row in assets if row["type"] == "final-video"]
     remotes = [row.get("source_remote_task_id") for row in videos if row.get("source_remote_task_id")]
     task_remotes = [row.get("remote_task_id") for row in tasks if row.get("remote_task_id")]
     dup_assets = {key: count for key, count in Counter(remotes).items() if count > 1}
     dup_tasks = {key: count for key, count in Counter(task_remotes).items() if count > 1}
     blob = json.dumps({"assets": assets, "tasks": tasks, "versions": versions}, ensure_ascii=False, default=str)
+    shot_lineage = []
+    for shot in shots:
+        version = next((row for row in versions if row["id"] == shot["current_version_id"]), None)
+        if not version:
+            version = next((row for row in versions if row.get("shot_index") == shot["shot_index"]), {})
+        task = next((row for row in tasks if row.get("version_id") == (version or {}).get("id")), None)
+        frame_asset = next((row for row in frames if row.get("file_path") == (version or {}).get("first_frame_path")), None)
+        video_asset = next((row for row in videos if row.get("file_path") == (version or {}).get("video_path")), None)
+        shot_lineage.append(
+            {
+                "shot_id": shot["id"],
+                "shot_index": shot["shot_index"],
+                "version_id": (version or {}).get("id"),
+                "provider": (version or {}).get("provider") or (task or {}).get("provider"),
+                "model": (version or {}).get("model") or (task or {}).get("model"),
+                "video_mode": (version or {}).get("video_mode"),
+                "duration_seconds": (version or {}).get("duration_seconds"),
+                "first_frame_asset_id": (frame_asset or {}).get("id"),
+                "video_asset_id": (video_asset or {}).get("id"),
+                "remote_task_id": redact_remote_task_id((task or {}).get("remote_task_id")),
+                "local_file_path": (version or {}).get("video_path") or (video_asset or {}).get("file_path"),
+                "status": shot["status"],
+            }
+        )
     return {
         "ok": True,
         "project_id": project_id,
@@ -225,6 +279,7 @@ def collect_project_lineage(project_id: str) -> dict[str, Any]:
             {"id": row["id"], "shot_index": row["shot_index"], "status": row["status"], "current_version_id": row["current_version_id"]}
             for row in shots
         ],
+        "shot_lineage": shot_lineage,
         "video_tasks": [_public_task(row) for row in tasks],
         "video_assets": [_public_asset(row) for row in videos],
         "final_videos": [_public_asset(row) for row in finals],
@@ -310,7 +365,7 @@ def write_audit_reports(
     out_dir.mkdir(parents=True, exist_ok=True)
     counts = normalize_live_run_counts(result)
     audit = {
-        "schema": "visioncraft.live_run_audit.v1",
+        "schema": "visioncraft.live_run_audit.v2",
         "reconstructed_after_cleanup": reconstructed,
         "real_network_this_phase": False,
         "cost_cny_this_phase": 0,
@@ -318,12 +373,24 @@ def write_audit_reports(
         "title": result.get("title"),
         "generation_mode": result.get("generation_mode"),
         "status_vocabulary": ["PASS", "FAIL", "SKIP", "BLOCKED_BEFORE_CALL"],
+        "count_labels": COUNT_LABELS,
         "counts": counts,
-        "resume_note": result.get("resume_note") or LAST_LIVE_RUN["resume_note"],
-        "ffmpeg_ran": bool(result.get("ffmpeg_ran")),
-        "final_cut": bool(result.get("final_cut")),
+        "text_calls_total": counts["text_calls_total"],
+        "vision_calls_total": counts["vision_calls_total"],
+        "video_submits_new": counts["video_submits_new"],
+        "preexisting_remote_tasks": counts["preexisting_remote_tasks"],
+        "video_tasks_reused": counts["video_tasks_reused"],
+        "unique_remote_tasks": counts["unique_remote_tasks"],
+        "remote_tasks_completed": counts["remote_tasks_completed"],
+        "downloaded_videos": counts["downloaded_videos"],
+        "duplicate_submits": counts["duplicate_submits"],
+        "duplicate_assets": counts["duplicate_assets"],
+        "ffmpeg_ran": bool(result.get("ffmpeg_ran") or (ffprobe or {}).get("ok")),
+        "final_cut": bool(result.get("final_cut") or (ffprobe or {}).get("ok")),
         "preview_ok": bool(result.get("preview_ok")),
         "download_ok": bool(result.get("download_ok")),
+        "cleanup_verified": bool(result.get("cleanup_verified")),
+        "resume_note": result.get("resume_note") or LAST_LIVE_RUN["resume_note"],
         "pre_cleanup": pre_cleanup,
         "db_available": bool(lineage and lineage.get("ok")),
     }
@@ -337,10 +404,66 @@ def write_audit_reports(
     paths["audit"].write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["lineage"].write_text(json.dumps(lineage_doc, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["ffprobe"].write_text(json.dumps(ffprobe_doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    browser_paths = write_browser_evidence_bundle(out_dir)
+    paths.update(browser_paths)
     for path in paths.values():
         if has_secret_leak(path.read_text(encoding="utf-8")):
             raise RuntimeError(f"audit file would leak secrets: {path.name}")
     return paths
+
+
+def write_browser_evidence_bundle(out_dir: Path, extra: dict[str, Any] | None = None) -> dict[str, Path]:
+    """Keep Playwright DOM/hash evidence beside audit files. Never invent live screenshots."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    names = {
+        "browser_evidence": out_dir / "browser_evidence.json",
+        "browser_dom_snapshots": out_dir / "browser_dom_snapshots.json",
+        "browser_screenshot_hashes": out_dir / "browser_screenshot_hashes.json",
+    }
+    payload = extra or {}
+    if not names["browser_evidence"].is_file():
+        names["browser_evidence"].write_text(
+            json.dumps(
+                {
+                    "phase": payload.get("phase") or "live-run",
+                    "live_network": False,
+                    "cost_cny": 0,
+                    "collected": False,
+                    "note": "浏览器 DOM/截图哈希应在下次真实测试清理前由 Playwright 写入本目录，本切片不伪造截图。",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    if not names["browser_dom_snapshots"].is_file():
+        names["browser_dom_snapshots"].write_text(json.dumps({"collected": False, "snapshots": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not names["browser_screenshot_hashes"].is_file():
+        names["browser_screenshot_hashes"].write_text(json.dumps({"collected": False, "files": {}, "ordered": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return names
+
+
+def _shot_lineage_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = result.get("shot_lineage") or result.get("video_tasks") or []
+    lineage = []
+    for row in rows:
+        lineage.append(
+            {
+                "shot_id": row.get("shot_id"),
+                "shot_index": row.get("shot_index"),
+                "version_id": row.get("version_id"),
+                "provider": row.get("provider"),
+                "model": row.get("model"),
+                "video_mode": row.get("video_mode"),
+                "duration_seconds": row.get("duration_seconds"),
+                "first_frame_asset_id": row.get("first_frame_asset_id"),
+                "video_asset_id": row.get("video_asset_id"),
+                "remote_task_id": redact_remote_task_id(row.get("remote_task_id")),
+                "local_file_path": row.get("local_file_path") or row.get("local_path") or row.get("first_frame_path"),
+                "status": row.get("status"),
+            }
+        )
+    return lineage
 
 
 def reconstruct_last_live_run(out_dir: Path | None = None) -> dict[str, Any]:
@@ -357,6 +480,7 @@ def reconstruct_last_live_run(out_dir: Path | None = None) -> dict[str, Any]:
         "reason": "temp_project_already_cleaned",
         "source": "result.json",
         "video_tasks": result.get("video_tasks") or [],
+        "shot_lineage": _shot_lineage_from_result(result),
         "counts": {
             "shots": 5,
             "video_tasks": len(result.get("video_tasks") or []),

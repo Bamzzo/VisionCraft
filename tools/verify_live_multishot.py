@@ -73,7 +73,7 @@ def verify() -> int:
     print(f"INFO: shots={lineage['counts']['shots']} video_assets={lineage['counts']['video_assets']} video_tasks={lineage['counts']['video_tasks']} finals={lineage['counts']['final_videos']}")
     print(f"INFO: live_text={lineage['live_text_call_count']} live_vision={lineage['live_vision_call_count']} live_video={lineage['live_video_call_count']}")
     print(f"INFO: unique_remote_tasks={lineage['counts']['unique_remote_tasks']} duplicate_remote_groups={lineage['counts']['duplicate_remote_groups']}")
-    print(f"INFO: video_submits_new={data['video_submits_new']} video_tasks_reused={data['video_tasks_reused']}")
+    print(f"INFO: MiniMax 新提交={data.get('video_submits_new')} 复用={data.get('video_tasks_reused')} 唯一任务={data.get('unique_remote_tasks')} 中断前已有={data.get('preexisting_remote_tasks')}")
     print(f"INFO: secret_leak={lineage['secret_leak']}")
     print("PASS: lineage and caps" if pre["ok"] else "FAIL: lineage or caps")
     for key, ok in (pre.get("checks") or {}).items():

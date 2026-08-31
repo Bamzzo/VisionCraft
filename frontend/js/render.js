@@ -159,6 +159,18 @@ function renderTopbar() {
   badge.title = review
     ? "监制模式：关键阶段完成后等待审核，需点击「采用并继续」。"
     : "自动模式：阶段完成后将自动继续，可随时暂停。";
+  const generationBadge = el("generationModeBadge");
+  if (generationBadge) {
+    const mode = project?.generation_mode || "mock";
+    generationBadge.textContent = generationModeLabel(mode);
+    generationBadge.className = `status-pill ${mode === "mock" ? "success" : "warning"}`;
+    generationBadge.title =
+      mode === "mock"
+        ? "本地演示：改编、视觉检查和镜头结果都来自本地夹具，不会伪装成真实模型。"
+        : mode === "live_strict"
+          ? "真实模型模式：失败即失败，不会静默改用其他 Provider。"
+          : "真实模型模式：允许在失败后明确使用本地回退。";
+  }
 }
 
 /* ================================================================== */
@@ -1113,12 +1125,14 @@ function exportStageHtml(project, stageVm) {
   const assembly = assemblyStatusOf(project);
   const current = assembly.current_final;
   const stale = Boolean(assembly.stale);
-  const ready = Boolean(current) && !stale;
+  const running = Boolean(assembly.active_job);
+  const ready = Boolean(current) && !stale && !running;
+  const exportState = running ? "running" : ready ? "ready" : current && stale ? "stale" : "empty";
   const checks = [
     { ok: (assembly.shot_count || 0) > 0, label: (assembly.shot_count || 0) > 0 ? `已有 ${assembly.shot_count} 个制作镜头` : "尚无制作镜头，请先确认分镜并进入制作" },
     { ok: (assembly.ready_count || 0) > 0 && assembly.ready_count === assembly.shot_count, label: `${assembly.ready_count || 0}/${assembly.shot_count || 0} 个镜头视频就绪` },
     { ok: Boolean(current), label: current ? "已有成片文件" : "请先合成成片" },
-    { ok: Boolean(current) && !stale, label: stale ? "当前成片已失效，需重新合成" : current ? "当前成片有效" : "等待有效成片" },
+    { ok: Boolean(current) && !stale, label: stale ? "当前成片已过期，需返回成片合成" : current ? "当前成片有效" : "等待有效成片" },
   ];
   const checkList = checks
     .map(
@@ -1128,29 +1142,43 @@ function exportStageHtml(project, stageVm) {
       </li>`
     )
     .join("");
+  const job = assembly.active_job || {};
+  const progressBlock = running
+    ? `<div class="prompt-block" id="exportAssemblyProgress">
+        <strong>成片正在合成</strong>
+        <p>${escapeHtml(job.message || "正在按镜头顺序合成。")}</p>
+        <p class="muted-text">进度 ${escapeHtml(String(job.progress || 0))}% · ${escapeHtml(job.status || "running")}</p>
+      </div>`
+    : "";
+  const pathButtons = [];
+  if (running) {
+    pathButtons.push(`<button type="button" class="primary-btn mini-btn" data-action="goto-assembly">继续查看合成进度</button>`);
+  } else if (stale) {
+    pathButtons.push(`<button type="button" class="primary-btn mini-btn" data-action="goto-assembly">返回成片合成</button>`);
+  } else if (!current) {
+    pathButtons.push(`<button type="button" class="primary-btn mini-btn" data-action="goto-assembly">前往成片合成</button>`);
+  }
+  if (current) {
+    pathButtons.push(`<a class="secondary-btn mini-btn" href="#exportCurrentPreview">预览当前成片</a>`);
+    pathButtons.push(`<a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" download>下载当前成片</a>`);
+  }
+  const historyItems = assembly.history || [];
+  if (historyItems.length) {
+    pathButtons.push(`<a class="secondary-btn mini-btn" href="#exportHistory">查看历史成片</a>`);
+  }
   const preview = current
-    ? `<div class="assembly-preview">
+    ? `<div class="assembly-preview" id="exportCurrentPreview">
         <div class="asset-detail-preview">
           <video src="${escapeHtml(current.file_path)}" controls playsinline preload="auto"></video>
         </div>
-        <div class="button-row compact-row">
-          <a class="primary-btn mini-btn" href="${escapeHtml(current.file_path)}" download ${ready ? "" : "aria-disabled='true'"}>下载当前有效成片</a>
-          <a class="secondary-btn mini-btn" href="${escapeHtml(current.file_path)}" target="_blank" rel="noopener">打开成片</a>
-          <button type="button" class="secondary-btn mini-btn" data-action="export-json">导出项目 JSON</button>
-          <button type="button" class="secondary-btn mini-btn" data-action="export-md">导出项目 Markdown</button>
-        </div>
-        ${stale ? `<p class="muted-text">此成片已过期，仅作历史参考。请到「成片合成」重新合成。</p>` : ""}
+        ${stale ? `<p class="muted-text">此成片已过期，仅作历史参考。请返回成片合成重新导出，本页不会再次提交合成任务。</p>` : ""}
       </div>`
-    : `<div class="empty-state stage-locked" data-stage-locked="1">${escapeHtml(stageVm?.lockedHint || "请先合成成片。")}</div>
-      <div class="button-row compact-row">
-        <button type="button" class="secondary-btn mini-btn" data-action="export-json">导出项目 JSON</button>
-        <button type="button" class="secondary-btn mini-btn" data-action="export-md">导出项目 Markdown</button>
-      </div>`;
-  const history = (assembly.history || [])
+    : `<div class="empty-state stage-locked" data-stage-locked="1">${escapeHtml(stageVm?.lockedHint || "请先合成成片。")}</div>`;
+  const history = historyItems
     .map(
       (item) => `<li class="assembly-history-item">
         <span>${escapeHtml(formatTime(item.created_at))}</span>
-        <a href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">查看历史版本</a>
+        <a href="${escapeHtml(item.file_path)}" target="_blank" rel="noopener">查看历史成片</a>
       </li>`
     )
     .join("");
@@ -1159,18 +1187,23 @@ function exportStageHtml(project, stageVm) {
     ["画幅比例", project.aspect_ratio || "16:9"],
     ["单镜时长", `${project.duration_seconds || 5}s`],
     ["镜头数量", String(assembly.shot_count || 0)],
-    ["成片状态", ready ? "可交付" : stale ? "已失效" : "尚未合成"],
+    ["成片状态", ready ? "可交付" : running ? "合成中" : stale ? "已过期" : "尚未合成"],
   ]
     .map(([key, value]) => `<div class="summary-row"><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
     .join("");
-  return `<section class="assembly-panel export-panel" id="exportPanel">
+  return `<section class="assembly-panel export-panel" id="exportPanel" data-export-state="${exportState}">
     <div class="prompt-block">
       <strong>交付检查</strong>
       <ul class="export-check-list">${checkList}</ul>
     </div>
     <div class="summary-fields">${specRows}</div>
+    ${progressBlock}
+    <div class="button-row compact-row">${pathButtons.join("")}
+      <button type="button" class="secondary-btn mini-btn" data-action="export-json">导出项目 JSON</button>
+      <button type="button" class="secondary-btn mini-btn" data-action="export-md">导出项目 Markdown</button>
+    </div>
     ${preview}
-    ${history ? `<div class="assembly-history"><h3>历史成片</h3><ul>${history}</ul></div>` : ""}
+    ${history ? `<div class="assembly-history" id="exportHistory"><h3>查看历史成片</h3><ul>${history}</ul></div>` : ""}
   </section>`;
 }
 
@@ -1386,23 +1419,23 @@ function renderProviderDiagnostics() {
     return;
   }
   const rows = [
-    ["LLM", diagnostics.llm],
-    ["Image", diagnostics.image],
-    ["Video", diagnostics.video],
+    ["文本模型", diagnostics.llm],
+    ["图像模型", diagnostics.image],
+    ["视频模型", diagnostics.video],
   ];
   container.className = "provider-diagnostics";
   container.innerHTML = `
     ${rows
       .map(([label, item]) => {
         const ok = item?.configured;
-        const status = ok ? "已配置" : "降级可用";
+        const status = item?.status_label || (ok ? "已配置" : "未配置");
         return `<div class="provider-row">
           <div>
             <strong>${label}</strong>
-            <span class="muted-text">${escapeHtml(item?.provider || "unknown")}</span>
+            <span class="muted-text">${escapeHtml(item?.provider || "未选择")}</span>
           </div>
-          <span class="status-pill ${ok ? "success" : "warning"}">${status}</span>
-          <p>${escapeHtml(item?.model || item?.fallback || "N/A")}</p>
+          <span class="status-pill ${ok ? "success" : "warning"}">${escapeHtml(status)}</span>
+          <p>${escapeHtml(item?.model || "默认预选")}</p>
         </div>`;
       })
       .join("")}
@@ -1549,10 +1582,10 @@ const UI_STAGE_MODEL_FIELDS = {
 
 function generationModeLabel(mode) {
   return {
-    mock: "本地确定性（Mock）",
-    live_strict: "严格真实",
-    live_with_local_fallback: "真实优先，允许本地回退",
-  }[mode] || "本地确定性（Mock）";
+    mock: "本地演示（不调用真实模型）",
+    live_strict: "真实模型模式（失败即失败）",
+    live_with_local_fallback: "真实模型模式（允许本地回退）",
+  }[mode] || "本地演示（不调用真实模型）";
 }
 
 function stageModelPanelHtml(project, stage) {
@@ -1568,18 +1601,26 @@ function stageModelPanelHtml(project, stage) {
 function generationModePickerHtml(project) {
   const current = project.generation_mode || "mock";
   const modes = state.capabilities?.generation_modes || [
-    { id: "mock", label: "本地确定性（Mock）" },
-    { id: "live_strict", label: "严格真实（失败即失败）" },
-    { id: "live_with_local_fallback", label: "真实优先，允许本地回退" },
+    { id: "mock", label: "本地演示（不调用真实模型）" },
+    { id: "live_strict", label: "真实模型模式（失败即失败）" },
+    { id: "live_with_local_fallback", label: "真实模型模式（允许本地回退）" },
   ];
-  return `<section class="stage-model-picker" data-generation-mode>
-    <div class="section-title"><h3>项目生成模式</h3></div>
+  const access = state.capabilities?.live_access || {};
+  const liveSelected = current !== "mock";
+  const hint = liveSelected
+    ? (access.hint || "真实模型访问取决于服务是否已开通，页面不会自动发出付费请求。")
+    : "当前为本地演示：改编、视觉检查和镜头结果都来自本地夹具，不会伪装成真实模型。";
+  return `<section class="stage-model-picker" data-generation-mode="${escapeHtml(current)}" data-live-ready="${access.ready ? "true" : "false"}">
+    <div class="section-title">
+      <h3>项目生成模式</h3>
+      <span class="status-pill ${current === "mock" ? "success" : access.ready ? "warning" : "warning"}">${escapeHtml(generationModeLabel(current))}</span>
+    </div>
     <label>调用策略
       <select id="generationModeSelect">
         ${modes.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === current ? "selected" : ""}>${escapeHtml(item.label || generationModeLabel(item.id))}</option>`).join("")}
       </select>
     </label>
-    <p class="muted-text">默认不发起真实付费调用。严格真实失败会标记任务失败；允许回退时会明确写明「已使用本地回退」。</p>
+    <p class="muted-text">${escapeHtml(hint)}</p>
     <div class="button-row compact-row">
       <button class="secondary-btn mini-btn" data-adapt="save-generation-mode">保存生成模式</button>
     </div>
@@ -1595,14 +1636,16 @@ function stageModelPickerHtml(project, stageKey, config) {
   const providers = uniqueValues(available.map((item) => item.provider));
   const models = available.filter((item) => item.provider === provider);
   let model = draft?.model || resolved.model;
-  if (models.length && !models.some((item) => item.model === model)) {
+  const providerChanged = Boolean(draft?.dirty && draft.provider && draft.provider !== resolved.provider);
+  if (providerChanged && models.length && !models.some((item) => item.model === model)) {
     model = models[0].model;
   }
-  const selectedMeta = available.find((item) => item.provider === provider && item.model === model) || models[0] || resolved;
+  const selectedMeta = available.find((item) => item.provider === provider && item.model === model) || resolved;
   const configured = Boolean(selectedMeta?.configured);
   const status = configured ? "已配置" : "未配置";
   const origin = resolved.selected_by_user ? "用户选择" : "默认预选";
-  return `<section class="stage-model-picker" data-model-stage="${escapeHtml(stageKey)}">
+  const unconfiguredHint = configured ? "" : "该 Provider 尚未开通，不会自动改用其他模型。";
+  return `<section class="stage-model-picker" data-model-stage="${escapeHtml(stageKey)}" data-config-source="${escapeHtml(resolved.config_source || (resolved.selected_by_user ? "user" : "default"))}">
     <div class="section-title">
       <h3>${escapeHtml(resolved.label || stageKey)}</h3>
       <span class="status-pill ${configured ? "success" : "warning"}">${status}</span>
@@ -1610,7 +1653,11 @@ function stageModelPickerHtml(project, stageKey, config) {
     <div class="form-grid">
       <label>Provider
         <select data-model-field="provider">
-          ${providers.map((item) => `<option value="${escapeHtml(item)}" ${item === provider ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+          ${providers.map((item) => {
+            const meta = available.find((row) => row.provider === item);
+            const suffix = meta?.configured ? "" : "（未配置）";
+            return `<option value="${escapeHtml(item)}" ${item === provider ? "selected" : ""}>${escapeHtml(item)}${suffix}</option>`;
+          }).join("")}
         </select>
       </label>
       <label>模型
@@ -1620,6 +1667,7 @@ function stageModelPickerHtml(project, stageKey, config) {
       </label>
     </div>
     <p class="muted-text">本阶段将使用：${escapeHtml(provider || "未选择")} / ${escapeHtml(model || "未选择")} · ${origin}${dirty ? " · 未保存" : ""}</p>
+    ${unconfiguredHint ? `<p class="muted-text">${unconfiguredHint}</p>` : ""}
     <span class="${dirty ? "dirty-flag" : "clean-flag"}">${dirty ? "配置未保存" : "已与项目配置同步"}</span>
     <div class="button-row compact-row">
       <button class="secondary-btn mini-btn" data-adapt="save-model-config" data-model-stage="${escapeHtml(stageKey)}" ${dirty ? "" : "disabled"}>保存此阶段模型</button>

@@ -58,6 +58,7 @@ from tools.live_run_audit import (
     has_secret_leak,
     normalize_live_run_counts,
     verify_pre_cleanup,
+    write_audit_reports,
 )
 
 PNG_BYTES = bytes.fromhex(
@@ -719,6 +720,8 @@ def test_last_live_run_counts_split_new_submits_from_unique_tasks() -> None:
     assert counts["unique_remote_tasks"] == 5
     assert counts["video_submits_new"] + counts["video_tasks_reused"] == counts["unique_remote_tasks"]
     assert counts["video_submits_new"] != counts["unique_remote_tasks"]
+    assert counts["preexisting_remote_tasks"] == 1
+    assert LAST_LIVE_RUN["resume_note"].count("新提交") >= 1
     legacy = apply_count_fields(
         {
             "text_calls": 3,
@@ -738,6 +741,84 @@ def test_last_live_run_counts_split_new_submits_from_unique_tasks() -> None:
     assert has_secret_leak('{"url": "<data-url omitted>"}') is False
     assert has_secret_leak("data:image/jpeg;base64," + "a" * 80) is True
     pass_("报告字段区分新提交 4 次与唯一远程任务 5 个，脱敏占位不算泄漏")
+
+
+def test_audit_bundle_fields_and_no_secrets() -> None:
+    out = ROOT / "output" / "playwright" / "_p7d_audit_tmp"
+    shutil.rmtree(out, ignore_errors=True)
+    try:
+        paths = write_audit_reports(
+            out,
+            result=dict(LAST_LIVE_RUN),
+            lineage={
+                "ok": True,
+                "shot_lineage": [
+                    {
+                        "shot_id": "shot1",
+                        "shot_index": 1,
+                        "version_id": "v1",
+                        "provider": "minimax",
+                        "model": "MiniMax-H3",
+                        "video_mode": "i2v",
+                        "duration_seconds": 4,
+                        "first_frame_asset_id": "a1",
+                        "video_asset_id": "vid1",
+                        "remote_task_id": "4366…8674",
+                        "local_file_path": "/assets/demo/clip.mp4",
+                        "status": "video_ready",
+                    }
+                ],
+            },
+            ffprobe={
+                "ok": True,
+                "format": "mov,mp4,m4a",
+                "duration": 22.3,
+                "size": 1024,
+                "video_codec": "h264",
+                "width": 1280,
+                "height": 720,
+                "frame_rate": "30/1",
+                "audio_stream": True,
+            },
+            reconstructed=False,
+        )
+        audit = json.loads(paths["audit"].read_text(encoding="utf-8"))
+        for key in (
+            "project_id",
+            "generation_mode",
+            "text_calls_total",
+            "vision_calls_total",
+            "video_submits_new",
+            "video_tasks_reused",
+            "unique_remote_tasks",
+            "remote_tasks_completed",
+            "downloaded_videos",
+            "duplicate_submits",
+            "duplicate_assets",
+            "ffmpeg_ran",
+            "final_cut",
+            "preview_ok",
+            "download_ok",
+            "cleanup_verified",
+        ):
+            assert key in audit, key
+        assert audit["video_submits_new"] == 4
+        assert audit["video_tasks_reused"] == 1
+        assert audit["unique_remote_tasks"] == 5
+        assert audit["count_labels"]["video_submits_new"] == "本次新提交任务"
+        blob = paths["audit"].read_text(encoding="utf-8") + paths["lineage"].read_text(encoding="utf-8")
+        _assert_no_secrets(blob)
+        assert "sk-" not in blob.lower()
+        assert "data:image" not in blob.lower()
+        assert paths["browser_evidence"].is_file()
+        assert paths["browser_dom_snapshots"].is_file()
+        assert paths["browser_screenshot_hashes"].is_file()
+        ffprobe = json.loads(paths["ffprobe"].read_text(encoding="utf-8"))
+        assert ffprobe["format"]
+        assert ffprobe["video_codec"] == "h264"
+        pass_("审计包含完整计数/血缘/ffprobe 字段且无 Key 或 Data URL")
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
 
 
 def test_disconnect_resume_polls_same_remote_and_continues_remaining_shots() -> None:
@@ -917,6 +998,7 @@ def main() -> None:
         test_remote_task_video_asset_is_idempotent()
         test_five_shots_share_project_jpeg_without_image_provider()
         test_last_live_run_counts_split_new_submits_from_unique_tasks()
+        test_audit_bundle_fields_and_no_secrets()
         test_disconnect_resume_polls_same_remote_and_continues_remaining_shots()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:

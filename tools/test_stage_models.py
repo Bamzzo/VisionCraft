@@ -156,7 +156,36 @@ def test_unconfigured_does_not_switch() -> None:
         assert default["provider"] == "deepseek"
         assert default["model"] == DEEPSEEK_FLASH
         assert default["configured"] is False
+        access = payload["live_access"]
+        blob = json.dumps(payload, ensure_ascii=False)
+        for forbidden in ("DEEPSEEK_API_KEY", "MINIMAX_API_KEY", "SILICONFLOW_API_KEY", "VISIONCRAFT_ALLOW_LIVE", ".env"):
+            assert forbidden not in blob
+            assert forbidden not in access["hint"]
+        modes = {item["id"]: item["label"] for item in payload["generation_modes"]}
+        assert "不调用真实模型" in modes["mock"]
+        assert "失败即失败" in modes["live_strict"]
+        assert "允许本地回退" in modes["live_with_local_fallback"]
         print("PASS: unconfigured DeepSeek stays the default preselect and does not silent-switch")
+
+
+def test_refresh_and_project_isolation() -> None:
+    first = _project("配置甲")
+    second = _project("配置乙")
+    try:
+        save_stage_config(first, "story_bible", provider="deepseek", model=DEEPSEEK_PRO)
+        reloaded = get_project(first)
+        assert reloaded["model_configs"]["story_bible"]["model"] == DEEPSEEK_PRO
+        assert reloaded["model_configs"]["story_bible"]["selected_by_user"] is True
+        other = get_project(second)
+        assert other["model_configs"]["story_bible"]["model"] == DEEPSEEK_FLASH
+        assert other["model_configs"]["story_bible"]["selected_by_user"] is False
+        set_generation_mode(first, "live_strict")
+        assert get_project(first)["generation_mode"] == "live_strict"
+        assert get_project(second)["generation_mode"] == "mock"
+        print("PASS: 刷新后配置恢复，切换项目后配置隔离")
+    finally:
+        _cleanup(first)
+        _cleanup(second)
 
 
 def test_text_vision_roles_do_not_mix() -> None:
@@ -390,6 +419,7 @@ def main() -> None:
     os.environ.pop("VISIONCRAFT_ALLOW_LIVE_VISION", None)
     test_default_is_preselect_not_lock()
     test_unconfigured_does_not_switch()
+    test_refresh_and_project_isolation()
     test_text_vision_roles_do_not_mix()
     test_text_request_construction()
     test_json_parse_success_and_failure()

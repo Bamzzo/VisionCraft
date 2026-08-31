@@ -19,21 +19,34 @@
 |---|---|
 | `text_calls_total` | DeepSeek 文本真实调用次数 |
 | `vision_calls_total` | DeepSeek Vision 真实调用次数 |
-| `video_submits_new` | 本次进程新提交的 MiniMax 任务数 |
-| `video_tasks_reused` | 中断后复用、只回查不重新提交的任务数 |
-| `unique_remote_tasks` | 唯一 `provider + remote_task_id` 数量 |
+| `video_submits_new` | 本次新提交任务 |
+| `preexisting_remote_tasks` | 中断前已有任务 |
+| `video_tasks_reused` | 复用任务（只回查，不重新提交） |
+| `unique_remote_tasks` | 唯一远程任务 |
 | `remote_tasks_completed` | 已完成的远程任务数 |
 | `downloaded_videos` | 实际落库的镜头视频数 |
 | `duplicate_submits` | 同一镜头重复提交数 |
 | `duplicate_assets` | 同一远程任务重复视频资产数 |
+| `ffmpeg_ran` / `final_cut` / `preview_ok` / `download_ok` / `cleanup_verified` | 成片与清理布尔结果 |
 
 关系：
 
 ```text
-video_submits_new + video_tasks_reused = unique_remote_tasks
+本次新提交任务 + 复用任务 = 唯一远程任务
 ```
 
-不要把「4 次新提交」写成「5 次新提交」。5 是唯一远程任务数。
+不要把复用任务重复算作新的 API 调用。不要把「4 次新提交」写成「5 次新提交」。5 是唯一远程任务数。
+
+下次真实测试清理前必须写入：
+
+```text
+output/playwright/live-multishot/live_run_audit.json
+output/playwright/live-multishot/live_run_lineage.json
+output/playwright/live-multishot/live_run_ffprobe.json
+output/playwright/live-multishot/browser_evidence.json
+output/playwright/live-multishot/browser_dom_snapshots.json
+output/playwright/live-multishot/browser_screenshot_hashes.json
+```
 
 ## 3. 第三次真实 5 镜测试（已完成，不重跑）
 
@@ -60,6 +73,9 @@ video_submits_new + video_tasks_reused = unique_remote_tasks
 output/playwright/live-multishot/live_run_audit.json
 output/playwright/live-multishot/live_run_lineage.json
 output/playwright/live-multishot/live_run_ffprobe.json
+output/playwright/live-multishot/browser_evidence.json
+output/playwright/live-multishot/browser_dom_snapshots.json
+output/playwright/live-multishot/browser_screenshot_hashes.json
 ```
 
 上述文件与截图、`result.json`、`final-cut.mp4` 均在 `output/`，**不得提交 Git**。

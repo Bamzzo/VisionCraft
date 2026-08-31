@@ -1,13 +1,16 @@
 """V1-QA 浏览器验收：界面质量、状态一致性与智能体工作流展示。
 
-不调用付费 API。截图仅写入 output/playwright/v1-qa-*.png，不得入库。
+自启 uvicorn（8013-8018），强制关闭 LIVE 开关，不调用付费 API。
+截图仅写入 output/playwright/v1-qa-*.png，不得入库。
 """
 from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,15 +18,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 
-BASE = os.environ.get("VISIONCRAFT_BASE_URL", "http://127.0.0.1:8000")
+
+def _strip_live(env: dict[str, str]) -> dict[str, str]:
+    cleaned = dict(env)
+    for key in list(cleaned):
+        if key.startswith("VISIONCRAFT_ALLOW_LIVE"):
+            cleaned.pop(key, None)
+    cleaned["VISIONCRAFT_ALLOW_LIVE_LLM"] = "0"
+    cleaned["VISIONCRAFT_ALLOW_LIVE_VISION"] = "0"
+    cleaned["VISIONCRAFT_ALLOW_LIVE_VIDEO"] = "0"
+    return cleaned
 
 
-def _health_ok() -> bool:
+def _health_ok(base: str) -> bool:
     try:
-        with urllib.request.urlopen(f"{BASE}/api/health", timeout=3) as response:
+        with urllib.request.urlopen(f"{base}/api/health", timeout=3) as response:
             return response.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
+
+
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _npm() -> str:
@@ -46,22 +64,66 @@ def _ensure_playwright(harness: Path) -> None:
     subprocess.run([npx, "playwright", "install", "chromium"], cwd=harness, check=True)
 
 
-def main() -> None:
-    if not _health_ok():
-        raise SystemExit(
-            f"真实浏览器验收失败：{BASE} 未响应。请先在本机启动 "
-            "`python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`"
+def _start_backend() -> tuple[subprocess.Popen, str]:
+    python = ROOT / ".venv" / "Scripts" / "python.exe"
+    exe = str(python if python.exists() else sys.executable)
+    env = _strip_live(os.environ.copy())
+    for port in range(8013, 8019):
+        if _port_in_use(port):
+            continue
+        proc = subprocess.Popen(
+            [exe, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        base = f"http://127.0.0.1:{port}"
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                raise SystemExit(f"验收后端启动失败：{err[-500:]}")
+            if _health_ok(base):
+                print(f"INFO: 验收后端 {base}")
+                return proc, base
+            time.sleep(0.3)
+        proc.terminate()
+        proc.wait(timeout=5)
+    raise SystemExit("浏览器验收失败：8013-8018 端口均不可用。")
+
+
+def main() -> None:
+    for key in list(os.environ):
+        if key.startswith("VISIONCRAFT_ALLOW_LIVE"):
+            os.environ.pop(key, None)
+    os.environ["VISIONCRAFT_ALLOW_LIVE_LLM"] = "0"
+    os.environ["VISIONCRAFT_ALLOW_LIVE_VISION"] = "0"
+    os.environ["VISIONCRAFT_ALLOW_LIVE_VIDEO"] = "0"
+
     harness = ROOT / ".playwright-cli"
     _ensure_playwright(harness)
-    script = ROOT / "tools" / "v1_qa.cjs"
-    env = os.environ.copy()
-    env["NODE_PATH"] = str(harness / "node_modules")
-    print("RUN: node", script)
-    completed = subprocess.run(["node", str(script)], cwd=ROOT, env=env, check=False)
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
-    print("PASS: V1-QA 界面质量与工作流展示验收")
+    server = None
+    try:
+        server, base = _start_backend()
+        env = _strip_live(os.environ.copy())
+        env["NODE_PATH"] = str(harness / "node_modules")
+        env["VISIONCRAFT_BASE_URL"] = base
+        script = ROOT / "tools" / "v1_qa.cjs"
+        print("RUN: node", script)
+        print("INFO: live_network=否 cost_cny=0")
+        completed = subprocess.run(["node", str(script)], cwd=ROOT, env=env, check=False)
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+        print("PASS: V1-QA 界面质量与工作流展示验收")
+    finally:
+        if server is not None:
+            server.terminate()
+            try:
+                server.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                server.kill()
+            print("CLEANED: 验收后端进程")
 
 
 if __name__ == "__main__":

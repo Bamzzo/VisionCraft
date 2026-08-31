@@ -353,6 +353,21 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **验收：** `node tools/test_workflow_view_model.mjs`、`tools/test_p7c_ui_state_browser.py`、`docs/p7c-ui-state-evidence.md`
 
+### P7-D：真实测试结果归档与 V1 可用性收口
+
+**状态：** 2026-08-31 已完成本地无费用收口。**不发送真实 API，费用 0 元。** 不得把上一次真实测试重新算成本次调用，不得重跑 MiniMax / DeepSeek。
+
+**目标：** 打开网页即可走完「创建项目 → 默认预选模型 → 按阶段切换模型 → 启动本地或真实流程 → 任务中心更新 → 生成镜头 → 合成成片 → 预览/下载/历史」。
+
+**已实现：**
+
+- 默认模型只是首次预选：文本 DeepSeek Flash、视觉 DeepSeek Vision、视频 MiniMax；用户保存后显示「用户选择」，刷新后恢复，项目切换不串配置；未配置 Provider 显示中文「未配置」，不会静默换成另一家；
+- 页面明确区分本地演示 / 真实模型模式（失败即失败） / 真实模型模式（允许本地回退）；缺少真实访问时给出可执行中文提示，不展示 Key、环境变量名或敏感配置；
+- 导出页按 `empty | stale | running | ready` 显示路径：前往成片合成、返回成片合成、继续查看合成进度、预览/下载当前成片、查看历史成片。不在导出页另建合成逻辑，不重复提交活动合成任务；
+- 下次真实测试清理前自动写入 `live_run_audit.json`、`live_run_lineage.json`、`live_run_ffprobe.json` 与浏览器 DOM/哈希证据；计数区分本次新提交 / 中断前已有 / 复用 / 唯一远程任务。上一次 5 镜口径固定为 MiniMax 新提交 4、复用 1、唯一任务 5。
+
+**验收：** `tools/test_v1_usability.py`、`tools/test_live_safeguards.py`、`tools/test_stage_models.py`、`tools/test_v1_qa_browser.py`、`tools/test_p7c_ui_state_browser.py`、`docs/v1-usability-acceptance.md`
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

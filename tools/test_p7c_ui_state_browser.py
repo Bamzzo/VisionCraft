@@ -461,6 +461,7 @@ def _seed_all() -> dict[str, str]:
         "assembly_running": f"{PREFIX}asrun",
         "assembly_complete": f"{PREFIX}asdone",
         "download_ready": f"{PREFIX}asdone",
+        "assembly_stale": f"{PREFIX}stale",
         "other": f"{PREFIX}other",
     }
     for project_id in dict.fromkeys(ids.values()):
@@ -516,6 +517,11 @@ def _seed_all() -> dict[str, str]:
     _insert_bible(ids["assembly_complete"], confirmed=True)
     _insert_shots(ids["assembly_complete"], 5, ready=5, first_frame=True)
     _insert_final(ids["assembly_complete"], stale=0)
+
+    _insert_project(ids["assembly_stale"], "P7C成片已过期", "production_ready")
+    _insert_bible(ids["assembly_stale"], confirmed=True)
+    _insert_shots(ids["assembly_stale"], 5, ready=5, first_frame=True)
+    _insert_final(ids["assembly_stale"], stale=1)
     return ids
 
 

@@ -232,6 +232,19 @@ async function main() {
       );
       await page.screenshot({ path: path.join(OUT, "v1-settings-stale-1440.png"), fullPage: true });
       pass("修改项目设置后旧成片显示过期，工作区无需手动刷新");
+      await openStage(page, "export");
+      const staleExport = await page.locator("#stageWorkspace").innerText();
+      if (!staleExport.includes("返回成片合成")) throw new Error("过期成片的导出页应显示返回成片合成");
+      if (await page.locator("#assembleProjectBtn").count()) {
+        throw new Error("导出页不得直接提供合成按钮");
+      }
+      await page.click("[data-action='goto-assembly']");
+      await page.waitForFunction(
+        () => (document.querySelector("#stageWorkspaceTitle")?.textContent || "").includes("成片合成"),
+        null,
+        { timeout: 8000 }
+      );
+      pass("过期成片可从导出页返回成片合成");
       await page.click("#assembleProjectBtn");
       await page.waitForFunction(
         () => (document.querySelector("#assemblyFreshness")?.textContent || "").includes("当前有效"),

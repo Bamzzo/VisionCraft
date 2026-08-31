@@ -460,6 +460,11 @@ function onWorkspaceClick(event) {
     exportProject(exportKind.dataset.action === "export-json" ? "json" : "markdown");
     return;
   }
+  const gotoAssembly = event.target.closest("[data-action='goto-assembly']");
+  if (gotoAssembly) {
+    setViewStage("assembly");
+    return;
+  }
   const assemble = event.target.closest("[data-action='assemble-project']");
   if (assemble && !assemble.disabled) {
     onAssembleProject();

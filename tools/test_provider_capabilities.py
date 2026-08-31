@@ -1,6 +1,7 @@
 """No-cost tests for provider capability contracts and shot-level generation constraints."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -86,6 +87,16 @@ def test_capability_contract() -> None:
     assert payload["stages"]["text_understanding"]["default_model"] == "deepseek-v4-flash"
     assert payload["stages"]["vision_review"]["default_model"] == "deepseek-v4-flash-vision-exp"
     assert payload["default_video_provider"] in {"minimax", "ark", "dashscope", "siliconflow"}
+    modes = {item["id"]: item["label"] for item in payload["generation_modes"]}
+    assert "不调用真实模型" in modes["mock"]
+    assert "失败即失败" in modes["live_strict"]
+    assert "允许本地回退" in modes["live_with_local_fallback"]
+    access = payload["live_access"]
+    assert "hint" in access
+    blob = json.dumps(payload, ensure_ascii=False)
+    for forbidden in ("DEEPSEEK_API_KEY", "MINIMAX_API_KEY", "VISIONCRAFT_ALLOW_LIVE"):
+        assert forbidden not in blob
+        assert forbidden not in access["hint"]
     print("PASS: DeepSeek text/vision capability fields and P1 video contract")
 
 

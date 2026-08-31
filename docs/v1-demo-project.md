@@ -53,7 +53,7 @@ Content-Type: application/json
 .venv\Scripts\python.exe tools\prepare_v1_demo.py --clean
 ```
 
-打开工作台后选择「VisionCraft V1 固定演示」，可查看 P4 改编审核、P3 版本历史、P6-E 成片配置和导出。
+打开工作台后选择「VisionCraft V1 固定演示」，可查看 P4 改编审核、P3 版本历史、P6-E 成片配置和导出。导出页只展示当前有效成片或过期提示，合成动作仍在成片合成阶段完成。
 
 ## 全链路浏览器验收
 

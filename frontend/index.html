@@ -15,6 +15,7 @@
         </div>
         <div class="topbar-actions">
           <span id="projectModeBadge" class="status-pill neutral" title="自动模式：阶段完成后自动继续；监制模式：阶段完成后等待审核">自动模式</span>
+          <span id="generationModeBadge" class="status-pill neutral" title="当前项目生成模式">本地演示</span>
           <span id="connectionStatus" class="status-pill neutral">本地模式</span>
           <button id="refreshBtn" class="icon-btn" title="刷新项目状态">⟳</button>
           <button id="deleteProjectBtn" class="secondary-btn danger-btn">删除项目</button>
@@ -104,9 +105,9 @@
               <label>
                 生成模式
                 <select id="generationModeInput">
-                  <option value="mock" selected>本地确定性（Mock）</option>
-                  <option value="live_strict">严格真实（失败即失败）</option>
-                  <option value="live_with_local_fallback">真实优先，允许本地回退</option>
+                  <option value="mock" selected>本地演示（不调用真实模型）</option>
+                  <option value="live_strict">真实模型模式（失败即失败）</option>
+                  <option value="live_with_local_fallback">真实模型模式（允许本地回退）</option>
                 </select>
               </label>
               <div class="button-row">

@@ -348,6 +348,14 @@ async function main() {
         document.querySelector('[data-stage-id="assembly"] .stage-state-label')?.textContent === "处理中",
       summaryIncludes: ["成片合成"],
     });
+    await openStage(page, "export");
+    await waitDom(
+      page,
+      () =>
+        (document.querySelector("#exportPanel")?.getAttribute("data-export-state") === "running") &&
+        (document.querySelector("#stageWorkspace")?.innerText || "").includes("继续查看合成进度")
+    );
+    pass("合成中的导出页显示继续查看合成进度，不另建合成按钮");
 
     await captureStep(page, ctx, {
       id: "assembly_complete",
@@ -374,8 +382,8 @@ async function main() {
       state: "已完成",
       wait: () =>
         document.querySelector("#stageWorkspaceTitle")?.textContent.includes("导出与交付") &&
-        (document.querySelector("#stageWorkspace")?.innerText || "").includes("下载成片"),
-      buttonIncludes: ["下载成片"],
+        (document.querySelector("#stageWorkspace")?.innerText || "").includes("下载当前成片"),
+      buttonIncludes: ["下载当前成片", "预览当前成片"],
       forbiddenStates: [
         { id: "keyframes", state: "处理中" },
         { id: "video", state: "已失效" },
@@ -417,9 +425,27 @@ async function main() {
     if (await page.locator("#assembleProjectBtn").count()) {
       throw new Error("未开始的导出阶段不应出现合成按钮");
     }
+    const emptyExport = await page.locator("#stageWorkspace").innerText();
+    if (!emptyExport.includes("前往成片合成")) throw new Error("无成片时应给出前往成片合成入口");
     const exportNode = (await readNav(page)).find((item) => item.id === "export");
     if (exportNode.canExecute === "true") throw new Error("未开始的导出阶段不能执行");
     pass("未开始阶段不能执行非法操作");
+
+    if (!IDS.assembly_stale) throw new Error("缺少 assembly_stale 夹具");
+    await selectProject(page, IDS.assembly_stale);
+    await openStage(page, "export");
+    await waitDom(
+      page,
+      () =>
+        document.querySelector("#exportPanel")?.getAttribute("data-export-state") === "stale" &&
+        (document.querySelector("#stageWorkspace")?.innerText || "").includes("返回成片合成")
+    );
+    await page.click("[data-action='goto-assembly']");
+    await waitDom(page, () => (document.querySelector("#stageWorkspaceTitle")?.textContent || "").includes("成片合成"));
+    if (!(await page.locator("#assembleProjectBtn").count())) {
+      throw new Error("过期成片跳转后应回到成片合成页");
+    }
+    pass("过期成片可从导出页返回成片合成");
 
     for (const width of [1100, 1440, 1920]) {
       const height = width === 1920 ? 1080 : 900;
