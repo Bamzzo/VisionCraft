@@ -29,7 +29,7 @@ from ..providers.llm_catalog import (
     validate_stage_selection,
 )
 from ..services.job_service import redact_value
-from ..services.project_service import get_project
+from ..services.project_service import get_project, resolve_storyboard_shot_count
 
 
 def get_generation_mode(project: dict | str) -> str:
@@ -225,7 +225,8 @@ def plan_story_bible_with_policy(project: dict, option: dict, planner) -> tuple[
 
 def plan_storyboard_with_policy(project: dict, option: dict, bible: dict, planner) -> tuple[list[dict], dict]:
     source_text = planner_context(project)
-    return run_text_stage(
+    shot_count = resolve_storyboard_shot_count(project, option)
+    shots, lineage = run_text_stage(
         project,
         "storyboard",
         planner=planner,
@@ -235,9 +236,18 @@ def plan_storyboard_with_policy(project: dict, option: dict, bible: dict, planne
             project.get("style") or "",
             option,
             bible,
+            shot_count=shot_count,
         ),
-        coerce=lambda parsed, fallback: coerce_storyboard(parsed, fallback, source_text),
+        coerce=lambda parsed, fallback: coerce_storyboard(parsed, fallback, source_text, shot_count=shot_count),
     )
+    model_count = next((int(item.get("model_returned_shot_count")) for item in shots if item.get("model_returned_shot_count") is not None), len(shots))
+    lineage["shot_count_mode"] = project.get("shot_count_mode") or "auto"
+    lineage["requested_shot_count"] = project.get("requested_shot_count")
+    lineage["resolved_shot_count"] = shot_count
+    lineage["model_returned_shot_count"] = model_count
+    lineage["shot_count_normalized"] = model_count != shot_count
+    lineage["source"] = lineage.get("source") or "live_llm"
+    return shots, lineage
 
 
 def _as_str_list(value) -> list:

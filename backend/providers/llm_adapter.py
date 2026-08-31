@@ -271,12 +271,22 @@ def story_bible_messages(title: str, source_text: str, style: str, option: dict)
     ]
 
 
-def storyboard_messages(title: str, source_text: str, style: str, option: dict, bible: dict) -> list[dict]:
+def storyboard_messages(
+    title: str,
+    source_text: str,
+    style: str,
+    option: dict,
+    bible: dict,
+    shot_count: int | None = None,
+) -> list[dict]:
+    count = int(shot_count) if shot_count is not None else int(option.get("suggested_shot_count") or 5)
+    count = max(1, min(12, count))
     return [
         {
             "role": "system",
             "content": (
                 "You are VisionCraft's storyboard designer. Return JSON only. "
+                "Return exactly the requested shot_count shots. "
                 "Each shot.source_excerpt must be an exact substring of the source."
             ),
         },
@@ -286,7 +296,7 @@ def storyboard_messages(title: str, source_text: str, style: str, option: dict, 
                 {
                     "title": title,
                     "style": style,
-                    "shot_count": option.get("suggested_shot_count") or 5,
+                    "shot_count": count,
                     "duration_seconds": option.get("suggested_duration_seconds") or 30,
                     "option_title": option.get("title"),
                     "bible": {
@@ -379,7 +389,12 @@ def coerce_story_bible(parsed: dict, fallback: dict) -> dict:
     return merged
 
 
-def coerce_storyboard(parsed: dict, fallback: list[dict], source_text: str) -> list[dict]:
+def coerce_storyboard(
+    parsed: dict,
+    fallback: list[dict],
+    source_text: str,
+    shot_count: int | None = None,
+) -> list[dict]:
     raw = parsed.get("shots") if isinstance(parsed, dict) else None
     if not isinstance(raw, list) or not raw:
         raise JsonParseError("分镜 JSON 缺少 shots 数组。")
@@ -387,29 +402,66 @@ def coerce_storyboard(parsed: dict, fallback: list[dict], source_text: str) -> l
     for index, item in enumerate(raw, start=1):
         data = item if isinstance(item, dict) else {}
         seed = fallback[index - 1] if index - 1 < len(fallback) else (fallback[-1] if fallback else {})
-        excerpt = str(data.get("source_excerpt") or seed.get("source_excerpt") or "")
-        if excerpt and excerpt not in source_text:
-            excerpt = seed.get("source_excerpt") or ""
-        characters = data.get("characters") if isinstance(data.get("characters"), list) else seed.get("characters") or []
-        result.append(
-            {
-                "shot_index": index,
-                "title": str(data.get("title") or seed.get("title") or f"镜头 {index}"),
-                "narrative_purpose": str(data.get("narrative_purpose") or seed.get("narrative_purpose") or ""),
-                "characters": [str(name) for name in characters],
-                "scene": str(data.get("scene") or seed.get("scene") or ""),
-                "action_text": str(data.get("action_text") or seed.get("action_text") or ""),
-                "camera_motion": str(data.get("camera_motion") or seed.get("camera_motion") or ""),
-                "duration_seconds": int(data.get("duration_seconds") or seed.get("duration_seconds") or 5),
-                "visual_prompt": str(data.get("visual_prompt") or seed.get("visual_prompt") or ""),
-                "bible_character": data.get("bible_character") or seed.get("bible_character"),
-                "bible_scene": data.get("bible_scene") or seed.get("bible_scene"),
-                "source_excerpt": excerpt,
-                "source_start": seed.get("source_start"),
-                "source_end": seed.get("source_end"),
-            }
-        )
-    return result or fallback
+        result.append(_coerce_storyboard_shot(index, data, seed, source_text, source_type="auto_draft"))
+    if not result:
+        result = list(fallback or [])
+    if shot_count is None:
+        return result
+    return apply_storyboard_shot_count(result, shot_count=shot_count, fallback=fallback, source_text=source_text)
+
+
+def apply_storyboard_shot_count(
+    shots: list[dict],
+    *,
+    shot_count: int,
+    fallback: list[dict] | None = None,
+    source_text: str = "",
+) -> list[dict]:
+    """Deterministically pad or trim to the resolved count. Padded shots are marked, not faked as model output."""
+    target = max(1, min(12, int(shot_count)))
+    model_count = len(shots or [])
+    result = list(shots or [])
+    if model_count > target:
+        result = result[:target]
+    while len(result) < target:
+        index = len(result) + 1
+        seed = result[-1] if result else ((fallback or [{}])[-1] if fallback else {})
+        padded = _coerce_storyboard_shot(index, {}, seed, source_text, source_type="count_normalized")
+        padded["title"] = f"镜头 {index}"
+        padded["narrative_purpose"] = padded.get("narrative_purpose") or "按手动镜头数补齐"
+        padded["count_normalized"] = True
+        result.append(padded)
+    for index, shot in enumerate(result, start=1):
+        shot["shot_index"] = index
+        if model_count != target:
+            shot["model_returned_shot_count"] = model_count
+            shot["resolved_shot_count"] = target
+    return result
+
+
+def _coerce_storyboard_shot(index: int, data: dict, seed: dict, source_text: str, *, source_type: str) -> dict:
+    excerpt = str(data.get("source_excerpt") or seed.get("source_excerpt") or "")
+    if excerpt and excerpt not in source_text:
+        excerpt = seed.get("source_excerpt") or ""
+    characters = data.get("characters") if isinstance(data.get("characters"), list) else seed.get("characters") or []
+    return {
+        "shot_index": index,
+        "title": str(data.get("title") or seed.get("title") or f"镜头 {index}"),
+        "narrative_purpose": str(data.get("narrative_purpose") or seed.get("narrative_purpose") or ""),
+        "characters": [str(name) for name in characters],
+        "scene": str(data.get("scene") or seed.get("scene") or ""),
+        "action_text": str(data.get("action_text") or seed.get("action_text") or ""),
+        "camera_motion": str(data.get("camera_motion") or seed.get("camera_motion") or ""),
+        "duration_seconds": int(data.get("duration_seconds") or seed.get("duration_seconds") or 5),
+        "visual_prompt": str(data.get("visual_prompt") or seed.get("visual_prompt") or ""),
+        "bible_character": data.get("bible_character") or seed.get("bible_character"),
+        "bible_scene": data.get("bible_scene") or seed.get("bible_scene"),
+        "source_excerpt": excerpt,
+        "source_start": seed.get("source_start"),
+        "source_end": seed.get("source_end"),
+        "source_type": source_type,
+        "count_normalized": source_type == "count_normalized",
+    }
 
 
 class BlockedLiveTransport:

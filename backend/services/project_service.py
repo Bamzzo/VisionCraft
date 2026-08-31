@@ -20,10 +20,12 @@ def compute_routing_mode(text: str) -> str:
     return "rag"
 
 
-def compute_shot_count(payload: ProjectCreate) -> int:
-    if payload.shot_count_mode == "manual" and payload.requested_shot_count:
-        return payload.requested_shot_count
-    text_len = len(payload.source_text)
+SHOT_COUNT_MIN = 1
+SHOT_COUNT_MAX = 12
+
+
+def auto_shot_count_from_text(source_text: str) -> int:
+    text_len = len(source_text or "")
     if text_len < 800:
         return 3
     if text_len < 1800:
@@ -31,6 +33,32 @@ def compute_shot_count(payload: ProjectCreate) -> int:
     if text_len < 3500:
         return 5
     return 6
+
+
+def compute_shot_count(payload: ProjectCreate) -> int:
+    if payload.shot_count_mode == "manual" and payload.requested_shot_count:
+        return _clamp_shot_count(payload.requested_shot_count)
+    return auto_shot_count_from_text(payload.source_text)
+
+
+def resolve_storyboard_shot_count(project: dict, option: dict | None = None) -> int:
+    """Final storyboard length. Manual requested_shot_count always wins over model suggestions."""
+    mode = str((project or {}).get("shot_count_mode") or "auto")
+    requested = (project or {}).get("requested_shot_count")
+    if mode == "manual" and requested:
+        return _clamp_shot_count(requested)
+    suggested = (option or {}).get("suggested_shot_count") if option else None
+    if suggested:
+        return _clamp_shot_count(suggested)
+    return _clamp_shot_count(auto_shot_count_from_text(str((project or {}).get("source_text") or "")))
+
+
+def _clamp_shot_count(value: int) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = auto_shot_count_from_text("")
+    return max(SHOT_COUNT_MIN, min(SHOT_COUNT_MAX, count))
 
 
 def create_project(payload: ProjectCreate) -> dict:

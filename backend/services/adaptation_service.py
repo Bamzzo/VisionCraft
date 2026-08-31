@@ -13,7 +13,7 @@ from ..services.model_config_service import (
     plan_story_bible_with_policy,
     plan_storyboard_with_policy,
 )
-from ..services.project_service import get_project, update_project_status
+from ..services.project_service import get_project, resolve_storyboard_shot_count, update_project_status
 from ..workflow.adaptation_planner import plan_adaptations, plan_story_bible, plan_storyboard
 
 
@@ -618,7 +618,14 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
     scope_id = option.get("scope_id") or _active_scope_id(project["id"])
 
     def planner():
-        return plan_storyboard(project["title"], context, project.get("style") or "", option, bible)
+        return plan_storyboard(
+            project["title"],
+            context,
+            project.get("style") or "",
+            option,
+            bible,
+            shot_count=resolve_storyboard_shot_count(project, option),
+        )
 
     try:
         shots, lineage = plan_storyboard_with_policy(project, option, bible, planner)
@@ -657,7 +664,7 @@ def _write_storyboard(project: dict, option: dict, bible: dict) -> None:
                     excerpt,
                     start,
                     end,
-                    "auto_draft",
+                    "auto_draft" if not item.get("count_normalized") else "count_normalized",
                     "draft",
                     now,
                     now,

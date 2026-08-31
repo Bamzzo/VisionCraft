@@ -135,11 +135,21 @@ def plan_story_bible(title: str, source_text: str, style: str, option: dict) -> 
     }
 
 
-def plan_storyboard(title: str, source_text: str, style: str, option: dict, bible: dict) -> list[dict]:
+def plan_storyboard(
+    title: str,
+    source_text: str,
+    style: str,
+    option: dict,
+    bible: dict,
+    shot_count: int | None = None,
+) -> list[dict]:
     analysis = analyze_source(title, source_text)
     excerpts = analysis["excerpts"] or [analysis["conflict_excerpt"]]
-    count = int(option.get("suggested_shot_count") or 4)
-    count = max(4, min(8, count))
+    if shot_count is None:
+        count = int(option.get("suggested_shot_count") or 4)
+        count = max(4, min(8, count))
+    else:
+        count = max(1, min(12, int(shot_count)))
     characters = bible.get("character_cards") or []
     scenes = bible.get("scene_cards") or []
     hero = (characters[0] or {}).get("name") if characters else "主角"
