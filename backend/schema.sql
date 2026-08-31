@@ -152,6 +152,8 @@ CREATE TABLE IF NOT EXISTS assets (
   prompt TEXT NOT NULL,
   file_path TEXT NOT NULL,
   embedding_ref TEXT,
+  source_task_id TEXT,
+  source_remote_task_id TEXT,
   created_at TEXT NOT NULL
 );
 

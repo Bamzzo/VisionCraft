@@ -14,6 +14,8 @@ TEXT_LIVE_STAGES = ("adaptation_options", "story_bible", "storyboard")
 MAX_TEXT_CALLS = 3
 MAX_VISION_CALLS = 1
 MAX_VIDEO_CALLS = 1
+# Hard ceiling so a typo cannot authorize unbounded MiniMax submits.
+HARD_MAX_VIDEO_CALLS = 5
 
 # Conservative FX so USD list prices are not under-converted into the 5 CNY cap.
 USD_CNY = 7.5
@@ -39,6 +41,19 @@ def live_budget_cny() -> float:
     except (TypeError, ValueError):
         value = DEFAULT_BUDGET_CNY
     return value if value > 0 else DEFAULT_BUDGET_CNY
+
+
+def live_max_video_calls() -> int:
+    raw = os.getenv("VISIONCRAFT_LIVE_MAX_VIDEO_CALLS")
+    if raw is None or str(raw).strip() == "":
+        return MAX_VIDEO_CALLS
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return MAX_VIDEO_CALLS
+    if value < 1:
+        return MAX_VIDEO_CALLS
+    return min(value, HARD_MAX_VIDEO_CALLS)
 
 
 def live_video_authorized() -> bool:
@@ -76,14 +91,18 @@ def estimate_minimax_i2v_cny(seconds: int = DEFAULT_VIDEO_SECONDS) -> float:
     return MINIMAX_H3_768P_CNY_PER_SECOND * duration
 
 
-def estimate_closed_loop_cny(source_text: str = "") -> dict:
+def estimate_closed_loop_cny(source_text: str = "", *, video_seconds: int | None = None) -> dict:
     prompt_chars = len(source_text or "") + SCHEMA_OVERHEAD_CHARS
     text_each = estimate_text_call_cny(prompt_chars)
     text_cny = text_each * MAX_TEXT_CALLS
     vision_cny = estimate_vision_call_cny()
-    video_cny = estimate_minimax_i2v_cny(DEFAULT_VIDEO_SECONDS)
+    video_calls = live_max_video_calls()
+    seconds = max(DEFAULT_VIDEO_SECONDS, int(video_seconds or DEFAULT_VIDEO_SECONDS))
+    video_each = estimate_minimax_i2v_cny(seconds)
+    video_cny = video_each * video_calls
     total = text_cny + vision_cny + video_cny
     budget = live_budget_cny()
+    remaining = round(budget - total, 4)
     return {
         "text_calls": MAX_TEXT_CALLS,
         "text_model": "deepseek-v4-flash",
@@ -95,16 +114,18 @@ def estimate_closed_loop_cny(source_text: str = "") -> dict:
         "vision_max_tokens": VISION_MAX_TOKENS,
         "vision_thinking": "disabled",
         "vision_cny": round(vision_cny, 4),
-        "video_calls": MAX_VIDEO_CALLS,
+        "video_calls": video_calls,
+        "video_each_cny": round(video_each, 4),
         "video_provider": "minimax",
         "video_model": "MiniMax-H3",
-        "video_seconds": DEFAULT_VIDEO_SECONDS,
+        "video_seconds": seconds,
         "video_resolution": "768P",
         "video_cny": round(video_cny, 4),
         "buffer": COST_BUFFER,
         "fx_usd_cny": USD_CNY,
         "total_cny": round(total, 4),
         "budget_cny": budget,
+        "remaining_cny": remaining,
         "within_budget": total <= budget,
     }
 
@@ -125,13 +146,54 @@ def public_request_plan(*, provider: str, model: str, kind: str, prompt_chars: i
     }
 
 
-def assert_closed_loop_within_budget(source_text: str = "") -> dict:
-    plan = estimate_closed_loop_cny(source_text)
+def assert_closed_loop_within_budget(source_text: str = "", *, video_seconds: int | None = None) -> dict:
+    plan = estimate_closed_loop_cny(source_text, video_seconds=video_seconds)
     if not plan["within_budget"]:
         raise BudgetBlockedError(
             f"预计费用 {plan['total_cny']} 元可能超过 {plan['budget_cny']} 元预算上限，已阻止真实调用（BLOCKED_BEFORE_CALL）。"
         )
     return plan
+
+
+def live_usage_snapshot(project_id: str, source_text: str = "", *, video_seconds: int | None = None) -> dict:
+    text_used = _load_counter(project_id, "live_text_call_count")
+    vision_used = _load_counter(project_id, "live_vision_call_count")
+    video_used = _load_counter(project_id, "live_video_call_count")
+    plan = estimate_closed_loop_cny(source_text or _load_source_text(project_id), video_seconds=video_seconds)
+    return {
+        "text_used": text_used,
+        "text_max": MAX_TEXT_CALLS,
+        "vision_used": vision_used,
+        "vision_max": MAX_VISION_CALLS,
+        "video_used": video_used,
+        "video_max": live_max_video_calls(),
+        "estimated_cny": plan["total_cny"],
+        "budget_cny": plan["budget_cny"],
+        "remaining_cny": plan["remaining_cny"],
+        "within_budget": plan["within_budget"],
+        "plan": plan,
+    }
+
+
+def _load_source_text(project_id: str) -> str:
+    with connect() as conn:
+        row = conn.execute("SELECT source_text FROM projects WHERE id = ?", (project_id,)).fetchone()
+    return str(row["source_text"] or "") if row else ""
+
+
+def _assert_live_usage(project_id: str, source_text: str = "", *, video_seconds: int | None = None) -> dict:
+    snapshot = live_usage_snapshot(project_id, source_text, video_seconds=video_seconds)
+    if snapshot["text_used"] > MAX_TEXT_CALLS:
+        raise BudgetBlockedError("文本阶段已超过真实调用上限，已阻止（BLOCKED_BEFORE_CALL）。")
+    if snapshot["vision_used"] > MAX_VISION_CALLS:
+        raise BudgetBlockedError("视觉检查已超过真实调用上限，已阻止（BLOCKED_BEFORE_CALL）。")
+    if snapshot["video_used"] > snapshot["video_max"]:
+        raise BudgetBlockedError("视频生成已超过真实调用上限，已阻止（BLOCKED_BEFORE_CALL）。")
+    if not snapshot["within_budget"]:
+        raise BudgetBlockedError(
+            f"预计费用 {snapshot['estimated_cny']} 元可能超过 {snapshot['budget_cny']} 元预算上限，已阻止真实调用（BLOCKED_BEFORE_CALL）。"
+        )
+    return snapshot
 
 
 def assert_live_text_allowed(project_id: str, stage: str, prompt_chars: int, source_text: str = "") -> dict:
@@ -140,7 +202,7 @@ def assert_live_text_allowed(project_id: str, stage: str, prompt_chars: int, sou
     used = _load_counter(project_id, "live_text_call_count")
     if used >= MAX_TEXT_CALLS:
         raise BudgetBlockedError("文本阶段已达到 3 次真实调用上限，已阻止额外请求（BLOCKED_BEFORE_CALL）。")
-    assert_closed_loop_within_budget(source_text)
+    _assert_live_usage(project_id, source_text)
     this_cost = estimate_text_call_cny(prompt_chars)
     if this_cost > live_budget_cny():
         raise BudgetBlockedError(
@@ -161,7 +223,7 @@ def assert_live_vision_allowed(project_id: str, prompt_chars: int = 400, source_
     used = _load_counter(project_id, "live_vision_call_count")
     if used >= MAX_VISION_CALLS:
         raise BudgetBlockedError("视觉检查已达到 1 次真实调用上限，已阻止（BLOCKED_BEFORE_CALL）。")
-    assert_closed_loop_within_budget(source_text)
+    _assert_live_usage(project_id, source_text)
     _increment_counter(project_id, "live_vision_call_count")
     return public_request_plan(
         provider="deepseek",
@@ -176,13 +238,17 @@ def assert_live_vision_allowed(project_id: str, prompt_chars: int = 400, source_
 def check_live_video_budget(project_id: str, *, seconds: int = DEFAULT_VIDEO_SECONDS) -> dict:
     if not live_video_authorized():
         raise BudgetBlockedError("真实视频调用尚未授权。请确认 Provider、模型、次数、参数和预算后再开启。")
+    video_max = live_max_video_calls()
     used = _load_counter(project_id, "live_video_call_count")
-    if used >= MAX_VIDEO_CALLS:
-        raise BudgetBlockedError("视频生成已达到 1 次真实调用上限，已阻止重复提交（BLOCKED_BEFORE_CALL）。")
-    cost = estimate_minimax_i2v_cny(seconds)
-    if cost > live_budget_cny():
+    if used >= video_max:
         raise BudgetBlockedError(
-            f"MiniMax I2V 预计 {cost:.2f} 元超过 {live_budget_cny():.2f} 元预算，已阻止（BLOCKED_BEFORE_CALL）。"
+            f"视频生成已达到 {video_max} 次真实调用上限，已阻止重复提交（BLOCKED_BEFORE_CALL）。"
+        )
+    snapshot = _assert_live_usage(project_id, video_seconds=seconds)
+    cost = estimate_minimax_i2v_cny(seconds)
+    if cost > snapshot["budget_cny"]:
+        raise BudgetBlockedError(
+            f"MiniMax I2V 预计 {cost:.2f} 元超过 {snapshot['budget_cny']:.2f} 元预算，已阻止（BLOCKED_BEFORE_CALL）。"
         )
     return {
         "provider": "minimax",
@@ -191,7 +257,15 @@ def check_live_video_budget(project_id: str, *, seconds: int = DEFAULT_VIDEO_SEC
         "seconds": max(DEFAULT_VIDEO_SECONDS, int(seconds or DEFAULT_VIDEO_SECONDS)),
         "resolution": "768P",
         "estimated_cny": round(cost, 4),
+        "planned_video_cny": snapshot["plan"]["video_cny"],
+        "planned_total_cny": snapshot["estimated_cny"],
+        "budget_cny": snapshot["budget_cny"],
+        "remaining_cny": snapshot["remaining_cny"],
         "call_index": used + 1,
+        "video_max": video_max,
+        "text_used": snapshot["text_used"],
+        "vision_used": snapshot["vision_used"],
+        "video_used": used,
     }
 
 

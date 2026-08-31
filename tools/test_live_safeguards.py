@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,20 +20,33 @@ from backend.config import PROJECTS_DIR, init_environment
 from backend.database import connect, init_db, utc_now
 from backend.main import app
 from backend.providers.live_budget import (
+    DEFAULT_BUDGET_CNY,
+    MAX_VIDEO_CALLS,
     TEXT_MAX_TOKENS,
     BudgetBlockedError,
+    assert_live_video_allowed,
+    check_live_video_budget,
     estimate_closed_loop_cny,
     estimate_minimax_i2v_cny,
     estimate_text_call_cny,
     estimate_vision_call_cny,
+    live_budget_cny,
+    live_max_video_calls,
 )
+from backend.providers.video_provider import (
+    VideoAssetConflictError,
+    VideoAssetRequest,
+    ensure_remote_video_asset,
+    reset_video_download_transport,
+    set_video_download_transport,
+)
+from backend.services.job_service import create_job, get_recent_job_events, update_job
 from backend.providers.llm_adapter import FunctionTransport, adaptation_messages, build_text_request, reset_chat_transport, set_chat_transport
 from backend.providers.llm_catalog import DEEPSEEK_FLASH, DEEPSEEK_VISION
 from backend.providers.vision_adapter import VisionAdapterError, build_vision_request, reset_vision_transport
 from backend.services.adaptation_service import AdaptationError, start_adaptation_workflow
 from backend.services.asset_service import persist_binary_asset
-from backend.services.job_service import get_recent_job_events
-from backend.services.local_keyframe_service import LocalKeyframeError, register_local_first_frame
+from backend.services.local_keyframe_service import LocalKeyframeError, attach_existing_first_frame_to_shots, register_local_first_frame
 from backend.services.media_transfer_service import prepare_image_reference
 from backend.services.model_config_service import set_generation_mode
 from backend.services.project_service import get_project
@@ -48,6 +63,7 @@ JPEG_BYTES = bytes.fromhex(
     "0100003f00fb00d2ffd9"
 )
 SVG_BYTES = b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"></svg>'
+FAKE_MP4 = b"\x00\x00\x00\x1cftypmp42" + b"\x00" * 64
 SAMPLE = "春秋蝉鸣少年归"
 GYFY = Path(r"D:\Agent\summercompetition\StoryCraft\gyfy.jpg")
 CREATED: list[str] = []
@@ -86,7 +102,7 @@ def _project(title: str = "护栏项目") -> str:
     return project_id
 
 
-def _add_shot(project_id: str) -> str:
+def _add_shot(project_id: str, index: int = 1) -> str:
     shot_id = f"shot_{uuid.uuid4().hex[:10]}"
     version_id = f"version_{uuid.uuid4().hex[:10]}"
     now = utc_now()
@@ -97,7 +113,7 @@ def _add_shot(project_id: str) -> str:
              visual_prompt, negative_prompt, audio_prompt, status, retry_count, current_version_id,
              created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (shot_id, project_id, 1, "镜1", "动作", "[]", "场景", "固定", "prompt", "", "", "draft", 0, version_id, now, now),
+            (shot_id, project_id, index, f"镜{index:02d}", "动作", "[]", "场景", "固定", "prompt", "", "", "draft", 0, version_id, now, now),
         )
         conn.execute(
             """INSERT INTO shot_versions
@@ -109,9 +125,98 @@ def _add_shot(project_id: str) -> str:
     return shot_id
 
 
+def _current_version(shot_id: str) -> str:
+    with connect() as conn:
+        row = conn.execute("SELECT current_version_id FROM shots WHERE id = ?", (shot_id,)).fetchone()
+    return row["current_version_id"]
+
+
+def _video_request(project_id: str, shot_id: str, job_id: str | None = None) -> VideoAssetRequest:
+    return VideoAssetRequest(
+        project_id=project_id,
+        shot_id=shot_id,
+        version_id=_current_version(shot_id),
+        title="镜01",
+        description="动作",
+        prompt="prompt",
+        first_frame_path=None,
+        duration_seconds=4,
+        job_id=job_id,
+    )
+
+
+def _insert_video_task(request: VideoAssetRequest, remote_task_id: str, provider: str = "minimax") -> str:
+    task_id = f"vt_{uuid.uuid4().hex[:10]}"
+    now = utc_now()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO video_tasks
+            (id, project_id, shot_id, version_id, job_id, provider, model, remote_task_id,
+             status, cloud_status, prompt, submit_payload, status_payload, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                request.project_id,
+                request.shot_id,
+                request.version_id,
+                request.job_id,
+                provider,
+                "MiniMax-H3",
+                remote_task_id,
+                "running",
+                "submitted",
+                request.prompt,
+                "{}",
+                "{}",
+                now,
+                now,
+            ),
+        )
+    return task_id
+
+
+@contextmanager
+def _env(**values):
+    previous = {key: os.environ.get(key) for key in values}
+    try:
+        for key, value in values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _leak_blob(project_id: str) -> str:
+    with connect() as conn:
+        assets = [dict(row) for row in conn.execute("SELECT * FROM assets WHERE project_id = ?", (project_id,))]
+        tasks = [dict(row) for row in conn.execute("SELECT * FROM video_tasks WHERE project_id = ?", (project_id,))]
+    events = get_recent_job_events(project_id)
+    return json.dumps({"assets": assets, "tasks": tasks, "events": events}, ensure_ascii=False, default=str)
+
+
+def _assert_no_secrets(blob: str) -> None:
+    lowered = blob.lower()
+    assert "data:image" not in lowered
+    assert "base64," not in lowered
+    assert "x-amz-signature" not in lowered
+    assert "x-amz-credential" not in lowered
+    assert "https://cdn.example" not in lowered
+    assert not re.search(r"(?<![a-z])sk-[a-z0-9._\-]{8,}", lowered)
+
+
 def _cleanup() -> None:
     reset_chat_transport()
     reset_vision_transport()
+    reset_video_download_transport()
     for project_id in list(CREATED):
         with connect() as conn:
             conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -129,6 +234,8 @@ def test_budget_estimate_uses_buffer() -> None:
     assert plan["text_thinking"] == "disabled"
     assert plan["text_max_tokens"] == TEXT_MAX_TOKENS
     assert plan["video_cny"] == round(estimate_minimax_i2v_cny(4), 4)
+    assert live_max_video_calls() == MAX_VIDEO_CALLS == 1
+    assert live_budget_cny() == DEFAULT_BUDGET_CNY == 5.0
     assert plan["vision_cny"] == round(estimate_vision_call_cny(), 4)
     assert abs(plan["total_cny"] - (plan["text_cny"] + plan["vision_cny"] + plan["video_cny"])) < 0.01
     pass_("费用估算使用 30% 缓冲，并计入三次文本、一次视觉、一次 4s MiniMax")
@@ -339,6 +446,261 @@ def test_http_register_and_gyfy_copy() -> None:
         _cleanup()
 
 
+def test_env_overrides_five_video_budget() -> None:
+    default = estimate_closed_loop_cny(SAMPLE)
+    assert default["video_calls"] == 1
+    assert default["budget_cny"] == 5.0
+    assert default["video_cny"] == round(estimate_minimax_i2v_cny(4), 4)
+    with _env(VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="5", VISIONCRAFT_LIVE_BUDGET_CNY="12"):
+        plan = estimate_closed_loop_cny(SAMPLE)
+        assert live_max_video_calls() == 5
+        assert live_budget_cny() == 12.0
+        assert plan["video_calls"] == 5
+        assert plan["video_cny"] == round(estimate_minimax_i2v_cny(4) * 5, 4)
+        assert plan["video_cny"] == round(plan["video_each_cny"] * 5, 4)
+        assert plan["within_budget"] is True
+        assert plan["total_cny"] <= 12
+    assert live_max_video_calls() == 1
+    assert live_budget_cny() == 5.0
+    pass_("环境变量可将视频次数覆盖为 5、预算覆盖为 12，且按 5 次视频估费")
+
+
+def test_raising_video_calls_cannot_bypass_budget() -> None:
+    project_id = _project()
+    sent = []
+
+    def boom(_prepared):
+        sent.append("sent")
+        raise AssertionError("raising video call cap must not bypass budget")
+
+    reset_chat_transport()
+    set_chat_transport(FunctionTransport(boom))
+    try:
+        with _env(VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="5", VISIONCRAFT_LIVE_BUDGET_CNY="5"):
+            plan = estimate_closed_loop_cny(SAMPLE)
+            assert plan["video_calls"] == 5
+            assert plan["within_budget"] is False
+            set_generation_mode(project_id, "live_strict")
+            try:
+                start_adaptation_workflow(project_id)
+                raise AssertionError("must block when 5-video plan exceeds 5 CNY")
+            except AdaptationError as exc:
+                assert exc.code == "BLOCKED_BEFORE_CALL"
+        assert sent == []
+        pass_("仅提高视频次数而不提高预算时，请求前阻止且未发送 HTTP")
+    finally:
+        _cleanup()
+
+
+def test_sixth_video_and_over_budget_blocked_before_http() -> None:
+    project_id = _project()
+    try:
+        with _env(
+            VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="5",
+            VISIONCRAFT_LIVE_BUDGET_CNY="12",
+            VISIONCRAFT_ALLOW_LIVE_VIDEO="1",
+        ):
+            for index in range(5):
+                plan = assert_live_video_allowed(project_id, seconds=4)
+                assert plan["call_index"] == index + 1
+            try:
+                assert_live_video_allowed(project_id, seconds=4)
+                raise AssertionError("sixth video call must be blocked")
+            except BudgetBlockedError as exc:
+                assert exc.code == "BLOCKED_BEFORE_CALL"
+                assert "5 次" in str(exc)
+        with _env(VISIONCRAFT_LIVE_BUDGET_CNY="0.01", VISIONCRAFT_ALLOW_LIVE_VIDEO="1"):
+            other = _project("超预算视频")
+            try:
+                check_live_video_budget(other, seconds=4)
+                raise AssertionError("over 12-equivalent tiny budget must block video")
+            except BudgetBlockedError as exc:
+                assert exc.code == "BLOCKED_BEFORE_CALL"
+                assert "预算" in str(exc)
+        pass_("第 6 次视频与超预算视频均在请求前被阻止")
+    finally:
+        _cleanup()
+
+
+def test_remote_task_video_asset_is_idempotent() -> None:
+    project_id = _project()
+    other_id = _project("跨项目")
+    shot_id = _add_shot(project_id)
+    other_shot = _add_shot(other_id)
+    job_id = create_job(project_id, "generate_video", "生成视频", shot_id=shot_id)
+    downloads = []
+
+    def fake_download(url: str) -> bytes:
+        downloads.append(url)
+        assert url.startswith("https://")
+        return FAKE_MP4
+
+    set_video_download_transport(fake_download)
+    try:
+        request = _video_request(project_id, shot_id, job_id=job_id)
+        remote_id = "remote_task_idem_001"
+        local_id = _insert_video_task(request, remote_id)
+        signed = "https://cdn.example/video.mp4?X-Amz-Signature=secret&X-Amz-Credential=AKIA"
+
+        first = ensure_remote_video_asset(
+            request,
+            signed,
+            "prompt",
+            "provider:minimax:MiniMax-H3",
+            provider="minimax",
+            remote_task_id=remote_id,
+            local_task_id=local_id,
+        )
+        assert first.created is True
+        update_job(
+            job_id,
+            "completed",
+            100,
+            "视频已生成，可在镜头卡片中预览",
+            shot_id=shot_id,
+            stage="persist_asset",
+            event_type="asset.ready",
+            detail={"asset_path": first.public_path, "provider": "minimax", "remote_task_id": remote_id},
+        )
+
+        second = ensure_remote_video_asset(
+            request,
+            signed,
+            "prompt",
+            "provider:minimax:MiniMax-H3",
+            provider="minimax",
+            remote_task_id=remote_id,
+            local_task_id=local_id,
+        )
+        assert second.reused is True
+        assert second.created is False
+        assert second.public_path == first.public_path
+        assert second.asset_id == first.asset_id
+        update_job(
+            job_id,
+            "completed",
+            100,
+            "视频已生成，可在镜头卡片中预览",
+            shot_id=shot_id,
+            stage="persist_asset",
+            event_type="asset.ready",
+            detail={"asset_path": second.public_path, "provider": "minimax", "remote_task_id": remote_id},
+        )
+
+        local_file = PROJECTS_DIR / project_id / first.public_path.rsplit("/", 1)[-1]
+        assert local_file.is_file()
+        local_file.unlink()
+        third = ensure_remote_video_asset(
+            request,
+            signed,
+            "prompt",
+            "provider:minimax:MiniMax-H3",
+            provider="minimax",
+            remote_task_id=remote_id,
+            local_task_id=local_id,
+        )
+        assert third.redownloaded is True
+        assert third.asset_id == first.asset_id
+        assert third.public_path == first.public_path
+        assert local_file.is_file()
+
+        other_request = _video_request(other_id, other_shot)
+        try:
+            ensure_remote_video_asset(
+                other_request,
+                signed,
+                "prompt",
+                "provider:minimax:MiniMax-H3",
+                provider="minimax",
+                remote_task_id=remote_id,
+            )
+            raise AssertionError("cross-project remote task must be rejected")
+        except VideoAssetConflictError as exc:
+            assert exc.code in {"CROSS_PROJECT_TASK", "CROSS_PROJECT_ASSET"}
+
+        mismatch = _video_request(project_id, shot_id)
+        mismatch.version_id = "version_not_this"
+        try:
+            ensure_remote_video_asset(
+                mismatch,
+                signed,
+                "prompt",
+                "provider:minimax:MiniMax-H3",
+                provider="minimax",
+                remote_task_id=remote_id,
+                local_task_id=local_id,
+            )
+            raise AssertionError("version mismatch must be rejected")
+        except VideoAssetConflictError as exc:
+            assert exc.code == "VERSION_MISMATCH"
+
+        with connect() as conn:
+            videos = conn.execute(
+                "SELECT * FROM assets WHERE project_id = ? AND type = 'video'",
+                (project_id,),
+            ).fetchall()
+            task = conn.execute("SELECT * FROM video_tasks WHERE id = ?", (local_id,)).fetchone()
+            version = conn.execute("SELECT * FROM shot_versions WHERE id = ?", (request.version_id,)).fetchone()
+            shot = conn.execute("SELECT * FROM shots WHERE id = ?", (shot_id,)).fetchone()
+            ready = conn.execute(
+                "SELECT COUNT(*) AS n FROM job_events WHERE project_id = ? AND event_type = 'asset.ready'",
+                (project_id,),
+            ).fetchone()["n"]
+        assert len(videos) == 1
+        assert videos[0]["id"] == first.asset_id
+        assert videos[0]["source_remote_task_id"] == remote_id
+        assert videos[0]["source_provider"] == "minimax"
+        assert videos[0]["source_task_id"] == local_id
+        assert task["result_path"] == first.public_path
+        assert task["project_id"] == project_id
+        assert task["shot_id"] == shot_id
+        assert version["video_path"] == first.public_path
+        assert shot["status"] == "video_ready"
+        assert ready == 1
+        assert len(downloads) == 2
+        files = list((PROJECTS_DIR / project_id).glob("asset_*.mp4"))
+        assert len(files) == 1
+        blob = _leak_blob(project_id)
+        _assert_no_secrets(blob)
+        assert signed not in blob
+        pass_("同一 remote_task_id 只登记一个视频资产，重复回查复用且不重复 asset.ready")
+    finally:
+        _cleanup()
+
+
+def test_five_shots_share_project_jpeg_without_image_provider() -> None:
+    import backend.providers.image_provider as image_provider
+
+    original = image_provider.generate_image_asset
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("five-shot JPEG attach must not call image generation providers")
+
+    image_provider.generate_image_asset = forbidden
+    project_id = _project()
+    shot_ids = [_add_shot(project_id, index) for index in range(1, 6)]
+    try:
+        source_bytes = GYFY.read_bytes() if GYFY.is_file() else JPEG_BYTES
+        registered = register_local_first_frame(project_id, shot_ids[0], source_bytes, filename="gyfy.jpg")
+        attached = attach_existing_first_frame_to_shots(project_id, registered["file_path"], shot_ids)
+        assert attached["count"] == 5
+        project = get_project(project_id)
+        for shot in project["shots"]:
+            current = next(item for item in shot["versions"] if item["id"] == shot["current_version_id"])
+            assert current["first_frame_path"] == registered["file_path"]
+            assert current["first_frame_path"].startswith(f"/assets/{project_id}/")
+        blob = _leak_blob(project_id)
+        _assert_no_secrets(blob)
+        if GYFY.is_file():
+            pass_("5 个镜头引用同一项目内 JPEG（gyfy.jpg 副本），未触发图片 Provider")
+        else:
+            skip("未找到 gyfy.jpg，已用最小 JPEG 夹具挂接 5 镜")
+            pass_("5 个镜头引用同一项目内 JPEG，未触发图片 Provider")
+    finally:
+        image_provider.generate_image_asset = original
+        _cleanup()
+
+
 def main() -> None:
     _guard_network()
     init_environment()
@@ -347,6 +709,7 @@ def main() -> None:
     os.environ.pop("VISIONCRAFT_ALLOW_LIVE_VISION", None)
     os.environ.pop("VISIONCRAFT_ALLOW_LIVE_VIDEO", None)
     os.environ.pop("VISIONCRAFT_LIVE_BUDGET_CNY", None)
+    os.environ.pop("VISIONCRAFT_LIVE_MAX_VIDEO_CALLS", None)
     try:
         test_budget_estimate_uses_buffer()
         test_text_requests_are_capped()
@@ -355,6 +718,11 @@ def main() -> None:
         test_register_local_jpeg_png_and_reject_bad_inputs()
         test_svg_and_path_escape_rejected_for_vision_i2v()
         test_http_register_and_gyfy_copy()
+        test_env_overrides_five_video_budget()
+        test_raising_video_calls_cannot_bypass_budget()
+        test_sixth_video_and_over_budget_blocked_before_http()
+        test_remote_task_video_asset_is_idempotent()
+        test_five_shots_share_project_jpeg_without_image_provider()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:
         _cleanup()

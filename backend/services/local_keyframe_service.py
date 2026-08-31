@@ -1,6 +1,7 @@
 """Register a local JPEG/PNG as the current shot first frame. No image providers."""
 from __future__ import annotations
 
+from ..config import PROJECTS_DIR
 from ..database import connect
 from ..services.asset_service import persist_binary_asset
 from ..services.keyframe_service import select_shot_keyframes
@@ -62,6 +63,59 @@ def register_local_first_frame(project_id: str, shot_id: str, content: bytes, *,
         "project_id": project_id,
         "shot_id": shot_id,
         "shot": result,
+    }
+
+
+def attach_existing_first_frame_to_shots(
+    project_id: str,
+    public_path: str,
+    shot_ids: list[str] | None = None,
+) -> dict:
+    """Bind an already-registered project JPEG/PNG to one or more shots. No image providers."""
+    project = get_project(project_id)
+    if not project:
+        raise LocalKeyframeError("PROJECT_NOT_FOUND", "项目不存在。")
+    if not public_path or not public_path.startswith(f"/assets/{project_id}/") or ".." in public_path:
+        raise LocalKeyframeError("ASSET_NOT_IN_PROJECT", "只能挂接当前项目内的 JPEG 或 PNG 资产。")
+    suffix = public_path.rsplit(".", 1)[-1].lower() if "." in public_path else ""
+    if suffix == "svg":
+        raise LocalKeyframeError("SVG_NOT_ALLOWED", "不能登记 SVG。请选择 JPEG 或 PNG。")
+    if suffix not in {"png", "jpg", "jpeg"}:
+        raise LocalKeyframeError("UNSUPPORTED_IMAGE_FORMAT", "只接受 JPEG 或 PNG。")
+    with connect() as conn:
+        asset = conn.execute(
+            "SELECT * FROM assets WHERE project_id = ? AND file_path = ?",
+            (project_id, public_path),
+        ).fetchone()
+    if not asset:
+        raise LocalKeyframeError("ASSET_NOT_IN_PROJECT", "该图片不属于当前项目。")
+    filename = public_path.rsplit("/", 1)[-1]
+    disk = PROJECTS_DIR / project_id / filename
+    if not disk.is_file():
+        raise LocalKeyframeError("ASSET_FILE_MISSING", "项目内图片文件不存在。")
+    try:
+        sniff_raster_image(disk.read_bytes(), register_only=True)
+    except MediaTransferError as exc:
+        raise LocalKeyframeError(exc.code, _chinese(exc)) from exc
+
+    available = {shot.get("id") for shot in project.get("shots") or []}
+    targets = list(shot_ids) if shot_ids else [shot["id"] for shot in project.get("shots") or []]
+    if not targets:
+        raise LocalKeyframeError("SHOT_NOT_FOUND", "没有可挂接的镜头。")
+    attached = []
+    for shot_id in targets:
+        if shot_id not in available:
+            raise LocalKeyframeError("SHOT_NOT_FOUND", "镜头不存在。请先确认分镜再登记首帧。")
+        attached.append(select_shot_keyframes(project_id, shot_id, first_frame_path=public_path, last_frame_path=None))
+    return {
+        "ok": True,
+        "file_path": public_path,
+        "asset_id": asset["id"],
+        "project_id": project_id,
+        "shot_ids": targets,
+        "count": len(targets),
+        "source": "local-register",
+        "shots": attached,
     }
 
 

@@ -8,7 +8,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
@@ -47,6 +47,34 @@ class VideoGenerationResult:
     cloud_status: str = ""
     task_id: str | None = None
     message: str = ""
+    reused: bool = False
+
+
+class VideoAssetConflictError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+@dataclass
+class RecordedVideo:
+    public_path: str
+    asset_id: str
+    reused: bool = False
+    redownloaded: bool = False
+    created: bool = False
+
+
+_video_download_transport: Callable[[str], bytes] | None = None
+
+
+def set_video_download_transport(fn: Callable[[str], bytes] | None) -> None:
+    global _video_download_transport
+    _video_download_transport = fn
+
+
+def reset_video_download_transport() -> None:
+    set_video_download_transport(None)
 
 
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
@@ -140,14 +168,17 @@ def _generate_siliconflow_video(request: VideoAssetRequest) -> VideoGenerationRe
         last_status = status_payload.get("status")
         if last_status == "Succeed":
             video_url = status_payload["results"]["videos"][0]["url"]
-            video_path = _download_and_record_video(request, video_url, prompt)
+            recorded = _download_and_record_video(
+                request, video_url, prompt, provider="siliconflow", remote_task_id=str(request_id)
+            )
             return VideoGenerationResult(
                 status="completed",
-                video_path=video_path,
+                video_path=recorded.public_path,
                 provider="siliconflow",
                 model=model,
                 remote_task_id=request_id,
                 cloud_status=str(last_status),
+                reused=not recorded.created,
             )
         if last_status == "Failed":
             raise RuntimeError(status_payload.get("reason") or "Video generation failed")
@@ -222,9 +253,26 @@ def _poll_dashscope_video(request, local_task_id, task_id, model, prompt, base_u
             url = _find_video_url(last)
             if not url:
                 raise RuntimeError(f"DashScope video succeeded but returned no video URL: {last}")
-            path = _download_and_record_video(request, url, prompt, f"provider:dashscope:{model}")
-            _update_video_task(local_task_id, "completed", status, last, url, path, None, None)
-            return VideoGenerationResult("completed", path, "dashscope", model, task_id, status, local_task_id)
+            path = _download_and_record_video(
+                request,
+                url,
+                prompt,
+                f"provider:dashscope:{model}",
+                provider="dashscope",
+                remote_task_id=str(task_id),
+                local_task_id=local_task_id,
+            )
+            _update_video_task(local_task_id, "completed", status, last, None, path.public_path, None, None)
+            return VideoGenerationResult(
+                "completed",
+                path.public_path,
+                "dashscope",
+                model,
+                task_id,
+                status,
+                local_task_id,
+                reused=not path.created,
+            )
         if status in {"failed", "cancelled", "canceled", "expired"}:
             code, message = _extract_error(last)
             _update_video_task(local_task_id, "failed", status, last, error_code=code, error_message=message)
@@ -276,9 +324,26 @@ def _poll_minimax_video(request, local_task_id, task_id, model, prompt, base_url
             url = _find_video_url(last)
             if not url:
                 raise RuntimeError(f"MiniMax video succeeded but returned no video URL: {last}")
-            path = _download_and_record_video(request, url, prompt, f"provider:minimax:{model}")
-            _update_video_task(local_task_id, "completed", status, last, url, path, None, None)
-            return VideoGenerationResult("completed", path, "minimax", model, task_id, status, local_task_id)
+            path = _download_and_record_video(
+                request,
+                url,
+                prompt,
+                f"provider:minimax:{model}",
+                provider="minimax",
+                remote_task_id=str(task_id),
+                local_task_id=local_task_id,
+            )
+            _update_video_task(local_task_id, "completed", status, last, None, path.public_path, None, None)
+            return VideoGenerationResult(
+                "completed",
+                path.public_path,
+                "minimax",
+                model,
+                task_id,
+                status,
+                local_task_id,
+                reused=not path.created,
+            )
         if status in {"failed", "error", "cancelled", "canceled", "expired"}:
             code, message = _extract_error(last)
             _update_video_task(local_task_id, "failed", status, last, error_code=code, error_message=message)
@@ -428,25 +493,34 @@ def _handle_ark_status(
                 error_message="Ark video succeeded but returned no video URL.",
             )
             raise RuntimeError(f"Ark video succeeded but returned no video URL: {status_payload}")
-        video_path = _download_and_record_video(request, video_url, prompt, f"provider:ark:{model}")
+        video_path = _download_and_record_video(
+            request,
+            video_url,
+            prompt,
+            f"provider:ark:{model}",
+            provider="ark",
+            remote_task_id=str(remote_task_id),
+            local_task_id=local_task_id,
+        )
         _update_video_task(
             local_task_id,
             status="completed",
             cloud_status=cloud_status,
             status_payload=status_payload,
-            video_url=video_url,
-            result_path=video_path,
+            video_url=None,
+            result_path=video_path.public_path,
             error_code=None,
             error_message=None,
         )
         return VideoGenerationResult(
             status="completed",
-            video_path=video_path,
+            video_path=video_path.public_path,
             provider="ark",
             model=model,
             remote_task_id=remote_task_id,
             cloud_status=cloud_status,
             task_id=local_task_id,
+            reused=not video_path.created,
         )
     if cloud_status in {"failed", "fail", "error", "cancelled", "canceled", "expired"}:
         code, message = _extract_error(status_payload)
@@ -470,22 +544,241 @@ def _handle_ark_status(
     )
 
 
+def ensure_remote_video_asset(
+    request: VideoAssetRequest,
+    video_url: str,
+    prompt: str,
+    embedding_ref: str = "provider:siliconflow",
+    *,
+    provider: str,
+    remote_task_id: str,
+    local_task_id: str | None = None,
+) -> RecordedVideo:
+    """Idempotent download + asset record keyed by provider + remote_task_id."""
+    return _download_and_record_video(
+        request,
+        video_url,
+        prompt,
+        embedding_ref,
+        provider=provider,
+        remote_task_id=remote_task_id,
+        local_task_id=local_task_id,
+    )
+
+
 def _download_and_record_video(
     request: VideoAssetRequest,
     video_url: str,
     prompt: str,
     embedding_ref: str = "provider:siliconflow",
-) -> str:
-    _notify_job(request, status="running", progress=78, message="正在下载并登记生成视频", stage="download_result")
+    *,
+    provider: str,
+    remote_task_id: str,
+    local_task_id: str | None = None,
+) -> RecordedVideo:
+    if not provider or not remote_task_id:
+        raise VideoAssetConflictError("MISSING_REMOTE_TASK", "登记视频资产必须提供 provider 与 remote_task_id。")
+    _assert_request_matches_remote_task(request, provider, remote_task_id)
+
+    claimed = _claim_or_reuse_video_asset(
+        request,
+        prompt,
+        embedding_ref,
+        provider=provider,
+        remote_task_id=remote_task_id,
+        local_task_id=local_task_id,
+    )
+    local_path = _local_asset_path(request.project_id, claimed.public_path)
+    if not local_path:
+        raise VideoAssetConflictError("INVALID_ASSET_PATH", "视频资产路径无效。")
+    _assert_public_path_in_project(request.project_id, claimed.public_path)
+
+    if local_path.is_file() and local_path.stat().st_size > 0:
+        _bind_video_to_shot(request, claimed.public_path)
+        return RecordedVideo(
+            public_path=claimed.public_path,
+            asset_id=claimed.asset_id,
+            reused=True,
+            redownloaded=False,
+            created=claimed.created,
+        )
+
+    _notify_job(
+        request,
+        status="running",
+        progress=78,
+        message="正在重新下载丢失的视频文件" if not claimed.created else "正在下载并登记生成视频",
+        stage="download_result",
+    )
+    content = _fetch_video_bytes(video_url)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(content)
+    _update_asset_bytes(claimed.asset_id, len(content))
+    _bind_video_to_shot(request, claimed.public_path)
+    return RecordedVideo(
+        public_path=claimed.public_path,
+        asset_id=claimed.asset_id,
+        reused=False,
+        redownloaded=not claimed.created,
+        created=claimed.created,
+    )
+
+
+def _fetch_video_bytes(video_url: str) -> bytes:
+    if _video_download_transport:
+        return _video_download_transport(video_url)
     video_request = urllib.request.Request(video_url, method="GET")
     with urllib.request.urlopen(video_request, timeout=180) as response:
-        content = response.read()
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
-    filename = f"{asset_id}.mp4"
-    file_path = _project_file_path(request.project_id, filename)
-    file_path.write_bytes(content)
-    _record_video_asset(request, asset_id, filename, request.description, prompt, embedding_ref)
-    return public_asset_path(request.project_id, filename)
+        return response.read()
+
+
+def _assert_public_path_in_project(project_id: str, public_path: str) -> None:
+    expected = f"/assets/{project_id}/"
+    if not public_path.startswith(expected) or ".." in public_path.replace("\\", "/"):
+        raise VideoAssetConflictError("CROSS_PROJECT_ASSET", "视频文件不属于当前项目，已拒绝。")
+
+
+def _assert_request_matches_remote_task(request: VideoAssetRequest, provider: str, remote_task_id: str) -> None:
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT * FROM video_tasks WHERE provider = ? AND remote_task_id = ?",
+            (provider, remote_task_id),
+        ).fetchone()
+        foreign_asset = conn.execute(
+            """
+            SELECT project_id FROM assets
+            WHERE source_provider = ? AND source_remote_task_id = ? AND project_id != ?
+            ORDER BY created_at ASC LIMIT 1
+            """,
+            (provider, remote_task_id, request.project_id),
+        ).fetchone()
+    if foreign_asset:
+        raise VideoAssetConflictError("CROSS_PROJECT_ASSET", "该远程任务的视频资产属于其他项目，已拒绝。")
+    if not task:
+        return
+    if task["project_id"] != request.project_id:
+        raise VideoAssetConflictError("CROSS_PROJECT_TASK", "远程视频任务属于其他项目，已拒绝。")
+    if task["shot_id"] != request.shot_id:
+        raise VideoAssetConflictError("SHOT_MISMATCH", "远程视频任务与当前镜头不匹配，已拒绝。")
+    if task["version_id"] != request.version_id:
+        raise VideoAssetConflictError("VERSION_MISMATCH", "远程视频任务与当前版本不匹配，已拒绝。")
+    if task["result_path"]:
+        _assert_public_path_in_project(request.project_id, task["result_path"])
+
+
+def _claim_or_reuse_video_asset(
+    request: VideoAssetRequest,
+    prompt: str,
+    embedding_ref: str,
+    *,
+    provider: str,
+    remote_task_id: str,
+    local_task_id: str | None,
+) -> RecordedVideo:
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT * FROM video_tasks WHERE provider = ? AND remote_task_id = ?",
+            (provider, remote_task_id),
+        ).fetchone()
+        asset = conn.execute(
+            """
+            SELECT * FROM assets
+            WHERE source_provider = ? AND source_remote_task_id = ?
+            ORDER BY created_at ASC LIMIT 1
+            """,
+            (provider, remote_task_id),
+        ).fetchone()
+        if not asset and task and task["result_path"]:
+            _assert_public_path_in_project(request.project_id, task["result_path"])
+            asset = conn.execute(
+                """
+                SELECT * FROM assets
+                WHERE project_id = ? AND type = 'video' AND file_path = ?
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (request.project_id, task["result_path"]),
+            ).fetchone()
+        if asset:
+            if asset["project_id"] != request.project_id:
+                raise VideoAssetConflictError("CROSS_PROJECT_ASSET", "该远程任务的视频资产属于其他项目，已拒绝。")
+            _assert_public_path_in_project(request.project_id, asset["file_path"])
+            if local_task_id:
+                conn.execute(
+                    "UPDATE video_tasks SET result_path = COALESCE(result_path, ?), updated_at = ? WHERE id = ?",
+                    (asset["file_path"], utc_now(), local_task_id),
+                )
+            if not asset["source_remote_task_id"]:
+                conn.execute(
+                    """
+                    UPDATE assets
+                    SET source_provider = COALESCE(source_provider, ?),
+                        source_remote_task_id = COALESCE(source_remote_task_id, ?),
+                        source_task_id = COALESCE(source_task_id, ?)
+                    WHERE id = ?
+                    """,
+                    (provider, remote_task_id, local_task_id, asset["id"]),
+                )
+            return RecordedVideo(public_path=asset["file_path"], asset_id=asset["id"], created=False)
+
+        asset_id = f"asset_{uuid.uuid4().hex[:10]}"
+        filename = f"{asset_id}.mp4"
+        public_path = public_asset_path(request.project_id, filename)
+        conn.execute(
+            """
+            INSERT INTO assets
+            (id, project_id, type, name, description, prompt, file_path, embedding_ref,
+             mime_type, byte_size, source_provider, source_model, source_task_id, source_remote_task_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_id,
+                request.project_id,
+                "video",
+                f"{request.title} Video",
+                request.description,
+                prompt,
+                public_path,
+                embedding_ref,
+                "video/mp4",
+                0,
+                provider,
+                embedding_ref.split(":")[-1] if ":" in embedding_ref else None,
+                local_task_id,
+                remote_task_id,
+                utc_now(),
+            ),
+        )
+        if local_task_id:
+            conn.execute(
+                "UPDATE video_tasks SET result_path = ?, updated_at = ? WHERE id = ?",
+                (public_path, utc_now(), local_task_id),
+            )
+        elif task:
+            conn.execute(
+                "UPDATE video_tasks SET result_path = ?, updated_at = ? WHERE id = ?",
+                (public_path, utc_now(), task["id"]),
+            )
+        return RecordedVideo(public_path=public_path, asset_id=asset_id, created=True)
+
+
+def _bind_video_to_shot(request: VideoAssetRequest, video_path: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE shot_versions SET video_path = ? WHERE id = ?",
+            (video_path, request.version_id),
+        )
+        conn.execute(
+            "UPDATE shots SET status = ?, updated_at = ? WHERE id = ?",
+            ("video_ready", utc_now(), request.shot_id),
+        )
+
+
+def _update_asset_bytes(asset_id: str, byte_size: int) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE assets SET byte_size = ? WHERE id = ?",
+            (byte_size, asset_id),
+        )
 
 
 def _record_video_asset(
@@ -546,10 +839,16 @@ def _upsert_video_task(
     now = utc_now()
     with connect() as conn:
         existing = conn.execute(
-            "SELECT id FROM video_tasks WHERE provider = ? AND remote_task_id = ?",
+            "SELECT * FROM video_tasks WHERE provider = ? AND remote_task_id = ?",
             (provider, remote_task_id),
         ).fetchone()
         if existing:
+            if existing["project_id"] != request.project_id:
+                raise VideoAssetConflictError("CROSS_PROJECT_TASK", "远程视频任务属于其他项目，已拒绝。")
+            if existing["shot_id"] != request.shot_id:
+                raise VideoAssetConflictError("SHOT_MISMATCH", "远程视频任务与当前镜头不匹配，已拒绝。")
+            if existing["version_id"] != request.version_id:
+                raise VideoAssetConflictError("VERSION_MISMATCH", "远程视频任务与当前版本不匹配，已拒绝。")
             task_id = existing["id"]
             conn.execute(
                 """
@@ -824,8 +1123,17 @@ def _sanitize_payload(value: Any) -> Any:
         return {key: _sanitize_payload(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_sanitize_payload(item) for item in value]
-    if isinstance(value, str) and value.startswith("data:image/"):
-        return f"{value[:32]}...<base64 omitted>"
+    if isinstance(value, str):
+        lowered = value.lower()
+        if value.startswith("data:"):
+            return f"{value[:24]}...<omitted>"
+        if "base64," in lowered and len(value) > 80:
+            return "<base64 omitted>"
+        if value.startswith("http://") or value.startswith("https://"):
+            return "<remote-url omitted>"
+        if "sk-" in lowered or "api_key" in lowered or "authorization" in lowered:
+            return "<secret omitted>"
+        return value
     return value
 
 

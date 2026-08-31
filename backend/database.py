@@ -59,6 +59,8 @@ def init_db() -> None:
         _ensure_column(conn, "assets", "height", "INTEGER")
         _ensure_column(conn, "assets", "source_provider", "TEXT")
         _ensure_column(conn, "assets", "source_model", "TEXT")
+        _ensure_column(conn, "assets", "source_task_id", "TEXT")
+        _ensure_column(conn, "assets", "source_remote_task_id", "TEXT")
         _ensure_column(conn, "jobs", "stage", "TEXT")
         _ensure_column(conn, "jobs", "shot_id", "TEXT")
         _ensure_column(conn, "projects", "selected_option_id", "TEXT")
@@ -93,6 +95,7 @@ def init_db() -> None:
         ):
             _ensure_column(conn, "shots", column, ddl)
         _ensure_video_tasks(conn)
+        _ensure_remote_video_asset_mapping(conn)
         _ensure_media_transfers(conn)
         _ensure_job_events(conn)
         _ensure_shot_drafts(conn)
@@ -122,6 +125,15 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) 
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _ensure_remote_video_asset_mapping(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "assets", "source_task_id", "TEXT")
+    _ensure_column(conn, "assets", "source_remote_task_id", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_assets_source_remote "
+        "ON assets(source_provider, source_remote_task_id)"
+    )
 
 
 def _ensure_video_tasks(conn: sqlite3.Connection) -> None:

@@ -308,16 +308,20 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 ### P7-A 护栏：预算上限与本地 JPEG/PNG 首帧
 
-**状态：** 2026-08-30 已完成本地无费用护栏。仍未发起真实付费 API 调用。
+**状态：** 2026-08-31 已完成本地无费用护栏与 5 镜测试启动修复。本切片不发起真实付费 API 调用。
 
 **已实现：**
 
 - DeepSeek 文本强制 `thinking disabled` 与 `max_tokens=4096`；视觉保持 thinking disabled 并限制 `max_tokens=2048`；
-- 5 元预算本地估算（30% 缓冲）；超预算或超过三次文本 / 一次视觉 / 一次视频时返回 `BLOCKED_BEFORE_CALL`；
-- 镜头工作区可登记本地 JPEG/PNG 为首帧，不走图片生成 Provider；SVG 不能用于 Vision 或 I2V；
-- 真实 HTTP 仍需 `VISIONCRAFT_ALLOW_LIVE_LLM=1`（视频可另用 `VISIONCRAFT_ALLOW_LIVE_VIDEO=1`）。
+- 默认仍为 1 次视频调用、5 元预算；可用进程环境 `VISIONCRAFT_LIVE_MAX_VIDEO_CALLS` 与 `VISIONCRAFT_LIVE_BUDGET_CNY` 覆盖（不写 `.env`）；
+- 闭合估算按当前视频次数上限计算 MiniMax 费用，不能只改次数绕过预算；超限返回 `BLOCKED_BEFORE_CALL`；
+- 镜头工作区可登记本地 JPEG/PNG 为首帧，并可挂接到同一项目的多个镜头；不走图片生成 Provider；SVG 不能用于 Vision 或 I2V；
+- MiniMax 同一 `provider + remote_task_id` 只登记一个逻辑视频资产；回查复用本地文件；丢失文件才受控重下；不重复 `asset.ready`；
+- 历史重复视频资产不删除；真实 HTTP 仍需 `VISIONCRAFT_ALLOW_LIVE_LLM=1`（视频可另用 `VISIONCRAFT_ALLOW_LIVE_VIDEO=1`）。
 
 **验收：** `tools/test_live_safeguards.py`、`tools/test_local_keyframe_browser.py`
+
+**尚未开始：** 第三次完整 5 镜头真实前端成片测试（预算 12 元）。须等本修复报告确认后再进行。
 
 ### P7：部署和非核心扩展（最后）
 

@@ -147,6 +147,8 @@ def append_job_event(
                 and last["message"] == message
             ):
                 return None
+        if event_type == EVENT_ASSET_READY and _already_emitted_asset_ready(conn, resolved_project, safe_detail):
+            return None
         cursor = conn.execute(
             """
             INSERT INTO job_events
@@ -347,3 +349,21 @@ def _event_detail(detail: dict | None, safe_error: str | None) -> dict:
     if safe_error:
         payload.setdefault("error", safe_error)
     return payload
+
+
+def _already_emitted_asset_ready(conn, project_id: str, detail: dict | None) -> bool:
+    asset_path = str((detail or {}).get("asset_path") or "")
+    remote_task_id = str((detail or {}).get("remote_task_id") or "")
+    if not asset_path and not remote_task_id:
+        return False
+    rows = conn.execute(
+        "SELECT detail_json FROM job_events WHERE project_id = ? AND event_type = ?",
+        (project_id, EVENT_ASSET_READY),
+    ).fetchall()
+    for row in rows:
+        previous = from_json(row["detail_json"], {})
+        if asset_path and previous.get("asset_path") == asset_path:
+            return True
+        if remote_task_id and previous.get("remote_task_id") == remote_task_id:
+            return True
+    return False

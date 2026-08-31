@@ -9,7 +9,12 @@ from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
 from ..providers.capabilities import validate_video_generation
 from ..providers.llm_provider import rewrite_video_prompt_for_safety
-from ..providers.video_provider import VideoAssetRequest, generate_video_asset, refresh_remote_video_task
+from ..providers.video_provider import (
+    VideoAssetRequest,
+    VideoGenerationResult,
+    generate_video_asset,
+    refresh_remote_video_task,
+)
 from ..services.job_service import ACTIVE_JOB_STATUSES, create_job, list_active_jobs, update_job
 from ..services.asset_service import public_asset_path
 
@@ -171,16 +176,35 @@ def generate_shot_video(
                 (project_id, video_path.video_path),
             ).fetchone()
         source = asset["embedding_ref"] if asset else "unknown"
-        update_job(
-            job_id,
-            "completed",
-            100,
-            "视频已生成，可在镜头卡片中预览",
-            shot_id=shot_id,
-            stage="persist_asset",
-            event_type="asset.ready",
-            detail={"source": source, "asset_path": video_path.video_path, "provider": video_path.provider, "model": video_path.model},
-        )
+        ready_detail = {
+            "source": source,
+            "asset_path": video_path.video_path,
+            "provider": video_path.provider,
+            "model": video_path.model,
+            "remote_task_id": video_path.remote_task_id,
+        }
+        if video_path.reused:
+            update_job(
+                job_id,
+                "completed",
+                100,
+                "视频已生成，可在镜头卡片中预览",
+                shot_id=shot_id,
+                stage="completed",
+                event_type="job.update",
+                detail=ready_detail,
+            )
+        else:
+            update_job(
+                job_id,
+                "completed",
+                100,
+                "视频已生成，可在镜头卡片中预览",
+                shot_id=shot_id,
+                stage="persist_asset",
+                event_type="asset.ready",
+                detail=ready_detail,
+            )
     except Exception as exc:
         with connect() as conn:
             conn.execute(
@@ -449,7 +473,7 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
                 update_job(job_id, "completed", 100, "没有待回查的云端任务", stage="completed")
                 return
 
-        completed: list[str] = []
+        completed: list[VideoGenerationResult] = []
         pending: list[str] = []
         failed: list[str] = []
         total = len(rows)
@@ -465,7 +489,7 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
             try:
                 result = refresh_remote_video_task(row["id"])
                 if result.status == "completed":
-                    completed.append(f"{row['title']}: {result.video_path}")
+                    completed.append(result)
                 elif result.status == "pending_remote":
                     pending.append(f"{row['title']}: {result.remote_task_id}")
                     with connect() as conn:
@@ -500,14 +524,32 @@ def refresh_project_video_tasks(project_id: str, job_id: str) -> None:
                 stage="waiting_remote",
             )
         else:
-            update_job(
-                job_id,
-                "completed",
-                100,
-                f"云端回查完成，已恢复 {len(completed)} 个视频",
-                stage="persist_asset",
-                event_type="asset.ready",
-            )
+            newly_ready = [item for item in completed if not item.reused]
+            first = newly_ready[0] if newly_ready else (completed[0] if completed else None)
+            if newly_ready and first:
+                update_job(
+                    job_id,
+                    "completed",
+                    100,
+                    f"云端回查完成，已恢复 {len(completed)} 个视频",
+                    stage="persist_asset",
+                    event_type="asset.ready",
+                    detail={
+                        "asset_path": first.video_path,
+                        "provider": first.provider,
+                        "model": first.model,
+                        "remote_task_id": first.remote_task_id,
+                    },
+                )
+            else:
+                update_job(
+                    job_id,
+                    "completed",
+                    100,
+                    f"云端回查完成，已恢复 {len(completed)} 个视频",
+                    stage="completed",
+                    event_type="job.update",
+                )
     except Exception as exc:
         update_job(job_id, "failed", 100, "云端任务回查失败", str(exc), stage="failed")
 
