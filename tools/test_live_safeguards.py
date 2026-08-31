@@ -55,6 +55,9 @@ from backend.services.video_service import generate_shot_video, refresh_project_
 from tools.live_run_audit import (
     LAST_LIVE_RUN,
     apply_count_fields,
+    cleanup_decision,
+    collect_project_lineage,
+    estimate_occurred_cny,
     has_secret_leak,
     normalize_live_run_counts,
     verify_pre_cleanup,
@@ -979,6 +982,164 @@ def test_disconnect_resume_polls_same_remote_and_continues_remaining_shots() -> 
         _cleanup()
 
 
+def test_two_shot_interrupt_refresh_then_second_submit() -> None:
+    project_id = _project()
+    shot_ids = [_add_shot(project_id, index) for index in range(1, 3)]
+    posts: list[str] = []
+    gets: list[str] = []
+    downloads: list[str] = []
+
+    def json_transport(method: str, url: str, _payload: dict | None) -> dict:
+        path = url.split("?", 1)[0]
+        if method == "POST":
+            posts.append(path)
+            return {"task_id": "remote_shot2_only"}
+        gets.append(path)
+        return {
+            "status": "succeeded",
+            "task": {"status": "succeeded"},
+            "file_id": "file_mock",
+            "video_url": "https://cdn.example/resume.mp4?X-Amz-Signature=secret",
+        }
+
+    def fake_download(url: str) -> bytes:
+        downloads.append(url.split("?", 1)[0])
+        return FAKE_MP4
+
+    set_video_json_transport(json_transport)
+    set_video_download_transport(fake_download)
+    try:
+        with _env(
+            VISIONCRAFT_ALLOW_LIVE_VIDEO="1",
+            VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="2",
+            VISIONCRAFT_LIVE_BUDGET_CNY="8",
+            MINIMAX_API_KEY="mock-minimax-key",
+            MINIMAX_VIDEO_POLL_SECONDS="8",
+            MINIMAX_VIDEO_POLL_INTERVAL="0",
+        ):
+            shot1, shot2 = shot_ids
+            job1 = create_job(project_id, "generate_video", "镜头1已提交", shot_id=shot1)
+            request1 = _video_request(project_id, shot1, job_id=job1)
+            request1.provider_override = "minimax"
+            request1.model_override = "MiniMax-H3"
+            remote_1 = "remote_shot1_interrupt"
+            local_1 = _insert_video_task(request1, remote_1)
+            with connect() as conn:
+                conn.execute("UPDATE shots SET status = ?, updated_at = ? WHERE id = ?", ("video_running", utc_now(), shot1))
+            assert posts == []
+
+            refresh_job = create_job(project_id, "video_task_refresh", "浏览器中断后只回查")
+            refresh_project_video_tasks(project_id, refresh_job)
+            assert posts == []
+            assert any(remote_1 in url for url in gets)
+
+            with connect() as conn:
+                tasks = conn.execute("SELECT * FROM video_tasks WHERE project_id = ?", (project_id,)).fetchall()
+                videos = conn.execute(
+                    "SELECT * FROM assets WHERE project_id = ? AND type = 'video'",
+                    (project_id,),
+                ).fetchall()
+            assert len(tasks) == 1
+            assert tasks[0]["id"] == local_1
+            assert tasks[0]["remote_task_id"] == remote_1
+            assert tasks[0]["status"] == "completed"
+            assert len(videos) == 1
+            first_asset = videos[0]["id"]
+
+            job2 = create_job(project_id, "generate_video", "镜头2新提交", shot_id=shot2)
+            generate_shot_video(
+                project_id,
+                shot2,
+                job2,
+                video_mode="t2v",
+                provider="minimax",
+                model="MiniMax-H3",
+                duration_seconds=4,
+            )
+            assert len(posts) == 1
+            with connect() as conn:
+                tasks = conn.execute("SELECT * FROM video_tasks WHERE project_id = ? ORDER BY created_at", (project_id,)).fetchall()
+                videos = conn.execute(
+                    "SELECT * FROM assets WHERE project_id = ? AND type = 'video'",
+                    (project_id,),
+                ).fetchall()
+                shot1_tasks = [row for row in tasks if row["shot_id"] == shot1]
+            assert len(tasks) == 2
+            assert len(shot1_tasks) == 1
+            assert shot1_tasks[0]["id"] == local_1
+            assert shot1_tasks[0]["remote_task_id"] == remote_1
+            assert len(videos) == 2
+            assert len({row["id"] for row in videos}) == 2
+            assert first_asset in {row["id"] for row in videos}
+            assert len(downloads) == 2
+            lineage = collect_project_lineage(project_id)
+            assert lineage["counts"]["remote_tasks_completed"] == 2
+            assert lineage["counts"]["remote_tasks_inflight"] == 0
+            assert lineage["counts"]["unique_remote_tasks"] == 2
+            assert lineage["counts"]["duplicate_submits"] == 0
+            assert lineage["counts"]["duplicate_assets"] == 0
+            pass_("2 镜断点：镜头1只 refresh 原任务，镜头2才新提交，无重复 video_tasks/资产")
+    finally:
+        _cleanup()
+
+
+def test_lineage_completed_excludes_running() -> None:
+    project_id = _project()
+    shot_id = _add_shot(project_id, 1)
+    job = create_job(project_id, "generate_video", "进行中", shot_id=shot_id)
+    request = _video_request(project_id, shot_id, job_id=job)
+    _insert_video_task(request, "remote_running_only")
+    try:
+        lineage = collect_project_lineage(project_id)
+        assert lineage["counts"]["video_tasks"] == 1
+        assert lineage["counts"]["unique_remote_tasks"] == 1
+        assert lineage["counts"]["remote_tasks_completed"] == 0
+        assert lineage["counts"]["remote_tasks_inflight"] == 1
+        pass_("running 任务不计入 remote_tasks_completed")
+    finally:
+        _cleanup()
+
+
+def test_cleanup_retains_inflight_temp_project() -> None:
+    running = {
+        "ok": True,
+        "title": "LIVE2SHOT 保留回查",
+        "shots": [{"id": "s1", "status": "video_running"}],
+        "video_tasks": [{"id": "vt1", "status": "running", "remote_task_id": "4367…3964"}],
+    }
+    keep = cleanup_decision(running, project_id="project_temp_live", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
+    assert keep["cleanup"] is False
+    assert keep["retain_for_resume"] is True
+    assert keep["reason"] == "inflight_remote_tasks"
+    idle = {
+        "ok": True,
+        "title": "LIVE2SHOT 可清理",
+        "shots": [{"id": "s1", "status": "video_ready"}],
+        "video_tasks": [{"id": "vt1", "status": "completed", "remote_task_id": "abcd…1234"}],
+    }
+    wipe = cleanup_decision(idle, project_id="project_temp_done", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
+    assert wipe["cleanup"] is True
+    assert wipe["reason"] == "temp_project_without_inflight"
+    blocked = cleanup_decision(idle, project_id="v1demo_main", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
+    assert blocked["cleanup"] is False
+    pass_("有进行中远程任务的临时项目不会被清理")
+
+
+def test_occurred_cost_uses_actual_calls_not_full_budget() -> None:
+    full = estimate_closed_loop_cny(SAMPLE, video_seconds=4)
+    with _env(VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="2", VISIONCRAFT_LIVE_BUDGET_CNY="8"):
+        planned = estimate_closed_loop_cny(SAMPLE, video_seconds=4)
+    occurred = estimate_occurred_cny(text_calls=3, vision_calls=1, video_submits=1, source_text=SAMPLE, video_seconds=4)
+    two_videos = estimate_occurred_cny(text_calls=3, vision_calls=1, video_submits=2, source_text=SAMPLE, video_seconds=4)
+    assert occurred["video_submits"] == 1
+    assert occurred["platform_cost"] == "无法确认"
+    assert occurred["local_estimate_cny"] < two_videos["local_estimate_cny"]
+    assert occurred["local_estimate_cny"] < planned["total_cny"] + estimate_minimax_i2v_cny(4) * 1.3
+    assert occurred["text_calls"] == 3
+    assert full["video_calls"] == 1
+    pass_("本地估算按已发生 3+1+1 计，不把完整 2 镜预算写成实际费用")
+
+
 def main() -> None:
     _guard_network()
     init_environment()
@@ -1004,6 +1165,10 @@ def main() -> None:
         test_last_live_run_counts_split_new_submits_from_unique_tasks()
         test_audit_bundle_fields_and_no_secrets()
         test_disconnect_resume_polls_same_remote_and_continues_remaining_shots()
+        test_two_shot_interrupt_refresh_then_second_submit()
+        test_lineage_completed_excludes_running()
+        test_cleanup_retains_inflight_temp_project()
+        test_occurred_cost_uses_actual_calls_not_full_budget()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:
         _cleanup()

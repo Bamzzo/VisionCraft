@@ -17,6 +17,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / "output" / "playwright" / "live-multishot"
 PROTECTED_PROJECTS = {"v1demo_main"}
+INFLIGHT_TASK_STATUSES = frozenset({"running", "submitted", "pending_remote", "waiting_remote"})
+INFLIGHT_SHOT_STATUSES = frozenset({"video_running", "video_waiting_remote"})
 COUNT_FIELDS = (
     "text_calls_total",
     "vision_calls_total",
@@ -303,6 +305,10 @@ def collect_project_lineage(project_id: str) -> dict[str, Any]:
             "shots": len(shots),
             "video_tasks": len(tasks),
             "unique_remote_tasks": len(set(task_remotes)),
+            "remote_tasks_completed": sum(1 for row in tasks if str(row.get("status") or "") == "completed"),
+            "remote_tasks_inflight": sum(
+                1 for row in tasks if str(row.get("status") or "") in INFLIGHT_TASK_STATUSES
+            ),
             "video_assets": len(videos),
             "final_videos": len(finals),
             "duplicate_remote_groups": len(dup_assets),
@@ -311,6 +317,76 @@ def collect_project_lineage(project_id: str) -> dict[str, Any]:
         },
         "secret_leak": has_secret_leak(blob),
     }
+
+
+def estimate_occurred_cny(
+    *,
+    text_calls: int = 0,
+    vision_calls: int = 0,
+    video_submits: int = 0,
+    source_text: str = "",
+    video_seconds: int = 4,
+) -> dict[str, Any]:
+    """Local estimate for calls that already happened. Never claims platform billing."""
+    from backend.providers.live_budget import (
+        COST_BUFFER,
+        SCHEMA_OVERHEAD_CHARS,
+        estimate_minimax_i2v_cny,
+        estimate_text_call_cny,
+        estimate_vision_call_cny,
+    )
+
+    prompt_chars = len(source_text or "") + SCHEMA_OVERHEAD_CHARS
+    text_cny = estimate_text_call_cny(prompt_chars) * max(0, int(text_calls))
+    vision_cny = estimate_vision_call_cny() * max(0, int(vision_calls))
+    video_raw = estimate_minimax_i2v_cny(video_seconds) * max(0, int(video_submits))
+    video_buffered = video_raw * COST_BUFFER
+    local_total = text_cny + vision_cny + video_buffered
+    return {
+        "text_calls": int(text_calls),
+        "vision_calls": int(vision_calls),
+        "video_submits": int(video_submits),
+        "text_cny": round(text_cny, 4),
+        "vision_cny": round(vision_cny, 4),
+        "video_cny_raw": round(video_raw, 4),
+        "video_cny_buffered": round(video_buffered, 4),
+        "local_estimate_cny": round(local_total, 4),
+        "platform_cost": "无法确认",
+        "cost_visibility": "无法确认",
+    }
+
+
+def cleanup_decision(
+    lineage: dict[str, Any] | None,
+    *,
+    project_id: str | None = None,
+    protected: set[str] | None = None,
+    title_prefix: str = "LIVE2SHOT",
+) -> dict[str, Any]:
+    """Temp projects with inflight remotes must be retained for authorized refresh-only resume."""
+    guarded = set(protected or PROTECTED_PROJECTS)
+    if not project_id or project_id in guarded:
+        return {"cleanup": False, "reason": "protected_or_missing", "retain_for_resume": False}
+    data = lineage or {}
+    if not data.get("ok"):
+        return {"cleanup": False, "reason": "lineage_unavailable", "retain_for_resume": False}
+    tasks = data.get("video_tasks") or []
+    shots = data.get("shots") or []
+    inflight_tasks = [row for row in tasks if str(row.get("status") or "") in INFLIGHT_TASK_STATUSES]
+    inflight_shots = [row for row in shots if str(row.get("status") or "") in INFLIGHT_SHOT_STATUSES]
+    if inflight_tasks or inflight_shots:
+        return {
+            "cleanup": False,
+            "reason": "inflight_remote_tasks",
+            "retain_for_resume": True,
+            "inflight_task_count": len(inflight_tasks),
+            "inflight_shot_count": len(inflight_shots),
+            "note": "仍有远程任务，保留项目；后续只回查原 remote_task_id，禁止补发",
+        }
+    title = str(data.get("title") or "")
+    if title_prefix and not title.startswith(title_prefix):
+        return {"cleanup": False, "reason": "title_prefix_mismatch", "retain_for_resume": False}
+    return {"cleanup": True, "reason": "temp_project_without_inflight", "retain_for_resume": False}
 
 
 def verify_pre_cleanup(lineage: dict[str, Any], *, shot_count: int = 5) -> dict[str, Any]:
@@ -364,11 +440,23 @@ def write_audit_reports(
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     counts = normalize_live_run_counts(result)
+    occurred = estimate_occurred_cny(
+        text_calls=counts["text_calls_total"],
+        vision_calls=counts["vision_calls_total"],
+        video_submits=counts["video_submits_new"],
+        source_text=str(result.get("source_text") or ""),
+        video_seconds=int(result.get("video_seconds") or 4),
+    )
+    live = bool(result.get("real_network") or result.get("real_network_this_phase"))
     audit = {
         "schema": "visioncraft.live_run_audit.v2",
         "reconstructed_after_cleanup": reconstructed,
-        "real_network_this_phase": False,
-        "cost_cny_this_phase": 0,
+        "real_network_this_phase": live,
+        "cost_cny_this_phase": occurred["local_estimate_cny"] if live else 0,
+        "cost_visibility": "无法确认" if live else "无费用",
+        "platform_cost": "无法确认" if live else 0,
+        "local_estimate_cny": occurred["local_estimate_cny"] if live else 0,
+        "local_estimate_breakdown": occurred if live else None,
         "project_id": result.get("project_id"),
         "title": result.get("title"),
         "generation_mode": result.get("generation_mode"),
