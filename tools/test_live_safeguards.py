@@ -343,7 +343,11 @@ def test_register_local_jpeg_png_and_reject_bad_inputs() -> None:
             asset = conn.execute("SELECT * FROM assets WHERE id = ?", (result["asset_id"],)).fetchone()
             events = get_recent_job_events(project_id)
         assert asset["project_id"] == project_id
-        assert "local-register" in (asset["embedding_ref"] or "")
+        # P8-B 统一上传存储后，用户上传素材的公开血缘由 asset_role/source 表达；
+        # embedding_ref 保留为兼容字段，不再承载 register-local 接口名。
+        assert asset["asset_role"] == "first_frame"
+        assert asset["source"] == "user-upload"
+        assert asset["embedding_ref"] == "upload:first_frame"
         blob = json.dumps(dict(asset), ensure_ascii=False) + json.dumps(events, ensure_ascii=False)
         assert "data:image" not in blob
         assert "base64," not in blob.lower()
@@ -365,7 +369,7 @@ def test_register_local_jpeg_png_and_reject_bad_inputs() -> None:
             register_local_first_frame(other_id, shot_id, PNG_BYTES, filename="x.png")
             raise AssertionError("foreign shot must be rejected")
         except LocalKeyframeError as exc:
-            assert exc.code in {"SHOT_NOT_FOUND", "PROJECT_NOT_FOUND"}
+            assert exc.code in {"SHOT_MISMATCH", "SHOT_NOT_FOUND", "PROJECT_NOT_FOUND"}
 
         prepared = build_vision_request(
             project_id=project_id,

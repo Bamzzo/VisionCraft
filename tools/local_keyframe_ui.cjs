@@ -86,7 +86,14 @@ async function main() {
   try {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#newProjectBtn");
-    if (await page.locator("#projectForm.hidden").count()) {
+    // 等待 app.init 完成首轮项目加载和项目区渲染，避免在事件绑定前点击。
+    await page.waitForFunction(() => {
+      const form = document.querySelector("#projectForm");
+      const summary = document.querySelector("#projectSummaryPanel");
+      return Boolean(form && summary && (!form.classList.contains("hidden") || !summary.classList.contains("hidden")));
+    }, null, { timeout: 15000 });
+    // 空项目时新建表单可以直接可见；已有项目时才需要点击“新建项目”。
+    if (!(await page.locator("#projectForm").isVisible())) {
       await page.click("#newProjectBtn");
     }
     await page.waitForSelector("#projectForm:not(.hidden)");
