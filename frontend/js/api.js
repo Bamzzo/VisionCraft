@@ -54,6 +54,15 @@ export const api = {
     request(`/api/projects/${id}/resume`, {
       method: "POST",
     }),
+  pauseProject: (id) =>
+    request(`/api/projects/${id}/pause`, {
+      method: "POST",
+    }),
+  listCheckpoints: (id) => request(`/api/projects/${id}/checkpoints`),
+  resumeCheckpoint: (id, checkpointId) =>
+    request(`/api/projects/${id}/checkpoints/${checkpointId}/resume`, {
+      method: "POST",
+    }),
   retryProject: (id) =>
     request(`/api/projects/${id}/retry`, {
       method: "POST",

@@ -368,6 +368,23 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **验收：** `tools/test_v1_usability.py`、`tools/test_live_safeguards.py`、`tools/test_stage_models.py`、`tools/test_v1_qa_browser.py`、`tools/test_p7c_ui_state_browser.py`、`docs/v1-usability-acceptance.md`
 
+### P8-A：后端自动编排、审核暂停、继续执行与断点恢复
+
+**状态：** 2026-08-31 已完成（无费用，仅 Mock / HTTP mock / 本地夹具）。
+
+**目标：** 自动执行到达审核节点后由后端暂停并写入 checkpoint；用户确认后只继续必要下游；刷新可恢复；失败可从有效检查点继续。前端 `viewStage` 不得改变后端执行状态。
+
+**已实现：**
+
+- 项目执行状态：`created` / `running` / `awaiting_scope_review` / `awaiting_bible_review` / `awaiting_storyboard_review` / `production_ready` / `failed`；
+- 审核节点由后端写入项目状态和 `workflow_checkpoints`；同一项目同一审核节点不重复插入 paused 行；checkpoint 不含 Key、Data URL、Base64、完整 Prompt、签名 URL；
+- `POST /pause`、`POST /resume`、`GET /checkpoints`、`POST /checkpoints/{id}/resume`；活动改编任务复用，不重复启动；
+- 重复确认 / 用旧 checkpoint 恢复保持幂等，不倒退、不重复生成；上游重做只失效必要下游，历史结果保留；
+- `waiting_remote` 只回查原远程任务，暂停/恢复不会重新提交视频；
+- 前端继续执行调用后端接口；任务中心通过 SSE/轮询显示暂停、恢复和失败。
+
+**验收：** `tools/test_workflow_pause_resume.py`、`tools/test_p8a_browser.py`、`docs/workflow-pause-resume-design.md`
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

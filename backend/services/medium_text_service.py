@@ -123,7 +123,14 @@ def run_medium_analysis(project_id: str, job_id: str | None = None, *, regenerat
         project_id,
         job_id,
         "storyline_review",
-        {"project_id": project_id, "job_id": job_id, "node": "storyline_review", "stage": "awaiting_storyline_review"},
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": "storyline_review",
+            "stage": "awaiting_storyline_review",
+            "input_summary": f"已生成 {len(storylines)} 条候选故事线",
+            "pause_reason": "已到达故事线审核节点，等待选择并确认范围。",
+        },
     )
     _record_review(
         project_id,
@@ -207,6 +214,28 @@ def confirm_adaptation_scope(
     user_note: str | None = None,
     job_id: str | None = None,
 ) -> dict:
+    project = _require_project(project_id)
+    status = project.get("status") or ""
+    if status in {
+        "awaiting_scope_review",
+        "adaptation_options_ready",
+        "awaiting_bible_review",
+        "awaiting_storyboard_review",
+        "production_ready",
+        "ready_for_review",
+        "video_ready",
+        "completed",
+    }:
+        with connect() as conn:
+            options = conn.execute(
+                "SELECT id FROM adaptation_options WHERE project_id = ? LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        if options:
+            state = medium_text_state(project_id)
+            state["resumed_idempotent"] = True
+            state["resume_message"] = "故事范围已确认，未重复生成改编方案。"
+            return state
     state = save_adaptation_scope(
         project_id,
         storyline_id=storyline_id,

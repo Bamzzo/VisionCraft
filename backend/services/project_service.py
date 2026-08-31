@@ -313,7 +313,9 @@ def get_project(project_id: str) -> dict:
 
     result = attach_model_state(result)
     result["vision_reviews"] = list_vision_reviews(project_id)
-    return result
+    from .workflow_control_service import attach_workflow_control
+
+    return attach_workflow_control(result)
 
 
 _DRAFT_COMPARE_FIELDS = (

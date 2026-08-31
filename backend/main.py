@@ -94,9 +94,14 @@ from .services.video_service import (
     save_assembly_settings,
     safe_retry_shot_video,
 )
-from .services.checkpoint_service import get_paused_checkpoint
+from .services.checkpoint_service import CheckpointError
+from .services.workflow_control_service import (
+    list_project_checkpoints,
+    pause_project,
+    resume_project,
+    start_or_reuse_workflow,
+)
 from .workflow.adaptation_workflow import run_adaptation_workflow
-from .workflow.langgraph_workflow import resume_langgraph_workflow, run_langgraph_workflow
 
 
 init_environment()
@@ -211,25 +216,45 @@ def delete_project_endpoint(project_id: str) -> dict:
 
 @app.post("/api/projects/{project_id}/run")
 def run_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
-    if not get_project(project_id):
-        raise HTTPException(status_code=404, detail="Project not found")
-    job_id = create_job(project_id, "adaptation_workflow", "改编流程已排队")
-    background_tasks.add_task(run_adaptation_workflow, project_id, job_id)
-    return {"job_id": job_id, "status": "queued"}
+    try:
+        result = start_or_reuse_workflow(project_id, run_now=False)
+    except CheckpointError as exc:
+        _raise_checkpoint(exc)
+    if not result.get("reused"):
+        background_tasks.add_task(run_adaptation_workflow, project_id, result["job_id"])
+    return result
+
+
+@app.post("/api/projects/{project_id}/pause")
+def pause_project_endpoint(project_id: str) -> dict:
+    try:
+        return pause_project(project_id)
+    except CheckpointError as exc:
+        _raise_checkpoint(exc)
 
 
 @app.post("/api/projects/{project_id}/resume")
-def resume_project_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
-    if not get_project(project_id):
-        raise HTTPException(status_code=404, detail="Project not found")
-    checkpoint = get_paused_checkpoint(project_id)
-    if not checkpoint:
-        raise HTTPException(status_code=400, detail="没有可恢复的审核检查点。请从当前审核步骤确认，或重新启动改编流程。")
-    if checkpoint.get("node") == "quality_gate":
-        job_id = checkpoint["job_id"]
-        background_tasks.add_task(resume_langgraph_workflow, project_id, job_id)
-        return {"job_id": job_id, "status": "resuming"}
-    raise HTTPException(status_code=400, detail="当前停在改编审核步骤。请在审核面板确认范围、Story Bible 或分镜，而不是使用旧版恢复。")
+def resume_project_endpoint(project_id: str) -> dict:
+    try:
+        return resume_project(project_id)
+    except CheckpointError as exc:
+        _raise_checkpoint(exc)
+
+
+@app.get("/api/projects/{project_id}/checkpoints")
+def list_checkpoints_endpoint(project_id: str) -> dict:
+    try:
+        return list_project_checkpoints(project_id)
+    except CheckpointError as exc:
+        _raise_checkpoint(exc)
+
+
+@app.post("/api/projects/{project_id}/checkpoints/{checkpoint_id}/resume")
+def resume_checkpoint_endpoint(project_id: str, checkpoint_id: str) -> dict:
+    try:
+        return resume_project(project_id, checkpoint_id=checkpoint_id)
+    except CheckpointError as exc:
+        _raise_checkpoint(exc)
 
 
 @app.post("/api/projects/{project_id}/retry")
@@ -314,6 +339,11 @@ def _raise_shot_edit(exc: ShotEditError) -> None:
 
 def _raise_adaptation(exc: AdaptationError) -> None:
     status = 404 if exc.code in {"PROJECT_NOT_FOUND"} else 400
+    raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+def _raise_checkpoint(exc: CheckpointError) -> None:
+    status = 404 if exc.code in {"PROJECT_NOT_FOUND", "CHECKPOINT_NOT_FOUND"} else 400
     raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 

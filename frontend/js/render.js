@@ -248,6 +248,8 @@ function renderSummaryFields() {
     ["镜头策略", project.shot_count_mode === "manual" ? `手动 · ${project.requested_shot_count || "-"} 镜` : "自动"],
   ["运行模式", project.review_mode ? "监制模式" : "自动模式"],
     ["生成模式", generationModeLabel(project.generation_mode)],
+    ["执行状态", executionStatusLabel(project.status)],
+    ["审核节点", reviewNodeLabel(project.workflow?.review_node || project.checkpoint?.node)],
     ["原文规模", `${project.text_scale_label || ""} · ${(project.source_text || "").length} 字`],
     ["更新时间", formatTime(project.updated_at)],
   ];
@@ -255,12 +257,16 @@ function renderSummaryFields() {
   el("summaryFields").innerHTML = rows
     .map(([key, value]) => `<div class="summary-row"><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
     .join("");
-  // 工作流控制按钮可用性
-  const canResume = project?.status === "review_pending" && project?.checkpoint?.node === "quality_gate";
+  const control = project.workflow || {};
+  const canResume = Boolean(control.can_resume);
   const canRetry = !!project && !["running"].includes(project.status);
   el("resumeWorkflowBtn").disabled = !canResume;
   el("retryWorkflowBtn").disabled = !canRetry;
-  el("resumeWorkflowBtn").title = canResume ? "从旧版监制检查点继续执行" : "P4 审核请在中间工作区确认当前步骤";
+  el("resumeWorkflowBtn").textContent = project.status === "failed" ? "从检查点恢复" : "继续执行";
+  el("resumeWorkflowBtn").dataset.checkpointId = canResume ? (project.checkpoint?.id || "") : "";
+  el("resumeWorkflowBtn").title = canResume
+    ? (control.pause_reason || "从当前审核检查点继续执行必要下游")
+    : "当前没有可恢复的审核检查点";
   el("retryWorkflowBtn").title = canRetry ? "重生成改编范围（保留已有镜头版本与资产）" : "任务运行中";
 }
 
@@ -438,53 +444,54 @@ function renderGateBanner(project, workflow) {
     return;
   }
   const review = Boolean(project.review_mode);
-  const paused = state.workflowControl.paused;
+  const control = project.workflow || {};
+  const checkpoint = project.checkpoint || {};
   const stageLabel = frontier.label;
+  const pauseReason = control.pause_reason || checkpoint.pause_reason || "";
+  const summary = checkpoint.input_summary || "";
+  const failedHint = (project.jobs || []).find((job) => job.status === "failed")?.message
+    || (project.jobs || []).find((job) => job.status === "failed")?.error_message
+    || "请查看任务中心中的失败原因，再从有效检查点继续。";
 
-  if (paused) {
+  if (project.status === "failed") {
     banner.innerHTML = `
       <div class="gate-card paused">
-        <span class="gate-title">流程已暂停（原型）</span>
-        <span>自动编排引擎尚未在后端实现，暂停状态仅在本页会话内生效。当前停在「${escapeHtml(stageLabel)}」。</span>
+        <span class="gate-title">流程失败，可从检查点恢复</span>
+        <span>${escapeHtml(failedHint)}</span>
+        ${pauseReason ? `<span>上次暂停：${escapeHtml(pauseReason)}</span>` : ""}
         <div class="button-row compact-row">
-          <button class="primary-btn mini-btn" data-flow="resume-auto">恢复自动执行</button>
+          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume ? "" : "disabled"}>从检查点恢复</button>
         </div>
       </div>`;
     return;
   }
 
   if (frontier.state === STAGE_STATE.AWAITING_REVIEW) {
-    if (review) {
-      banner.innerHTML = `
-        <div class="gate-card review">
-          <span class="gate-title">「${escapeHtml(stageLabel)}」已完成，等待审核</span>
-          <span>监制模式：确认后才会进入下一阶段。可查看生成依据、修改后重做，或采用并继续。</span>
-          <div class="button-row compact-row">
-            <button class="primary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
-            <button class="secondary-btn mini-btn" data-flow="redo">基于已保存内容重做此阶段</button>
-          </div>
-        </div>`;
-    } else {
-      banner.innerHTML = `
-        <div class="gate-card auto">
-          <span class="gate-title">「${escapeHtml(stageLabel)}」已完成，自动模式将继续</span>
-          <span>自动模式：确认后进入下一阶段。可随时暂停流程进行人工干预。</span>
-          <div class="button-row compact-row">
-            <button class="primary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
-            <button class="secondary-btn mini-btn" data-flow="pause">暂停流程</button>
-          </div>
-        </div>`;
-    }
+    const confirmedHint = control.confirmed_readonly ? "已确认阶段仅可查看，修改请使用重做。" : "";
+    banner.innerHTML = `
+      <div class="gate-card ${review ? "review" : "paused"}">
+        <span class="gate-title">「${escapeHtml(stageLabel)}」等待审核</span>
+        <span>${escapeHtml(pauseReason || (review ? "监制模式：确认后才会进入下一阶段。" : "自动编排已在后端暂停，确认后继续必要下游。"))}</span>
+        ${summary ? `<span>可恢复输入：${escapeHtml(summary)}</span>` : ""}
+        ${confirmedHint ? `<span>${escapeHtml(confirmedHint)}</span>` : ""}
+        <div class="button-row compact-row">
+          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume ? "" : "disabled"}>继续执行</button>
+          <button class="secondary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
+          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause ? "" : "disabled"}>暂停流程</button>
+          ${review ? `<button class="secondary-btn mini-btn" data-flow="redo">基于已保存内容重做此阶段</button>` : ""}
+        </div>
+      </div>`;
     return;
   }
 
   if (frontier.state === STAGE_STATE.PROCESSING) {
+    const waitingRemote = Boolean(control.waiting_remote);
     banner.innerHTML = `
       <div class="gate-card auto">
         <span class="gate-title">「${escapeHtml(stageLabel)}」处理中</span>
-        <span>任务进度见底部任务中心，无需刷新页面。</span>
+        <span>${waitingRemote ? "云端视频仍在查询原来的远程任务，暂停不会中断或重新提交。" : "任务进度见底部任务中心，无需刷新页面。"}</span>
         <div class="button-row compact-row">
-          <button class="secondary-btn mini-btn" data-flow="pause">暂停流程</button>
+          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause && !waitingRemote ? "" : "disabled"}>暂停流程</button>
         </div>
       </div>`;
     return;
@@ -1489,6 +1496,21 @@ function renderMemoryResults() {
 /* 底部：任务中心                                                       */
 /* ================================================================== */
 
+function jobEventTag(item) {
+  const labels = {
+    awaiting_storyline_review: "故事线审核暂停",
+    awaiting_scope_review: "范围审核暂停",
+    awaiting_bible_review: "Bible 审核暂停",
+    awaiting_storyboard_review: "分镜审核暂停",
+    review_pending: "监制审核暂停",
+    failed: "失败",
+    waiting_remote: "等待远端",
+    production_ready: "进入制作",
+    paused: "已暂停",
+  };
+  return labels[item.stage] || labels[item.status] || jobStatusLabel(item.status);
+}
+
 function renderJob() {
   const project = state.project;
   const job = (project?.active_jobs || [])[0] || project?.jobs?.[0];
@@ -1551,7 +1573,7 @@ function renderJob() {
     ? events
         .map(
           (item) => `<div class="job-timeline-item">
-            <span class="tag">${escapeHtml(item.stage || item.status)}</span>
+            <span class="tag">${escapeHtml(jobEventTag(item))}</span>
             <span>${escapeHtml(item.message)}</span>
             <span class="muted-text">${escapeHtml(item.progress ?? 0)}%</span>
           </div>`
@@ -1586,6 +1608,35 @@ function generationModeLabel(mode) {
     live_strict: "真实模型模式（失败即失败）",
     live_with_local_fallback: "真实模型模式（允许本地回退）",
   }[mode] || "本地演示（不调用真实模型）";
+}
+
+function executionStatusLabel(status) {
+  return {
+    created: "已创建",
+    running: "执行中",
+    awaiting_storyline_review: "等待故事线审核",
+    awaiting_scope_review: "等待范围审核",
+    adaptation_options_ready: "等待范围审核",
+    awaiting_bible_review: "等待 Story Bible 审核",
+    story_bible_ready: "等待 Story Bible 审核",
+    awaiting_storyboard_review: "等待分镜审核",
+    storyboard_draft_ready: "等待分镜审核",
+    production_ready: "可进入制作",
+    review_pending: "等待监制审核",
+    failed: "失败，可从检查点恢复",
+    video_ready: "镜头视频已就绪",
+    completed: "已完成",
+  }[status] || status || "已创建";
+}
+
+function reviewNodeLabel(node) {
+  return {
+    storyline_review: "故事线审核",
+    scope_review: "改编范围审核",
+    bible_review: "Story Bible 审核",
+    storyboard_review: "分镜审核",
+    quality_gate: "监制质检",
+  }[node] || (node ? String(node) : "无");
 }
 
 function stageModelPanelHtml(project, stage) {

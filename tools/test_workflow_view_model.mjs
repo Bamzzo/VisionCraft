@@ -391,6 +391,15 @@ function videoAsset(index, path) {
   assert(workflow.executionStage === "text", "改编等待审核时执行阶段在文本理解");
   assert(stageById(workflow, "text").state === STAGE_STATE.AWAITING_REVIEW, "改编等待审核");
   assert(stageById(workflow, "bible").state === STAGE_STATE.NOT_STARTED, "Bible 仍未开始");
+  const pausedReview = computeWorkflow(
+    baseProject({
+      status: "awaiting_scope_review",
+      adaptation_options: [{ id: "opt1", title: "方案一", selected: 0 }],
+      jobs: [{ id: "j1", type: "adaptation_workflow", status: "paused", progress: 28, stage: "awaiting_scope_review" }],
+      active_jobs: [{ id: "j1", type: "adaptation_workflow", status: "paused", progress: 28, stage: "awaiting_scope_review" }],
+    })
+  );
+  assert(stageById(pausedReview, "text").state === STAGE_STATE.AWAITING_REVIEW, "后端暂停的范围审核应显示等待审核而不是处理中");
   console.log("PASS: 改编等待审核");
 }
 

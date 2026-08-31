@@ -238,7 +238,7 @@ function activeJobs(project) {
 
 function hasRunningJob(project, types) {
   return activeJobs(project).some(
-    (job) => types.includes(job.type) && ["queued", "running", "waiting_remote", "paused"].includes(job.status)
+    (job) => types.includes(job.type) && ["queued", "running", "waiting_remote"].includes(job.status)
   );
 }
 
@@ -319,14 +319,17 @@ function frontierState(project, stageId) {
   if (status === "failed") return STAGE_STATE.FAILED;
   switch (stageId) {
     case "text":
-      if (status === "running" || hasRunningJob(project, ["adaptation_workflow", "adaptation_regen_scope"])) {
-        return STAGE_STATE.PROCESSING;
-      }
       if (status === "awaiting_scope_review" || status === "adaptation_options_ready") {
         return STAGE_STATE.AWAITING_REVIEW;
       }
+      if (status === "running" || hasRunningJob(project, ["adaptation_workflow", "adaptation_regen_scope"])) {
+        return STAGE_STATE.PROCESSING;
+      }
       return STAGE_STATE.NOT_STARTED;
     case "storyline":
+      if (status === "awaiting_storyline_review") {
+        return STAGE_STATE.AWAITING_REVIEW;
+      }
       if (hasRunningJob(project, ["adaptation_workflow", "medium_analysis", "adaptation_regen_scope"])) {
         return STAGE_STATE.PROCESSING;
       }

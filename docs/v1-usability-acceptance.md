@@ -1,4 +1,4 @@
-# VisionCraft V1 可用性验收（P7-D）
+# VisionCraft V1 可用性验收（P7-D / P8-A）
 
 本切片把已有能力收成「打开网页即可使用」的 V1。不调用真实 API，不产生费用，不重跑真实模型测试。
 
@@ -107,11 +107,13 @@ MiniMax 唯一任务：5
 
 ## 6. 尚未完成
 
-- 自动编排引擎未在后端实现；
 - 通用上传（任意用户文件进入工作流）未完成；
 - P5-B：超过 10,000 字仍明确拒绝；
 - 部署、对象存储 HTTPS URL、用户系统、成本配额不在 V1 本切片；
 - 真实 TTS / AI 配乐不在本切片。
+- 存在 `waiting_remote` 时，审核暂停/恢复会拒绝，避免误重新提交视频；视频继续查询仍走原 `remote_task_id` 刷新接口。
+
+P8-A 已将自动编排的审核暂停、继续执行和断点恢复接到后端。详见 `docs/workflow-pause-resume-design.md`。
 
 ## 7. 命令
 
@@ -119,8 +121,10 @@ MiniMax 唯一任务：5
 .venv\Scripts\python.exe tools\test_v1_usability.py
 .venv\Scripts\python.exe tools\test_live_safeguards.py
 .venv\Scripts\python.exe tools\test_stage_models.py
+.venv\Scripts\python.exe tools\test_workflow_pause_resume.py
 .venv\Scripts\python.exe tools\test_v1_qa_browser.py
 .venv\Scripts\python.exe tools\test_p7c_ui_state_browser.py
+.venv\Scripts\python.exe tools\test_p8a_browser.py
 ```
 
 本阶段：真实网络请求 **否**，费用 **0 元**。

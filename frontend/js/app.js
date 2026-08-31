@@ -14,6 +14,7 @@ const el = (id) => document.getElementById(id);
 
 const LAST_PROJECT_KEY = "vc:lastProjectId";
 const VIEW_STORAGE_PREFIX = "vc:view:";
+let flowBusy = false;
 
 function persistLastProject(projectId) {
   try {
@@ -573,24 +574,31 @@ async function redoStage(project, stage) {
 
 async function onFlowAction(event) {
   const trigger = event.target.closest("[data-flow]");
-  if (!trigger || !state.project) return;
+  if (!trigger || !state.project || flowBusy) return;
   const action = trigger.dataset.flow;
   const projectId = state.project.id;
-  if (action === "pause") {
-    // 原型：后端尚无统一自动编排引擎，暂停仅在本页会话内生效。
-    state.workflowControl.paused = true;
-    renderAll();
-    return;
-  }
-  if (action === "resume-auto") {
-    state.workflowControl.paused = false;
-    renderAll();
-    return;
-  }
   const workflow = computeWorkflow(state.project);
   const frontier = workflow.executionStage;
   try {
+    flowBusy = true;
     trigger.disabled = true;
+    if (action === "pause") {
+      const result = await api.pauseProject(projectId);
+      state.project = result.checkpoint ? await api.getProject(projectId) : state.project;
+      if (result.message) el("jobMessage").textContent = result.message;
+      await refreshProject();
+      return;
+    }
+    if (action === "resume-auto") {
+      const checkpointId = trigger.dataset.checkpointId || state.project.checkpoint?.id;
+      const result = checkpointId
+        ? await api.resumeCheckpoint(projectId, checkpointId)
+        : await api.resumeProject(projectId);
+      el("jobMessage").textContent = result.message || `已从检查点继续`;
+      if (result.project) state.project = result.project;
+      await refreshProject();
+      return;
+    }
     if (action === "adopt") {
       await adoptFrontier(projectId, frontier);
     } else if (action === "redo") {
@@ -601,6 +609,7 @@ async function onFlowAction(event) {
   } catch (error) {
     showError(error.message);
   } finally {
+    flowBusy = false;
     trigger.disabled = false;
   }
 }
@@ -891,7 +900,9 @@ async function onRunWorkflow() {
   try {
     const result = await api.runProject(projectId);
     if (!isLiveSession(state, token, projectId)) return;
-    el("jobMessage").textContent = `改编任务 ${result.job_id} 已入队`;
+    el("jobMessage").textContent = result.reused
+      ? (result.message || "已复用当前改编任务")
+      : `改编任务 ${result.job_id} 已入队`;
     renderAll();
     await refreshProject({ token, projectId, preserveObservation: true });
     await waitForAdaptationSurface({ token, projectId });
@@ -923,16 +934,22 @@ async function waitForAdaptationSurface({ token, projectId, timeoutMs = 10000 })
 }
 
 async function onResumeWorkflow() {
-  if (!state.project) return;
+  if (!state.project || flowBusy) return;
   try {
+    flowBusy = true;
     el("resumeWorkflowBtn").disabled = true;
-    const result = await api.resumeProject(state.project.id);
+    const checkpointId = el("resumeWorkflowBtn").dataset.checkpointId || state.project.checkpoint?.id;
+    const result = checkpointId
+      ? await api.resumeCheckpoint(state.project.id, checkpointId)
+      : await api.resumeProject(state.project.id);
     attachEvents();
-    el("jobMessage").textContent = `恢复任务 ${result.job_id} 已继续`;
+    el("jobMessage").textContent = result.message || (result.reused ? "已复用当前检查点，未重复执行。" : `已从检查点继续`);
+    if (result.project) state.project = result.project;
     await refreshProject();
   } catch (error) {
     showError(`恢复流程失败：${error.message}`);
   } finally {
+    flowBusy = false;
     el("resumeWorkflowBtn").disabled = false;
   }
 }

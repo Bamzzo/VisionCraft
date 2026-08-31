@@ -6,7 +6,7 @@ import uuid
 from ..database import connect, from_json, to_json, utc_now
 from ..providers.llm_catalog import ModelConfigError
 from ..services.checkpoint_service import complete_checkpoint, get_paused_checkpoint, save_workflow_checkpoint
-from ..services.job_service import create_job, update_job
+from ..services.job_service import create_job, list_active_jobs, redact_text, update_job
 from ..services.model_config_service import (
     clear_stage_stale,
     plan_adaptations_with_policy,
@@ -49,8 +49,17 @@ STORYBOARD_FIELDS = (
     "bible_scene",
     "source_excerpt",
 )
-SCOPE_STATUSES = {"created", "draft", "adaptation_options_ready", "awaiting_scope_review"}
+SCOPE_STATUSES = {"created", "draft", "adaptation_options_ready", "awaiting_scope_review", "running", "failed"}
 PRODUCTION_OK = {"production_ready", "ready_for_review", "review_pending", "video_ready", "completed"}
+PAST_SCOPE = {
+    "awaiting_bible_review",
+    "story_bible_ready",
+    "awaiting_storyboard_review",
+    "storyboard_draft_ready",
+    *PRODUCTION_OK,
+}
+PAST_BIBLE = {"awaiting_storyboard_review", "storyboard_draft_ready", *PRODUCTION_OK}
+PAST_STORYBOARD = set(PRODUCTION_OK)
 
 
 def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dict:
@@ -85,7 +94,15 @@ def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dic
         project_id,
         job_id,
         "scope_review",
-        {"project_id": project_id, "job_id": job_id, "node": "scope_review", "stage": "awaiting_scope_review"},
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": "scope_review",
+            "stage": "awaiting_scope_review",
+            "option_id": None,
+            "input_summary": f"已生成 {len(payload)} 个改编候选",
+            "pause_reason": "已到达改编范围审核节点，等待选择并确认方案。",
+        },
     )
     update_job(job_id, "paused", 28, "改编方案已就绪，等待选择故事范围", stage="awaiting_scope_review")
     return {"job_id": job_id, "status": "awaiting_scope_review", "options": payload}
@@ -107,7 +124,14 @@ def generate_options_from_context(project_id: str, job_id: str | None = None) ->
         project_id,
         job_id,
         "scope_review",
-        {"project_id": project_id, "job_id": job_id, "node": "scope_review", "stage": "awaiting_scope_review"},
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": "scope_review",
+            "stage": "awaiting_scope_review",
+            "input_summary": f"已生成 {len(payload)} 个改编候选",
+            "pause_reason": "已到达改编范围审核节点，等待选择并确认方案。",
+        },
     )
     update_job(job_id, "paused", 28, "改编方案已就绪，等待选择故事范围", stage="awaiting_scope_review")
     return payload
@@ -124,7 +148,10 @@ def list_adaptation_options(project_id: str) -> list[dict]:
 
 
 def select_adaptation_option(project_id: str, option_id: str) -> dict:
-    _require_project(project_id)
+    project = _require_project(project_id)
+    status = project.get("status") or ""
+    if status in PAST_SCOPE:
+        raise AdaptationError("ALREADY_CONFIRMED", "改编范围已确认，不能倒退更换方案。如需更换，请先重生成改编范围。")
     option = _require_option(project_id, option_id)
     now = utc_now()
     with connect() as conn:
@@ -135,25 +162,59 @@ def select_adaptation_option(project_id: str, option_id: str) -> dict:
             (option_id, "awaiting_scope_review", now, project_id),
         )
     _record_review(project_id, "scope", "select", f"选定方案：{option['title']}", option_id)
+    paused = get_paused_checkpoint(project_id)
+    if paused and paused.get("node") == "scope_review":
+        save_workflow_checkpoint(
+            project_id,
+            paused["job_id"],
+            "scope_review",
+            {
+                **(paused.get("state") or {}),
+                "option_id": option_id,
+                "input_summary": f"已选定方案：{option.get('title') or option_id}",
+            },
+        )
     return get_adaptation_state(project_id)
 
 
 def confirm_scope(project_id: str, option_id: str | None = None, job_id: str | None = None) -> dict:
     project = _require_project(project_id)
     option_id = option_id or project.get("selected_option_id")
+    status = project.get("status") or ""
+    bible = _load_bible(project_id)
+    if option_id and project.get("selected_option_id") and option_id != project.get("selected_option_id") and status in PAST_SCOPE:
+        raise AdaptationError("ALREADY_CONFIRMED", "改编范围已确认，不能倒退更换方案。如需更换，请先重生成改编范围。")
+    if status in PAST_SCOPE and bible and bible.get("review_status") != "stale":
+        state = get_adaptation_state(project_id)
+        state["resumed_idempotent"] = True
+        state["resume_message"] = "改编范围已确认，未重复生成 Story Bible。"
+        return state
     if not option_id:
         raise AdaptationError("SCOPE_NOT_SELECTED", "尚未选择改编方案。请先选定一个候选范围，再确认并生成 Story Bible。")
     option = _require_option(project_id, option_id)
     select_adaptation_option(project_id, option_id)
-    job_id = job_id or create_job(project_id, "adaptation_bible", "Story Bible 生成已排队")
+    job_id = _reuse_or_create_job(project_id, "adaptation_bible", "Story Bible 生成已排队", job_id)
+    update_project_status(project_id, "running")
     update_job(job_id, "running", 40, "Story Bible：正在根据选定方案生成可编辑圣经", stage="story_bible")
-    _write_bible(project, option)
+    try:
+        _write_bible(project, option)
+    except Exception as exc:
+        _fail_workflow(project_id, job_id, "生成 Story Bible 失败，可从范围审核检查点继续。", exc)
+        raise AdaptationError("WORKFLOW_FAILED", "生成 Story Bible 失败，可从当前审核检查点继续。") from exc
     update_project_status(project_id, "awaiting_bible_review")
     save_workflow_checkpoint(
         project_id,
         job_id,
         "bible_review",
-        {"project_id": project_id, "job_id": job_id, "node": "bible_review", "stage": "awaiting_bible_review"},
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": "bible_review",
+            "stage": "awaiting_bible_review",
+            "option_id": option_id,
+            "input_summary": f"已确认方案：{option.get('title') or option_id}",
+            "pause_reason": "已到达 Story Bible 审核节点，等待确认后再生成分镜。",
+        },
     )
     _record_review(project_id, "scope", "confirm", f"确认范围：{option['title']}", option_id)
     update_job(job_id, "paused", 55, "Story Bible 已生成，等待确认或修改", stage="awaiting_bible_review")
@@ -175,12 +236,22 @@ def confirm_bible(project_id: str, payload: dict | None = None, job_id: str | No
     project = _require_project(project_id)
     if not project.get("selected_option_id"):
         raise AdaptationError("SCOPE_NOT_SELECTED", "尚未选择改编方案，不能确认 Story Bible。请先完成范围审核。")
+    bible = _load_bible(project_id)
+    drafts = _load_storyboard(project_id)
+    status = project.get("status") or ""
+    if status in PAST_BIBLE and bible and bible.get("review_status") == "confirmed" and drafts:
+        if payload:
+            raise AdaptationError("ALREADY_CONFIRMED", "Story Bible 已确认，不能倒退修改。如需修改，请重生成 Story Bible。")
+        state = get_adaptation_state(project_id)
+        state["resumed_idempotent"] = True
+        state["resume_message"] = "Story Bible 已确认，未重复生成分镜。"
+        return state
     if payload:
         save_story_bible_draft(project_id, payload)
-    bible = _load_bible(project_id)
+        bible = _load_bible(project_id)
     if not bible:
         raise AdaptationError("BIBLE_MISSING", "还没有 Story Bible。请先确认改编范围以生成圣经。")
-    job_id = job_id or create_job(project_id, "adaptation_storyboard", "分镜草案生成已排队")
+    job_id = _reuse_or_create_job(project_id, "adaptation_storyboard", "分镜草案生成已排队", job_id)
     with connect() as conn:
         conn.execute(
             "UPDATE story_bibles SET review_status = ?, updated_at = ? WHERE project_id = ?",
@@ -198,15 +269,28 @@ def generate_storyboard(project_id: str, job_id: str | None = None) -> dict:
     if not project.get("selected_option_id"):
         raise AdaptationError("SCOPE_NOT_SELECTED", "尚未选择改编方案，不能生成分镜。")
     option = _require_option(project_id, project["selected_option_id"])
-    job_id = job_id or create_job(project_id, "adaptation_storyboard", "分镜草案生成已排队")
+    job_id = job_id or _reuse_or_create_job(project_id, "adaptation_storyboard", "分镜草案生成已排队", job_id)
+    update_project_status(project_id, "running")
     update_job(job_id, "running", 68, "分镜：正在生成带原文依据的镜头草案", stage="storyboard")
-    _write_storyboard(project, option, bible)
+    try:
+        _write_storyboard(project, option, bible)
+    except Exception as exc:
+        _fail_workflow(project_id, job_id, "生成分镜失败，可从 Story Bible 审核检查点继续。", exc)
+        raise AdaptationError("WORKFLOW_FAILED", "生成分镜失败，可从当前审核检查点继续。") from exc
     update_project_status(project_id, "awaiting_storyboard_review")
     save_workflow_checkpoint(
         project_id,
         job_id,
         "storyboard_review",
-        {"project_id": project_id, "job_id": job_id, "node": "storyboard_review", "stage": "awaiting_storyboard_review"},
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": "storyboard_review",
+            "stage": "awaiting_storyboard_review",
+            "option_id": project.get("selected_option_id"),
+            "input_summary": f"分镜草案 {len(_load_storyboard(project_id))} 镜",
+            "pause_reason": "已到达分镜审核节点，等待确认后进入镜头制作。",
+        },
     )
     update_job(job_id, "paused", 82, "分镜草案已就绪，等待审核确认", stage="awaiting_storyboard_review")
     return get_adaptation_state(project_id)
@@ -262,14 +346,30 @@ def confirm_storyboard(project_id: str, items: list[dict] | None = None, job_id:
     bible = _load_bible(project_id)
     if not bible or bible.get("review_status") != "confirmed":
         raise AdaptationError("BIBLE_NOT_CONFIRMED", "尚未确认 Story Bible，不能生成或确认分镜。请先保存并确认圣经。")
+    status = project.get("status") or ""
+    drafts = _load_storyboard(project_id)
+    if status in PAST_STORYBOARD and (_has_production_shots(project_id) or drafts):
+        if items:
+            raise AdaptationError("ALREADY_CONFIRMED", "分镜已确认并进入制作，不能倒退重复确认。如需修改，请重生成分镜。")
+        paused = get_paused_checkpoint(project_id)
+        if paused:
+            complete_checkpoint(paused["id"])
+        state = get_adaptation_state(project_id)
+        state["resumed_idempotent"] = True
+        state["resume_message"] = "分镜已确认，未重复创建制作镜头。"
+        return state
     if items:
         save_storyboard_drafts(project_id, items)
     drafts = _load_storyboard(project_id)
     if not drafts:
         raise AdaptationError("STORYBOARD_MISSING", "没有可确认的分镜草案。")
-    job_id = job_id or create_job(project_id, "adaptation_production", "正在进入镜头制作")
+    job_id = _reuse_or_create_job(project_id, "adaptation_production", "正在进入镜头制作", job_id)
     update_job(job_id, "running", 90, "确认分镜：写入制作镜头，不自动生成关键帧或视频", stage="production")
-    _promote_storyboard(project_id, drafts)
+    try:
+        _promote_storyboard(project_id, drafts)
+    except Exception as exc:
+        _fail_workflow(project_id, job_id, "确认分镜失败，可从分镜审核检查点继续。", exc)
+        raise AdaptationError("WORKFLOW_FAILED", "确认分镜失败，可从当前审核检查点继续。") from exc
     with connect() as conn:
         conn.execute(
             "UPDATE storyboard_drafts SET review_status = ?, updated_at = ? WHERE project_id = ?",
@@ -319,7 +419,15 @@ def regenerate_stage(project_id: str, stage: str, job_id: str | None = None) -> 
             project_id,
             job_id,
             "bible_review",
-            {"project_id": project_id, "job_id": job_id, "node": "bible_review", "stage": "awaiting_bible_review"},
+            {
+                "project_id": project_id,
+                "job_id": job_id,
+                "node": "bible_review",
+                "stage": "awaiting_bible_review",
+                "option_id": option["id"],
+                "input_summary": "Story Bible 已重生成",
+                "pause_reason": "已到达 Story Bible 审核节点，等待确认后再生成分镜。",
+            },
         )
         _record_review(project_id, "bible", "regenerate", "修改后重生成 Story Bible", option["id"])
         update_job(job_id, "paused", 55, "Story Bible 已重生成，等待确认", stage="awaiting_bible_review")
@@ -335,7 +443,15 @@ def regenerate_stage(project_id: str, stage: str, job_id: str | None = None) -> 
             project_id,
             job_id,
             "storyboard_review",
-            {"project_id": project_id, "job_id": job_id, "node": "storyboard_review", "stage": "awaiting_storyboard_review"},
+            {
+                "project_id": project_id,
+                "job_id": job_id,
+                "node": "storyboard_review",
+                "stage": "awaiting_storyboard_review",
+                "option_id": project.get("selected_option_id"),
+                "input_summary": "分镜草案已重生成",
+                "pause_reason": "已到达分镜审核节点，等待确认后进入镜头制作。",
+            },
         )
         _record_review(project_id, "storyboard", "regenerate", "修改后重生成分镜草案", None)
         update_job(job_id, "paused", 82, "分镜草案已重生成，等待审核", stage="awaiting_storyboard_review")
@@ -968,6 +1084,27 @@ def _record_review(project_id: str, stage: str, action: str, summary: str, targe
             """,
             (f"rev_{uuid.uuid4().hex[:10]}", project_id, stage, action, summary, target_id, utc_now()),
         )
+
+
+def _reuse_or_create_job(project_id: str, job_type: str, message: str, job_id: str | None = None) -> str:
+    if job_id:
+        return job_id
+    for job in list_active_jobs(project_id):
+        if job.get("type") == job_type and job.get("status") in {"queued", "running", "paused"}:
+            return job["id"]
+    return create_job(project_id, job_type, message)
+
+
+def _fail_workflow(project_id: str, job_id: str | None, message: str, exc: Exception) -> None:
+    update_project_status(project_id, "failed")
+    if job_id:
+        update_job(job_id, "failed", 100, message, redact_text(str(exc)), stage="failed")
+
+
+def _has_production_shots(project_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM shots WHERE project_id = ?", (project_id,)).fetchone()
+    return int(row["n"] or 0) > 0
 
 
 def _require_project(project_id: str) -> dict:

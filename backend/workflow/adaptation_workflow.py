@@ -4,7 +4,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from ..services.adaptation_service import start_adaptation_workflow
-from ..services.job_service import update_job
+from ..services.job_service import redact_text, update_job
 from ..services.project_service import update_project_status
 
 
@@ -19,7 +19,7 @@ def run_adaptation_workflow(project_id: str, job_id: str) -> None:
         graph.invoke({"project_id": project_id, "job_id": job_id})
     except Exception as exc:
         update_project_status(project_id, "failed")
-        update_job(job_id, "failed", 100, "改编工作流失败", str(exc), stage="failed")
+        update_job(job_id, "failed", 100, "改编工作流失败，可从检查点继续。", redact_text(str(exc)), stage="failed")
 
 
 def _build_graph():

@@ -36,8 +36,7 @@ export const state = {
   // { stage, key, baseline, draft, dirty }：baseline 为进入编辑时的快照。
   stageEdit: null,
 
-  /* ---- 自动/监制流程控制（原型：后端尚无统一自动编排引擎） ---- */
-  // { paused: bool }：仅本页会话内生效的原型暂停标记。
+  /* ---- 流程控制由后端 checkpoint / project.status 决定，切换项目时清空本地提示 ---- */
   workflowControl: { paused: false },
 
   stageModelDraft: {},

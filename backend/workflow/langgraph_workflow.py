@@ -45,7 +45,7 @@ def run_langgraph_workflow(project_id: str, job_id: str) -> None:
 def resume_langgraph_workflow(project_id: str, job_id: str) -> None:
     checkpoint = get_paused_checkpoint(project_id)
     if not checkpoint or checkpoint["job_id"] != job_id:
-        update_job(job_id, "failed", 100, "No paused checkpoint found", "No paused checkpoint found")
+        update_job(job_id, "failed", 100, "没有可恢复的审核检查点", "没有可恢复的审核检查点")
         return
     try:
         state = checkpoint.get("state") or {}
@@ -53,12 +53,12 @@ def resume_langgraph_workflow(project_id: str, job_id: str) -> None:
         state["job_id"] = job_id
         state["saved_checkpoint_id"] = checkpoint["id"]
         update_project_status(project_id, "running")
-        update_job(job_id, "running", 93, "Resuming LangGraph workflow from human review checkpoint")
+        update_job(job_id, "running", 93, "正在从监制检查点继续")
         graph = _build_resume_graph()
         graph.invoke(state)
     except Exception as exc:  # pragma: no cover - workflow guard for local demo resilience
         update_project_status(project_id, "failed")
-        update_job(job_id, "failed", 100, "LangGraph resume failed", str(exc))
+        update_job(job_id, "failed", 100, "从检查点恢复失败，可稍后重试", str(exc))
 
 
 def _build_graph():
@@ -203,10 +203,22 @@ def _route_after_quality_gate(state: VisionCraftState) -> str:
 
 def _pause_review(state: VisionCraftState) -> VisionCraftState:
     # 检查点保存恢复所需状态，用户确认后不必重新跑完整流程。
-    checkpoint_id = save_workflow_checkpoint(state["project_id"], state["job_id"], "quality_gate", state)
+    checkpoint_id = save_workflow_checkpoint(
+        state["project_id"],
+        state["job_id"],
+        "quality_gate",
+        {
+            "project_id": state["project_id"],
+            "job_id": state["job_id"],
+            "node": "quality_gate",
+            "stage": "review_pending",
+            "input_summary": "质检通过，等待人工确认",
+            "pause_reason": "已到达旧版监制质检节点，等待人工确认后继续。",
+        },
+    )
     state["saved_checkpoint_id"] = checkpoint_id
     update_project_status(state["project_id"], "review_pending")
-    update_job(state["job_id"], "paused", 92, "Human review checkpoint reached. Submit feedback or resume workflow.")
+    update_job(state["job_id"], "paused", 92, "已到达监制审核节点，等待确认后继续", stage="review_pending")
     return state
 
 
