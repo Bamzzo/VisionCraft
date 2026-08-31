@@ -336,6 +336,23 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **验收：** `tools/test_live_safeguards.py`、`tools/verify_live_multishot.py`、`docs/live-run-audit.md`
 
+### P7-C：实时阶段状态一致性与浏览器证据质量
+
+**状态：** 2026-08-31 已完成本地无费用收口。**不发送真实 API，费用 0 元。** 不得把 `live-multishot` 旧截图改成新证据。
+
+**问题：** 真实成片完成后，右侧仍可能显示「关键帧处理中 / 镜头视频已失效」。原因是视图模型把 I2V（只需首帧）当成必须首尾帧，缺尾帧时把关键帧标成处理中，并把已有真实视频的下游标成已失效。`live-multishot` 前 6 张截图因未等待 DOM 条件导致文件大小相同，无法证明阶段切换。
+
+**已实现：**
+
+- `executionStage` 由当前版本、任务和资产推导；`viewStage` / `selectedAsset` 只影响查看，不改执行态；
+- I2V 只需当前版本首帧，T2V 不强制关键帧；当前版本已有真实视频即视为越过关键帧；
+- 没有 `keyframe_redraw` / `adaptation_production` 任务时，关键帧显示「未开始」，不得显示「处理中」；
+- 历史版本 `video_invalid` 不能覆盖当前版本已完成；成片完成后关键帧/视频为已完成，成片与导出为已完成；
+- 右侧 8 阶段同时显示名称、中文状态、可查看/可执行、素材/任务数、前置提示；颜色不是唯一表达；
+- 新浏览器证据目录 `output/playwright/p7c-ui-state/`（不入库），截图前等待 DOM，记录 SHA-256，相邻哈希相同则 FAIL。
+
+**验收：** `node tools/test_workflow_view_model.mjs`、`tools/test_p7c_ui_state_browser.py`、`docs/p7c-ui-state-evidence.md`
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

@@ -323,6 +323,7 @@ function renderStageNav() {
     return;
   }
   const workflow = computeWorkflow(project);
+  nav.dataset.executionStage = workflow.executionStage;
   nav.innerHTML = workflow.stages
     .map((stage) => {
       const viewing = state.viewStage === stage.id;
@@ -338,13 +339,19 @@ function renderStageNav() {
       if (stage.assetCount) countBits.push(`${stage.assetCount} 素材`);
       if (stage.jobCount) countBits.push(`${stage.jobCount} 任务`);
       const countText = countBits.length ? countBits.join(" · ") : "暂无素材";
+      const accessText = stage.accessLabel || (stage.viewable ? "可查看" : "不可查看");
+      const hintText = stage.state === STAGE_STATE.SKIPPED
+        ? (stage.skippedReason || stage.prerequisite || "")
+        : (stage.prerequisite || "");
       return `
-      <button type="button" class="${classes.join(" ")}" data-stage-id="${stage.id}" data-state="${escapeHtml(stage.state)}" data-viewable="true" data-executing="${executing ? "true" : "false"}" data-awaiting-review="${stage.awaitingReview ? "true" : "false"}" data-current="${stage.current ? "true" : "false"}" aria-current="${viewing ? "true" : "false"}" aria-label="${escapeHtml(stage.ariaLabel || stage.label)}">
+      <button type="button" class="${classes.join(" ")}" data-stage-id="${stage.id}" data-state="${escapeHtml(stage.state)}" data-viewable="true" data-can-execute="${stage.canExecute ? "true" : "false"}" data-asset-count="${stage.assetCount || 0}" data-job-count="${stage.jobCount || 0}" data-executing="${executing ? "true" : "false"}" data-awaiting-review="${stage.awaitingReview ? "true" : "false"}" data-current="${stage.current ? "true" : "false"}" aria-current="${viewing ? "true" : "false"}" aria-label="${escapeHtml(stage.ariaLabel || stage.label)}">
         <span class="stage-index" aria-hidden="true">${stage.index + 1}</span>
         <span class="stage-node-body">
           <span class="stage-node-label">${escapeHtml(stage.label)}</span>
           <span class="stage-node-summary">${escapeHtml(stage.summary)}</span>
           <span class="stage-node-count">${escapeHtml(countText)}</span>
+          <span class="stage-node-access">${escapeHtml(accessText)}</span>
+          ${hintText ? `<span class="stage-node-hint">${escapeHtml(hintText)}</span>` : ""}
         </span>
         <span class="stage-node-state">
           <span class="stage-state-mark" aria-hidden="true">${escapeHtml(stage.mark || "")}</span>

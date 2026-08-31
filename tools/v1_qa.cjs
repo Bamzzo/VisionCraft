@@ -64,10 +64,17 @@ async function driveToStoryboard(page, id) {
 }
 
 async function uiCreateProject(page, title, text) {
-  await page.click("#newProjectBtn");
-  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 5000 });
+  const formVisible = await page.locator("#projectForm:not(.hidden)").count();
+  if (!formVisible) {
+    await page.click("#newProjectBtn", { force: true });
+  }
+  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 8000 });
+  await page.locator("#titleInput").scrollIntoViewIfNeeded();
   await page.fill("#titleInput", title);
+  await page.locator("#sourceTextInput").scrollIntoViewIfNeeded();
+  await page.waitForSelector("#sourceTextInput:visible", { timeout: 8000 });
   await page.fill("#sourceTextInput", text);
+  await page.locator("#submitProjectBtn").scrollIntoViewIfNeeded();
   await page.click("#submitProjectBtn");
   await page.waitForFunction(
     (t) => document.querySelector(".project-item.active strong")?.textContent.includes(t.slice(0, 12)),
@@ -133,6 +140,19 @@ async function main() {
   try {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#newProjectBtn");
+    await page.waitForFunction(
+      () => (document.querySelector("#ratioInput")?.options?.length || 0) > 0,
+      null,
+      { timeout: 15000 }
+    );
+    await page.waitForFunction(
+      () => {
+        const list = document.querySelector("#projectList");
+        return Boolean(list && (list.querySelector(".project-item") || (list.textContent || "").includes("暂无")));
+      },
+      null,
+      { timeout: 15000 }
+    );
     const charset = await page.evaluate(() => document.characterSet);
     if (charset !== "UTF-8") throw new Error(`文档编码不是 UTF-8：${charset}`);
 
@@ -147,14 +167,19 @@ async function main() {
         label: node.querySelector(".stage-node-label")?.textContent.trim(),
         state: node.querySelector(".stage-state-label")?.textContent.trim(),
         mark: node.querySelector(".stage-state-mark")?.textContent.trim(),
+        access: node.querySelector(".stage-node-access")?.textContent.trim(),
+        count: node.querySelector(".stage-node-count")?.textContent.trim(),
+        hint: node.querySelector(".stage-node-hint")?.textContent.trim(),
         aria: node.getAttribute("aria-label") || "",
+        viewable: node.getAttribute("data-viewable"),
+        canExecute: node.getAttribute("data-can-execute"),
       }));
     });
     if (nav.map((item) => item.id).join(",") !== STAGE_IDS.join(",")) {
       throw new Error(`右侧 8 阶段不正确：${nav.map((item) => item.id).join(",")}`);
     }
-    if (nav.some((item) => !item.state || !item.mark || !item.aria)) {
-      throw new Error("阶段节点缺少中文状态、标记或 aria-label");
+    if (nav.some((item) => !item.state || !item.mark || !item.aria || !item.access || !item.count || !item.hint)) {
+      throw new Error("阶段节点缺少中文状态、标记、可访问性、计数或前置提示");
     }
     if (!nav.find((item) => item.id === "storyline" && item.state === "跳过")) {
       throw new Error("短文本故事线选择应显示跳过");

@@ -1582,7 +1582,9 @@ button:disabled {
   background: var(--panel-subtle);
 }
 
-.stage-node .stage-node-count {
+.stage-node .stage-node-count,
+.stage-node .stage-node-access,
+.stage-node .stage-node-hint {
   font-size: 10px;
   color: var(--text-muted);
   overflow-wrap: anywhere;

@@ -85,9 +85,19 @@ selectedAsset    用户当前选中的素材卡片
 ```powershell
 node tools/test_workflow_view_model.mjs
 .venv\Scripts\python.exe tools\test_v1_qa_browser.py
+.venv\Scripts\python.exe tools\test_p7c_ui_state_browser.py
 ```
 
-## 6. 仍存在的原型边界
+## 6. P7-C 阶段状态推导（当前版本优先）
+
+- 关键帧：I2V 只需当前版本首帧；T2V 不强制；已有当前版本真实视频也算越过关键帧。没有关键帧任务时显示「未开始」，不是「处理中」。
+- 镜头视频：只看 `current_version_id` 对应版本。当前版本视频有效时，不得因历史版本或 `video_invalid` 显示「已失效」。
+- 成片完成后：执行阶段为「导出与交付」；关键帧、镜头视频、成片合成、导出均为「已完成」。
+- 成片过期：执行阶段回到「成片合成」，导出不再是已完成；历史成片仍可查看。
+- 页面刷新按后端项目详情重推 `executionStage`；项目切换先 `resetViewState()`。
+- 浏览器新证据：`output/playwright/p7c-ui-state/`，详见 `docs/p7c-ui-state-evidence.md`。本阶段真实网络请求为否，费用 0 元。
+
+## 7. 仍存在的原型边界
 
 - 自动编排引擎未在后端实现，「暂停流程」仍只在本页会话生效；
 - 真实 TTS、AI 配乐、用户系统和部署不在本阶段；

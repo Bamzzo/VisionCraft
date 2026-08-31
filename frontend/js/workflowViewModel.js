@@ -108,7 +108,7 @@ const STAGE_JOB_TYPES = {
   storyline: ["adaptation_workflow", "medium_analysis"],
   bible: ["adaptation_bible", "adaptation_regen_bible"],
   storyboard: ["adaptation_storyboard", "adaptation_regen_storyboard", "adaptation_production"],
-  keyframes: ["keyframe_redraw"],
+  keyframes: ["keyframe_redraw", "vision_review", "adaptation_production"],
   video: ["video_generation", "batch_video_generation", "video_safety_retry", "video_task_refresh"],
   assembly: ["sequence_assembly"],
   export: ["project_settings"],
@@ -182,10 +182,13 @@ function isMedium(project) {
   return project?.text_scale === "medium";
 }
 
-function realVideoPath(shot) {
+function currentVersionOf(shot) {
   const versions = shot?.versions || [];
-  const current = versions.find((item) => item.id === shot?.current_version_id) || versions[0];
-  return current?.video_path || "";
+  return versions.find((item) => item.id === shot?.current_version_id) || versions[0] || null;
+}
+
+function realVideoPath(shot) {
+  return currentVersionOf(shot)?.video_path || "";
 }
 
 function assetByPath(project, path) {
@@ -203,10 +206,30 @@ function shotHasRealVideo(project, shot) {
   return isRealShotVideo(assetByPath(project, realVideoPath(shot)));
 }
 
-function shotHasKeyframes(shot) {
-  const versions = shot?.versions || [];
-  const current = versions.find((item) => item.id === shot?.current_version_id) || versions[0];
-  return Boolean(current?.first_frame_path && current?.last_frame_path);
+function shotKeyframeRequirement(shot) {
+  const mode = String(currentVersionOf(shot)?.video_mode || "t2v").toLowerCase();
+  if (mode === "keyframes") return "first_and_last";
+  if (mode === "i2v") return "first";
+  return "none";
+}
+
+/** 当前版本是否已满足该镜头视频模式所需的关键帧（I2V 只需首帧，T2V 不强制）。 */
+function shotHasRequiredKeyframes(shot) {
+  const version = currentVersionOf(shot);
+  if (!version) return false;
+  const need = shotKeyframeRequirement(shot);
+  if (need === "none") return true;
+  if (need === "first") return Boolean(version.first_frame_path);
+  return Boolean(version.first_frame_path && version.last_frame_path);
+}
+
+function shotPastKeyframes(project, shot) {
+  return shotHasRealVideo(project, shot) || shotHasRequiredKeyframes(shot);
+}
+
+function currentShotVideoFailed(project, shot) {
+  if (shotHasRealVideo(project, shot)) return false;
+  return ["video_failed", "video_invalid"].includes(shot?.status);
 }
 
 function activeJobs(project) {
@@ -240,18 +263,18 @@ function productionFrontier(project) {
   const assets = project?.assets || [];
   const finalAsset = assets.find((asset) => asset.type === "final-video");
   if (!shots.length) return "keyframes";
-  const allKeyframes = shots.every(shotHasKeyframes);
-  if (!allKeyframes) return "keyframes";
-  const allVideos = shots.every((shot) => shotHasRealVideo(project, shot));
-  if (!allVideos) return "video";
+  if (!shots.every((shot) => shotPastKeyframes(project, shot))) return "keyframes";
+  if (!shots.every((shot) => shotHasRealVideo(project, shot))) return "video";
+  if (hasRunningJob(project, ["sequence_assembly"])) return "assembly";
   if (finalAsset && !project?.assembly_stale) return "export";
   return "assembly";
 }
 
 function failedStage(project) {
-  // 失败定位到最早出现问题的阶段；制作期失败优先看镜头视频。
+  // 失败定位到最早出现问题的阶段；制作期只看当前版本是否真正失败。
   const shots = project?.shots || [];
-  if (shots.some((shot) => ["video_failed", "video_invalid"].includes(shot.status))) return "video";
+  if (shots.some((shot) => currentShotVideoFailed(project, shot))) return "video";
+  if (shots.length) return productionFrontier(project);
   return executionStageId({ ...project, status: fallbackStatusBeforeFailure(project) });
 }
 
@@ -314,17 +337,17 @@ function frontierState(project, stageId) {
       return STAGE_STATE.AWAITING_REVIEW;
     case "keyframes": {
       const shots = project?.shots || [];
-      if (!shots.length) {
-        return hasRunningJob(project, ["adaptation_production"]) ? STAGE_STATE.PROCESSING : STAGE_STATE.NOT_STARTED;
-      }
-      return shots.every(shotHasKeyframes) ? STAGE_STATE.COMPLETED : STAGE_STATE.PROCESSING;
+      if (hasRunningJob(project, ["keyframe_redraw", "adaptation_production"])) return STAGE_STATE.PROCESSING;
+      if (!shots.length) return STAGE_STATE.NOT_STARTED;
+      if (shots.every((shot) => shotPastKeyframes(project, shot))) return STAGE_STATE.COMPLETED;
+      return STAGE_STATE.NOT_STARTED;
     }
     case "video": {
       const shots = project?.shots || [];
       if (!shots.length) return STAGE_STATE.NOT_STARTED;
-      if (shots.some((shot) => ["video_failed", "video_invalid"].includes(shot.status))) return STAGE_STATE.FAILED;
+      if (shots.some((shot) => currentShotVideoFailed(project, shot))) return STAGE_STATE.FAILED;
       if (
-        shots.some((shot) => ["video_running", "video_waiting_remote"].includes(shot.status)) ||
+        shots.some((shot) => ["video_running", "video_waiting_remote"].includes(shot.status) && !shotHasRealVideo(project, shot)) ||
         hasRunningJob(project, ["video_generation", "batch_video_generation", "video_safety_retry", "video_task_refresh"])
       ) {
         return STAGE_STATE.PROCESSING;
@@ -343,7 +366,7 @@ function frontierState(project, stageId) {
     }
     case "export": {
       const finalAsset = (project?.assets || []).find((asset) => asset.type === "final-video");
-      if (hasRunningJob(project, ["sequence_assembly"])) return STAGE_STATE.PROCESSING;
+      if (hasRunningJob(project, ["sequence_assembly"])) return STAGE_STATE.NOT_STARTED;
       if (finalAsset && project?.assembly_stale) return STAGE_STATE.MODIFIED;
       if (finalAsset) return STAGE_STATE.COMPLETED;
       return STAGE_STATE.NOT_STARTED;
@@ -430,8 +453,10 @@ function decorateStage(project, stage, extra) {
   if (state === STAGE_STATE.INVALIDATED) flags.push("因上游修改而失效");
   if (state === STAGE_STATE.FAILED) flags.push("失败");
   if (state === STAGE_STATE.SKIPPED) flags.push("跳过");
-  flags.push("可点击查看");
-  const ariaLabel = `${stage.label}，${stageStateLabel(state)}。素材 ${assetCount}，任务 ${jobCount}。${flags.join("，")}。`;
+  flags.push(extra.current && state !== STAGE_STATE.SKIPPED ? "可执行" : "不可执行");
+  flags.push("可查看");
+  const prerequisite = STAGE_LOCKED_HINT[stage.id] || "";
+  const ariaLabel = `${stage.label}，${stageStateLabel(state)}。可查看。${extra.current && state !== STAGE_STATE.SKIPPED ? "可执行" : "不可执行"}。素材 ${assetCount}，任务 ${jobCount}。前置：${prerequisite}。${flags.join("，")}。`;
   return {
     ...stage,
     ...extra,
@@ -442,7 +467,9 @@ function decorateStage(project, stage, extra) {
     viewable: true,
     executing,
     awaitingReview,
-    canExecute: Boolean(extra.current && state !== STAGE_STATE.NOT_STARTED && state !== STAGE_STATE.SKIPPED),
+    canExecute: Boolean(extra.current && state !== STAGE_STATE.SKIPPED),
+    accessLabel: extra.current && state !== STAGE_STATE.SKIPPED ? "可查看，可执行" : "可查看，不可执行",
+    prerequisite,
     assetCount,
     jobCount,
     goal: STAGE_GOALS[stage.id] || "",
@@ -511,7 +538,7 @@ function stageSummary(project, stageId, state) {
       return count ? `${count} 个分镜` : "等待分镜";
     }
     case "keyframes": {
-      const ready = shots.filter(shotHasKeyframes).length;
+      const ready = shots.filter((shot) => shotPastKeyframes(project, shot)).length;
       return shots.length ? `${ready}/${shots.length} 镜头关键帧` : "等待关键帧";
     }
     case "video": {
@@ -775,11 +802,6 @@ function assemblyAssets(project) {
   return cards;
 }
 
-function currentVersionOf(shot) {
-  const versions = shot?.versions || [];
-  return versions.find((item) => item.id === shot?.current_version_id) || versions[0] || null;
-}
-
 function currentVersionPreview(shot) {
   const version = currentVersionOf(shot);
   return version?.first_frame_path || "";
@@ -791,18 +813,18 @@ function assetPathById(project, assetId) {
 }
 
 function videoStatusLabel(shot, version, real) {
+  if (real) return "视频就绪";
   if (["video_running"].includes(shot.status)) return "生成中";
   if (["video_waiting_remote"].includes(shot.status)) return "等待云端";
   if (["video_failed", "video_invalid"].includes(shot.status)) return "失败";
-  if (version?.video_path && real) return "视频就绪";
   if (version?.video_path && !real) return "占位无效";
   return "未生成";
 }
 
 function videoTone(shot, real) {
+  if (real) return "done";
   if (["video_failed", "video_invalid"].includes(shot.status)) return "failed";
   if (["video_running", "video_waiting_remote"].includes(shot.status)) return "active";
-  if (real) return "done";
   return "idle";
 }
 

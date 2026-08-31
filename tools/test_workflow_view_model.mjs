@@ -230,12 +230,25 @@ function realShot(overrides = {}) {
   const failed = computeWorkflow(
     baseProject({
       status: "failed",
-      shots: [realShot({ status: "video_failed" })],
+      shots: [
+        realShot({
+          status: "video_failed",
+          versions: [{ id: "v1", version_number: 1, first_frame_path: "/a.jpg", last_frame_path: "/b.jpg", video_path: null }],
+        }),
+      ],
+    })
+  );
+  assert(failed.executionStage === "video", "当前版本视频失败时执行阶段在视频");
+  assert(stageById(failed, "video").state === STAGE_STATE.FAILED, "无有效当前视频时应显示失败");
+
+  const failedButCurrentReady = computeWorkflow(
+    baseProject({
+      status: "failed",
+      shots: [realShot({ status: "video_invalid" })],
       assets: [{ id: "av", type: "video", file_path: "/v.mp4", embedding_ref: "provider:seedance" }],
     })
   );
-  assert(failed.executionStage === "video", "镜头失败时执行阶段在视频");
-  assert(stageById(failed, "video").state === STAGE_STATE.FAILED, "视频阶段应显示失败");
+  assert(failedButCurrentReady.executionStage !== "video" || stageById(failedButCurrentReady, "video").state !== STAGE_STATE.FAILED, "当前版本已有真实视频时，video_invalid 不得覆盖完成态");
 
   const storyboardEdited = computeWorkflow(
     baseProject({
@@ -329,6 +342,299 @@ function realShot(overrides = {}) {
   assert(stageById(workflow, "storyboard").state === STAGE_STATE.INVALIDATED, "阶段模型修改后分镜应显示失效");
   assert(stageById(workflow, "video").state !== STAGE_STATE.INVALIDATED, "镜头视频不应因文本模型修改而失效");
   console.log("PASS: 阶段模型修改只失效必要下游");
+}
+
+function i2vShot(index, extras = {}) {
+  const hasVideo = Boolean(extras.video_path);
+  return {
+    id: extras.id || `shot${index}`,
+    title: `镜头 ${index}`,
+    status: extras.status || (hasVideo ? "video_ready" : "production_ready"),
+    shot_index: index,
+    current_version_id: extras.current_version_id || `v${index}`,
+    versions: extras.versions || [
+      {
+        id: extras.current_version_id || `v${index}`,
+        version_number: extras.version_number || 1,
+        video_mode: "i2v",
+        first_frame_path: extras.first_frame_path !== undefined ? extras.first_frame_path : `/a${index}.jpg`,
+        last_frame_path: extras.last_frame_path !== undefined ? extras.last_frame_path : null,
+        video_path: extras.video_path !== undefined ? extras.video_path : null,
+        provider: extras.provider || "minimax",
+        model: extras.model || "MiniMax-Hailuo-02-超长模型名用于检查换行",
+      },
+    ],
+  };
+}
+
+function videoAsset(index, path) {
+  return { id: `av${index}`, type: "video", file_path: path || `/v${index}.mp4`, embedding_ref: "provider:minimax:local-fixture" };
+}
+
+{
+  const empty = computeWorkflow(baseProject({ source_text: "", shots: [], jobs: [] }));
+  assert(empty.executionStage === "text", "空项目执行阶段为文本理解");
+  assert(stageById(empty, "keyframes").state !== STAGE_STATE.PROCESSING, "空项目关键帧不得显示处理中");
+  assert(stageById(empty, "video").state === STAGE_STATE.NOT_STARTED, "空项目镜头视频未开始");
+  assert(stageById(empty, "export").canExecute === false, "空项目导出不可执行");
+  assert(stageById(empty, "export").accessLabel.includes("不可执行"), "空项目导出应标明不可执行");
+  console.log("PASS: 空项目阶段状态");
+}
+
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "awaiting_scope_review",
+      adaptation_options: [{ id: "opt1", title: "方案一", selected: 0 }],
+    })
+  );
+  assert(workflow.executionStage === "text", "改编等待审核时执行阶段在文本理解");
+  assert(stageById(workflow, "text").state === STAGE_STATE.AWAITING_REVIEW, "改编等待审核");
+  assert(stageById(workflow, "bible").state === STAGE_STATE.NOT_STARTED, "Bible 仍未开始");
+  console.log("PASS: 改编等待审核");
+}
+
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "awaiting_storyboard_review",
+      story_bible: { review_status: "confirmed", adaptation_summary: "已确认" },
+      storyboard_drafts: [{ id: "d1", title: "镜 1", review_status: "draft" }],
+    })
+  );
+  assert(stageById(workflow, "bible").state === STAGE_STATE.COMPLETED, "Story Bible 已确认应已完成");
+  assert(workflow.executionStage === "storyboard", "确认 Bible 后执行阶段在分镜");
+  console.log("PASS: Story Bible 已确认");
+}
+
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      story_bible: { review_status: "confirmed" },
+      storyboard_drafts: [],
+      shots: [i2vShot(1, { first_frame_path: null })],
+    })
+  );
+  assert(stageById(workflow, "storyboard").state === STAGE_STATE.COMPLETED, "分镜已确认应已完成");
+  assert(workflow.executionStage === "keyframes", "分镜确认后若无关键帧则停在关键帧");
+  console.log("PASS: 分镜已确认");
+}
+
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      shots: [1, 2, 3, 4, 5].map((index) => i2vShot(index, { first_frame_path: null })),
+    })
+  );
+  assert(workflow.executionStage === "keyframes", "仅有分镜、无关键帧任务时执行阶段在关键帧");
+  assert(stageById(workflow, "keyframes").state === STAGE_STATE.NOT_STARTED, "没有关键帧任务时不得显示处理中");
+  assert(stageById(workflow, "keyframes").stateLabel === "未开始", "关键帧中文状态应为未开始");
+  assert(stageById(workflow, "video").state === STAGE_STATE.NOT_STARTED, "下游视频应为未开始而不是处理中");
+  console.log("PASS: 关键帧未开始（无任务不得显示处理中）");
+}
+
+{
+  const processing = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      shots: [i2vShot(1, { first_frame_path: null })],
+      jobs: [{ id: "j1", type: "keyframe_redraw", status: "running", progress: 30 }],
+      active_jobs: [{ id: "j1", type: "keyframe_redraw", status: "running", progress: 30 }],
+    })
+  );
+  assert(stageById(processing, "keyframes").state === STAGE_STATE.PROCESSING, "有关键帧任务时才显示处理中");
+  assert(stageById(processing, "keyframes").jobCount === 1, "关键帧应统计任务数");
+  console.log("PASS: 关键帧处理中");
+}
+
+{
+  const shots = [1, 2, 3, 4, 5].map((index) =>
+    i2vShot(index, {
+      status: index <= 2 ? "video_running" : "production_ready",
+      video_path: index <= 2 ? `/v${index}.mp4` : null,
+    })
+  );
+  shots[0].status = "video_running";
+  shots[1].status = "video_waiting_remote";
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      shots,
+      assets: [videoAsset(1), videoAsset(2)],
+      jobs: [{ id: "j1", type: "video_generation", status: "waiting_remote", progress: 40, shot_id: "shot2" }],
+      active_jobs: [{ id: "j1", type: "video_generation", status: "waiting_remote", progress: 40, shot_id: "shot2" }],
+    })
+  );
+  assert(workflow.executionStage === "video", "部分镜头完成后仍停在镜头视频");
+  assert(stageById(workflow, "video").state === STAGE_STATE.PROCESSING, "未完成镜头等待远程时应处理中");
+  assert(stageById(workflow, "video").summary.includes("2/5"), "部分完成应显示 2/5");
+  assert(stageById(workflow, "keyframes").state === STAGE_STATE.COMPLETED, "I2V 仅首帧且已挂帧后关键帧应已完成");
+  console.log("PASS: 镜头视频处理中 / 等待远程");
+}
+
+{
+  const current = {
+    id: "v2",
+    version_number: 2,
+    video_mode: "i2v",
+    first_frame_path: "/a2.jpg",
+    last_frame_path: null,
+    video_path: "/v2.mp4",
+    provider: "minimax",
+    model: "MiniMax-Hailuo-02",
+  };
+  const history = {
+    id: "v1",
+    version_number: 1,
+    video_mode: "i2v",
+    first_frame_path: "/a1.jpg",
+    video_path: "/v1.mp4",
+    provider: "minimax",
+    model: "old-model",
+  };
+  const project = baseProject({
+    status: "production_ready",
+    shots: [
+      {
+        id: "shot1",
+        title: "镜头 1",
+        status: "video_invalid",
+        current_version_id: "v2",
+        versions: [current, history],
+      },
+    ],
+    assets: [
+      { id: "av2", type: "video", file_path: "/v2.mp4", embedding_ref: "provider:minimax" },
+      { id: "av1", type: "video", file_path: "/v1.mp4", embedding_ref: "provider:minimax" },
+    ],
+  });
+  const workflow = computeWorkflow(project);
+  assert(stageById(workflow, "video").state !== STAGE_STATE.INVALIDATED, "历史版本失效不能覆盖当前版本已完成");
+  assert(stageById(workflow, "video").stateLabel !== "已失效", "当前有效视频不得显示镜头视频已失效");
+  const cards = stageAssets(project, "video");
+  assert(cards[0].statusLabel === "视频就绪", "当前版本真实视频应显示就绪");
+  assert(cards[0].meta["版本"] === "v2", "卡片使用当前版本");
+  console.log("PASS: 历史版本已失效但当前版本有效");
+}
+
+{
+  const shots = [1, 2, 3, 4, 5].map((index) => i2vShot(index, { video_path: `/v${index}.mp4` }));
+  const assets = [1, 2, 3, 4, 5].map((index) => videoAsset(index));
+  const workflow = computeWorkflow(baseProject({ status: "video_ready", shots, assets }));
+  assert(workflow.executionStage === "assembly", "五镜全部完成后执行阶段到成片合成");
+  assert(stageById(workflow, "keyframes").state === STAGE_STATE.COMPLETED, "I2V 仅首帧完成后关键帧已完成");
+  assert(stageById(workflow, "keyframes").state !== STAGE_STATE.PROCESSING, "成片前关键帧不得处理中");
+  assert(stageById(workflow, "video").state === STAGE_STATE.COMPLETED, "五镜视频已完成");
+  assert(stageById(workflow, "video").state !== STAGE_STATE.INVALIDATED, "当前版本有效时视频不得已失效");
+  assert(stageById(workflow, "video").summary.includes("5/5"), "应显示 5/5 镜头视频");
+  console.log("PASS: 5 个镜头全部完成");
+}
+
+{
+  const shots = [1, 2, 3, 4, 5].map((index) => i2vShot(index, { video_path: `/v${index}.mp4` }));
+  const assets = [1, 2, 3, 4, 5].map((index) => videoAsset(index));
+  const running = computeWorkflow(
+    baseProject({
+      status: "production_ready",
+      shots,
+      assets,
+      jobs: [{ id: "j1", type: "sequence_assembly", status: "running", progress: 55 }],
+      active_jobs: [{ id: "j1", type: "sequence_assembly", status: "running", progress: 55 }],
+    })
+  );
+  assert(running.executionStage === "assembly", "成片合成中执行阶段在成片");
+  assert(stageById(running, "assembly").state === STAGE_STATE.PROCESSING, "成片合成中");
+  assert(stageById(running, "export").state === STAGE_STATE.NOT_STARTED, "合成进行中导出不得处理中");
+  assert(stageById(running, "keyframes").state === STAGE_STATE.COMPLETED, "合成中关键帧仍为已完成");
+  console.log("PASS: 成片合成中");
+}
+
+{
+  const shots = [1, 2, 3, 4, 5].map((index) => i2vShot(index, { video_path: `/v${index}.mp4` }));
+  const assets = [
+    ...[1, 2, 3, 4, 5].map((index) => videoAsset(index)),
+    { id: "fv", type: "final-video", file_path: "/final.mp4", created_at: "2026-08-31T02:00:00Z" },
+  ];
+  const complete = computeWorkflow(baseProject({ status: "completed", shots, assets, assembly_stale: 0 }));
+  assert(complete.executionStage === "export", "成片完成后执行阶段为导出与交付");
+  assert(stageById(complete, "keyframes").state === STAGE_STATE.COMPLETED, "成片完成后关键帧已完成");
+  assert(stageById(complete, "keyframes").stateLabel !== "处理中", "成片完成后不得显示关键帧处理中");
+  assert(stageById(complete, "video").state === STAGE_STATE.COMPLETED, "成片完成后镜头视频已完成");
+  assert(stageById(complete, "video").stateLabel !== "已失效", "成片完成后不得显示镜头视频已失效");
+  assert(stageById(complete, "assembly").state === STAGE_STATE.COMPLETED, "成片合成已完成");
+  assert(stageById(complete, "export").state === STAGE_STATE.COMPLETED, "导出已完成");
+  complete.stages.forEach((stage) => {
+    assert(stage.viewable === true, `${stage.label} 应可查看`);
+    assert(stage.accessLabel, `${stage.label} 应标明可否执行`);
+    assert(typeof stage.assetCount === "number", `${stage.label} 应有素材计数`);
+    assert(typeof stage.jobCount === "number", `${stage.label} 应有任务计数`);
+    assert(stage.prerequisite, `${stage.label} 应有前置条件提示`);
+    assert(stage.stateLabel, `${stage.label} 应有中文状态`);
+  });
+
+  const stale = computeWorkflow(baseProject({ status: "completed", shots, assets, assembly_stale: 1 }));
+  assert(stale.executionStage === "assembly", "成片过期后回到成片合成");
+  assert(stageById(stale, "assembly").state === STAGE_STATE.MODIFIED, "过期成片显示已修改");
+  assert(stageById(stale, "export").state !== STAGE_STATE.COMPLETED, "过期后导出不再是已完成");
+  console.log("PASS: 成片合成完成 / 过期");
+}
+
+{
+  const a = computeWorkflow(baseProject({ id: "project_a", status: "completed", shots: [i2vShot(1, { video_path: "/v1.mp4" })], assets: [videoAsset(1), { id: "fv", type: "final-video", file_path: "/final.mp4" }] }));
+  const b = computeWorkflow(baseProject({ id: "project_b" }));
+  assert(a.executionStage === "export" && b.executionStage === "text", "项目切换后各自恢复执行阶段");
+  assert(stageById(b, "video").state === STAGE_STATE.NOT_STARTED, "新项目不得继承旧项目视频完成态");
+  console.log("PASS: 项目切换隔离（视图模型纯函数）");
+}
+
+{
+  const snapshot = baseProject({
+    status: "completed",
+    shots: [1, 2, 3, 4, 5].map((index) => i2vShot(index, { video_path: `/v${index}.mp4` })),
+    assets: [...[1, 2, 3, 4, 5].map((index) => videoAsset(index)), { id: "fv", type: "final-video", file_path: "/final.mp4" }],
+  });
+  const first = computeWorkflow(snapshot);
+  const refreshed = computeWorkflow(JSON.parse(JSON.stringify(snapshot)));
+  assert(first.executionStage === refreshed.executionStage, "刷新后执行阶段应能从后端快照恢复");
+  assert(stageById(first, "video").state === stageById(refreshed, "video").state, "刷新后视频状态一致");
+  console.log("PASS: 刷新恢复");
+}
+
+{
+  const workflow = computeWorkflow(
+    baseProject({
+      status: "created",
+      shots: [],
+    })
+  );
+  assert(stageById(workflow, "assembly").canExecute === false, "未开始的成片阶段不可执行");
+  assert(stageById(workflow, "export").canExecute === false, "未开始的导出阶段不可执行");
+  assert(stageById(workflow, "video").canExecute === false, "未开始的视频阶段不可执行");
+  assert(stageById(workflow, "text").canExecute === true, "当前执行阶段可执行");
+  console.log("PASS: 未开始阶段不能执行非法操作");
+}
+
+{
+  const longName = computeWorkflow(
+    baseProject({
+      title: "QA甲-超长中文标题用于检查换行与错位-影视创作工作台".repeat(3),
+      status: "video_ready",
+      shots: [i2vShot(1, { video_path: "/v1.mp4", model: "doubao-seedance-1-0-pro-fast-超长模型标识" })],
+      assets: [videoAsset(1)],
+    })
+  );
+  assert(longName.stages.length === 8, "长标题项目仍显示 8 阶段");
+  const cards = stageAssets(
+    baseProject({
+      shots: [i2vShot(1, { video_path: "/v1.mp4", model: "doubao-seedance-1-0-pro-fast-超长模型标识" })],
+      assets: [videoAsset(1)],
+    }),
+    "video"
+  );
+  assert(cards[0].meta["模型"].includes("超长模型"), "长模型名应完整进入卡片而不是被丢弃");
+  console.log("PASS: 长中文与长模型名进入视图模型");
 }
 
 console.log("ALL WORKFLOW VIEW MODEL TESTS PASSED");
