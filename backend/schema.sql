@@ -154,6 +154,16 @@ CREATE TABLE IF NOT EXISTS assets (
   embedding_ref TEXT,
   source_task_id TEXT,
   source_remote_task_id TEXT,
+  asset_role TEXT,
+  mime_type TEXT,
+  byte_size INTEGER,
+  sha256 TEXT,
+  width INTEGER,
+  height INTEGER,
+  duration_seconds REAL,
+  source TEXT,
+  source_provider TEXT,
+  source_model TEXT,
   created_at TEXT NOT NULL
 );
 

@@ -4,7 +4,7 @@ from ..database import connect, utc_now
 from ..providers.image_provider import ImageAssetRequest, generate_image_asset
 
 
-IMAGE_ASSET_TYPES = {"character", "scene", "first-frame", "last-frame"}
+IMAGE_ASSET_TYPES = {"character", "scene", "first-frame", "last-frame", "keyframe", "reference"}
 
 
 def select_shot_keyframes(

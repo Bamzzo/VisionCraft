@@ -143,22 +143,97 @@ def persist_binary_asset(
     return asset_id
 
 
+def persist_uploaded_asset(
+    project_id: str,
+    *,
+    asset_type: str,
+    asset_role: str,
+    name: str,
+    content: bytes,
+    suffix: str,
+    mime_type: str,
+    width: int | None = None,
+    height: int | None = None,
+    duration_seconds: float | None = None,
+    source: str = "user-upload",
+) -> dict:
+    """Save a user-uploaded file under a server-generated unique name."""
+    normalized_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
+    filename = f"{asset_id}{normalized_suffix.lower()}"
+    file_path = project_asset_dir(project_id) / filename
+    public_path = public_asset_path(project_id, filename)
+    if width is None or height is None:
+        detected_w, detected_h = _image_dimensions(content, normalized_suffix.lower())
+        width = width if width is not None else detected_w
+        height = height if height is not None else detected_h
+    try:
+        file_path.write_bytes(content)
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO assets
+                (id, project_id, type, name, description, prompt, file_path, embedding_ref,
+                 mime_type, byte_size, sha256, width, height, duration_seconds,
+                 asset_role, source, source_provider, source_model, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    project_id,
+                    asset_type,
+                    name[:80] or asset_id,
+                    "用户上传到当前项目的素材。",
+                    "user-upload",
+                    public_path,
+                    f"upload:{asset_role}",
+                    mime_type,
+                    len(content),
+                    hashlib.sha256(content).hexdigest(),
+                    width,
+                    height,
+                    duration_seconds,
+                    asset_role,
+                    source,
+                    "user-upload",
+                    asset_role,
+                    utc_now(),
+                ),
+            )
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
+    return {
+        "id": asset_id,
+        "project_id": project_id,
+        "type": asset_type,
+        "role": asset_role,
+        "file_path": public_path,
+        "mime_type": mime_type,
+        "byte_size": len(content),
+        "width": width,
+        "height": height,
+        "duration_seconds": duration_seconds,
+        "name": name[:80] or asset_id,
+        "source": source,
+    }
+
+
 def _image_dimensions(content: bytes, suffix: str) -> tuple[int | None, int | None]:
     """Read common image dimensions without adding an image-processing dependency."""
     if suffix == ".png" and len(content) >= 24 and content.startswith(b"\x89PNG\r\n\x1a\n"):
         return struct.unpack(">II", content[16:24])
     if suffix in {".jpg", ".jpeg"} and content.startswith(b"\xff\xd8"):
+        sof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
         index = 2
-        while index + 9 < len(content):
+        while index + 8 < len(content):
             if content[index] != 0xFF:
                 index += 1
                 continue
             marker = content[index + 1]
-            index += 2
-            if marker in {0xD8, 0xD9}:
-                continue
-            length = int.from_bytes(content[index : index + 2], "big")
-            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
-                return int.from_bytes(content[index + 5 : index + 7], "big"), int.from_bytes(content[index + 3 : index + 5], "big")
-            index += max(length, 2)
+            if marker == 0xDA:
+                break
+            if marker in sof:
+                return int.from_bytes(content[index + 5 : index + 7], "big"), int.from_bytes(content[index + 7 : index + 9], "big")
+            index += 1
     return None, None

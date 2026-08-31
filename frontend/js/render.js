@@ -75,10 +75,67 @@ function isI2VFramePath(path) {
   return ["png", "jpg", "jpeg", "webp"].includes(suffix);
 }
 
+function formatByteSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function assetRoleLabel(role) {
+  return {
+    keyframe: "关键帧",
+    first_frame: "首帧",
+    last_frame: "尾帧",
+    reference_image: "参考图",
+    audio: "音频",
+    background_audio: "背景音频",
+    subtitle: "字幕",
+  }[role] || role || "";
+}
+
+function uploadStatusHtml(role) {
+  const item = state.assetUpload || {};
+  if (!item.status || item.status === "idle" || item.role !== role) return "";
+  const tone = item.status === "success" ? "success" : "warning";
+  const label = item.status === "uploading" ? "上传中" : item.status === "success" ? "上传成功" : "上传失败";
+  const extra = item.status === "failed" && item.message ? `：${item.message}` : "";
+  return `<span class="status-pill ${tone}" data-upload-status="${escapeHtml(role)}">${escapeHtml(label + extra)}</span>`;
+}
+
+function currentProjectAssetMeta(path) {
+  const asset = (state.project?.assets || []).find((item) => item.file_path === path);
+  if (!asset || !path) return "";
+  const bits = [
+    asset.name,
+    assetRoleLabel(asset.asset_role || asset.role),
+    asset.mime_type,
+    formatByteSize(asset.byte_size),
+    asset.width && asset.height ? `${asset.width}×${asset.height}` : "",
+    asset.duration_seconds ? `${Number(asset.duration_seconds).toFixed(1)}s` : "",
+  ].filter(Boolean);
+  return `<p class="muted-text" data-asset-meta>${escapeHtml(bits.join(" · "))}</p>`;
+}
+
+function assetUploadRowHtml({ role, accept, label, previewPath, previewOk, readyLabel, waitingLabel }) {
+  const busy = state.assetUpload?.status === "uploading" && state.assetUpload?.role === role;
+  return `<div class="local-keyframe-register" data-upload-role="${escapeHtml(role)}">
+    <label class="secondary-btn mini-btn ${busy ? "disabled" : ""}">
+      ${escapeHtml(busy ? "上传中…" : label)}
+      <input ${role === "first_frame" ? 'id="localFirstFrameInput" ' : ""}data-asset-upload="${escapeHtml(role)}" type="file" accept="${escapeHtml(accept)}" hidden ${busy ? "disabled" : ""} />
+    </label>
+    ${uploadStatusHtml(role)}
+    <span class="status-pill ${previewOk ? "success" : "warning"}" ${role === "first_frame" ? "data-first-frame-status" : ""}>${escapeHtml(previewOk ? readyLabel : waitingLabel)}</span>
+    ${previewOk && previewPath ? `<img class="local-keyframe-thumb" src="${escapeHtml(previewPath)}" alt="${escapeHtml(readyLabel)}" />` : ""}
+    ${currentProjectAssetMeta(previewPath)}
+  </div>`;
+}
+
 function keyframeCandidates() {
   return (state.project?.assets || []).filter((asset) => {
     const suffix = asset.file_path?.split(".").pop()?.toLowerCase();
-    return ["character", "scene", "first-frame", "last-frame"].includes(asset.type) && ["png", "jpg", "jpeg", "webp", "svg"].includes(suffix);
+    return ["character", "scene", "first-frame", "last-frame", "keyframe", "reference"].includes(asset.type) && ["png", "jpg", "jpeg", "webp"].includes(suffix);
   });
 }
 
@@ -1090,6 +1147,15 @@ function assemblyStageHtml(project) {
           <option value="">不使用 SRT 文件</option>
           ${srtOptions}
         </select>
+        <div class="local-keyframe-register">
+          <label class="secondary-btn mini-btn ${locked ? "disabled" : ""}">
+            上传 SRT 字幕
+            <input data-asset-upload="subtitle" type="file" accept=".srt,text/plain,application/x-subrip" hidden ${locked} />
+          </label>
+          <button type="button" class="secondary-btn mini-btn" data-action="generate-subtitle" ${locked}>从文本生成 SRT</button>
+          ${uploadStatusHtml("subtitle")}
+        </div>
+        ${currentProjectAssetMeta(settings.subtitle_srt_path)}
         <div class="assembly-settings-row">
           <label class="field-label" for="assemblySubtitleSize">字号</label>
           <input id="assemblySubtitleSize" type="number" min="16" max="64" value="${escapeHtml(String(settings.subtitle_font_size || 28))}" ${locked}>
@@ -1106,6 +1172,14 @@ function assemblyStageHtml(project) {
           <option value="">选择当前项目音频</option>
           ${audioOptions}
         </select>
+        <div class="local-keyframe-register">
+          <label class="secondary-btn mini-btn ${locked ? "disabled" : ""}">
+            上传背景音频
+            <input data-asset-upload="background_audio" type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/aac,audio/ogg,.wav,.mp3,.m4a,.aac,.ogg" hidden ${locked} />
+          </label>
+          ${uploadStatusHtml("background_audio")}
+        </div>
+        ${currentProjectAssetMeta(settings.audio_asset_path)}
         <label class="field-label" for="assemblyAudioVolume">背景音量 ${escapeHtml(String(settings.audio_volume || 0.4))}</label>
         <input id="assemblyAudioVolume" type="range" min="0.05" max="1" step="0.05" value="${escapeHtml(String(settings.audio_volume || 0.4))}" ${locked}>
         <label class="assembly-check"><input type="checkbox" id="assemblyKeepSourceAudio" ${settings.keep_source_audio ? "checked" : ""} ${locked}>保留原视频音频（无音轨镜头该段静音，不会伪造原声）</label>
@@ -1379,19 +1453,36 @@ function shotEditorHtml(project, shot, stage) {
       </div>
       <p class="muted-text" id="videoCapabilityHint">${escapeHtml(constraint.hint)}</p>
       <label>首帧资产 ${draft.first_frame_path ? "· 已选" : "· 未选"}<select id="firstFrameSelect" data-shot-track>${optionHtml(draft.first_frame_path)}</select></label>
-      <div class="local-keyframe-register">
-        <label class="secondary-btn mini-btn">
-          登记本地 JPEG/PNG 为首帧
-          <input id="localFirstFrameInput" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" hidden />
-        </label>
-        <span class="status-pill ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "success" : "warning"}" data-first-frame-status>
-          ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "已登记为首帧" : "尚未登记 JPEG/PNG 首帧"}
-        </span>
-        ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? `<img class="local-keyframe-thumb" src="${escapeHtml(draft.first_frame_path || version?.first_frame_path)}" alt="已登记首帧" />` : ""}
-      </div>
+      ${assetUploadRowHtml({
+        role: "first_frame",
+        accept: "image/jpeg,image/png,.jpg,.jpeg,.png",
+        label: "上传首帧",
+        previewPath: draft.first_frame_path || version?.first_frame_path,
+        previewOk: isI2VFramePath(draft.first_frame_path || version?.first_frame_path),
+        readyLabel: "已登记为首帧",
+        waitingLabel: "尚未登记 JPEG/PNG 首帧",
+      })}
       <label>尾帧资产 ${draft.last_frame_path ? "· 已选" : "· 未选"}<select id="lastFrameSelect" data-shot-track>${optionHtml(draft.last_frame_path)}</select></label>
+      ${assetUploadRowHtml({
+        role: "last_frame",
+        accept: "image/jpeg,image/png,.jpg,.jpeg,.png",
+        label: "上传尾帧",
+        previewPath: draft.last_frame_path || version?.last_frame_path,
+        previewOk: isI2VFramePath(draft.last_frame_path || version?.last_frame_path),
+        readyLabel: "已登记尾帧",
+        waitingLabel: "可上传 JPEG/PNG 尾帧",
+      })}
       ${stage === "keyframes" ? `<div class="button-row compact-row"><button class="secondary-btn mini-btn" data-adapt="vision-review" data-asset-path="${escapeHtml(draft.first_frame_path || version?.first_frame_path || "")}" ${isI2VFramePath(draft.first_frame_path || version?.first_frame_path) ? "" : "disabled"}>用视觉模型检查当前首帧</button></div>` : ""}
       <label>参考图 ${draft.reference_frame_path ? "· 已选" : "· 未选"}<select id="referenceFrameSelect" data-shot-track>${optionHtml(draft.reference_frame_path)}</select></label>
+      ${assetUploadRowHtml({
+        role: "reference_image",
+        accept: "image/jpeg,image/png,.jpg,.jpeg,.png",
+        label: "上传参考图",
+        previewPath: draft.reference_frame_path || version?.reference_frame_path,
+        previewOk: isI2VFramePath(draft.reference_frame_path || version?.reference_frame_path),
+        readyLabel: "已登记参考图",
+        waitingLabel: "可上传 JPEG/PNG 参考图",
+      })}
       <div class="button-row compact-row">
         <button class="secondary-btn mini-btn" data-action="save-shot-draft">保存镜头草稿</button>
         <button class="secondary-btn mini-btn" data-action="redo-shot" data-redo-btn disabled>基于当前草稿生成新版本</button>

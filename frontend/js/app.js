@@ -476,6 +476,11 @@ function onWorkspaceClick(event) {
     onSaveAssemblySettings();
     return;
   }
+  const generateSubtitle = event.target.closest("[data-action='generate-subtitle']");
+  if (generateSubtitle && !generateSubtitle.disabled) {
+    onGenerateSubtitleFromText();
+    return;
+  }
   // 阶段操作（改编 / 故事线 / Bible / 分镜）
   const trigger = event.target.closest("[data-adapt]");
   if (trigger) {
@@ -651,8 +656,8 @@ async function redoFrontier(projectId, frontier) {
 function onInspectorChange(event) {
   const target = event.target;
   if (!target || !target.closest("#assetDetail")) return;
-  if (target.id === "localFirstFrameInput") {
-    onRegisterLocalKeyframe(target);
+  if (target.dataset.assetUpload || target.id === "localFirstFrameInput") {
+    onUploadProjectFile(target);
     return;
   }
   const ids = [
@@ -822,30 +827,88 @@ async function onApplyKeyframes(trigger) {
   }
 }
 
-async function onRegisterLocalKeyframe(input) {
-  const shot = selectedShot();
+async function onUploadProjectFile(input) {
+  const role = input.dataset.assetUpload || "first_frame";
   const file = input.files && input.files[0];
   input.value = "";
-  if (!state.project || !shot) {
-    showError("请先选择一个镜头，再登记首帧。");
+  if (!state.project) {
+    showError("请先选择项目再上传素材。");
     return;
   }
   if (!file) return;
-  const name = (file.name || "").toLowerCase();
-  if (!/\.(png|jpe?g)$/.test(name) && !["image/png", "image/jpeg"].includes(file.type)) {
-    showError("只接受 JPEG 或 PNG。请重新选择本地图片。");
+  const shot = selectedShot();
+  const needsShot = ["first_frame", "last_frame", "reference_image"].includes(role);
+  if (needsShot && !shot) {
+    showError("请先选择一个镜头，再上传图片。");
     return;
   }
+  if (state.assetUpload?.status === "uploading") return;
+  state.assetUpload = { role, status: "uploading", message: "正在上传" };
+  renderAll();
   try {
-    const registered = await api.registerLocalKeyframe(state.project.id, shot.id, file);
-    if (state.videoDraft && state.videoDraft.shotId === shot.id && registered?.file_path) {
-      state.videoDraft.first_frame_path = registered.file_path;
+    const result = await api.uploadProjectAsset(state.project.id, {
+      file,
+      assetRole: role,
+      shotId: needsShot ? shot.id : undefined,
+    });
+    const path = result.asset?.file_path;
+    if (path && state.videoDraft && shot && state.videoDraft.shotId === shot.id) {
+      if (role === "first_frame") state.videoDraft.first_frame_path = path;
+      if (role === "last_frame") state.videoDraft.last_frame_path = path;
+      if (role === "reference_image") state.videoDraft.reference_frame_path = path;
+    }
+    if (path && (role === "background_audio" || role === "audio")) {
+      const values = { ...(state.assemblyDraft?.values || {}), audio_asset_path: path, audio_enabled: true };
+      state.assemblyDraft = { projectId: state.project.id, dirty: true, values };
+    }
+    if (path && role === "subtitle") {
+      const values = { ...(state.assemblyDraft?.values || {}), subtitle_srt_path: path, subtitle_enabled: true };
+      state.assemblyDraft = { projectId: state.project.id, dirty: true, values };
     }
     await refreshProject();
-    showSuccess("已登记为首帧。");
+    state.assetUpload = { role, status: "success", message: "上传成功" };
+    renderAll();
+    showSuccess("素材已上传到当前项目。");
   } catch (error) {
-    showError(`登记首帧失败：${error.message}`);
+    state.assetUpload = { role, status: "failed", message: error.message };
+    renderAll();
+    showError(`上传失败：${error.message}`);
   }
+}
+
+async function onGenerateSubtitleFromText() {
+  if (!state.project) return;
+  const text = (el("assemblySubtitleText")?.value || "").trim();
+  if (!text) {
+    showError("请先填写字幕文本，再生成 SRT。");
+    return;
+  }
+  state.assetUpload = { role: "subtitle", status: "uploading", message: "正在生成字幕" };
+  renderAll();
+  try {
+    const result = await api.uploadProjectAsset(state.project.id, {
+      assetRole: "subtitle",
+      subtitleText: text,
+    });
+    const path = result.asset?.file_path;
+    if (path) {
+      const values = { ...(collectAssemblySettings()), subtitle_srt_path: path, subtitle_enabled: true, subtitle_text: text };
+      state.assemblyDraft = { projectId: state.project.id, dirty: true, values };
+    }
+    await refreshProject();
+    state.assetUpload = { role: "subtitle", status: "success", message: "已生成字幕" };
+    renderAll();
+    showSuccess("已根据文本生成当前项目 SRT。");
+  } catch (error) {
+    state.assetUpload = { role: "subtitle", status: "failed", message: error.message };
+    renderAll();
+    showError(`生成字幕失败：${error.message}`);
+  }
+}
+
+async function onRegisterLocalKeyframe(input) {
+  input.dataset.assetUpload = "first_frame";
+  return onUploadProjectFile(input);
 }
 
 async function onRedrawKeyframe(trigger) {
@@ -1220,6 +1283,10 @@ function updateShotDirtyUI(shot) {
 function onWorkspaceInput(event) {
   const target = event.target;
   if (!target) return;
+  if (target.dataset.assetUpload && event.type === "change") {
+    onUploadProjectFile(target);
+    return;
+  }
   if (target.closest("#assemblySettingsForm")) {
     updateAssemblySettingsDirtyUI();
   } else if (target.closest("[data-model-stage]")) {

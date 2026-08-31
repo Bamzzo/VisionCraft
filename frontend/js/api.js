@@ -93,6 +93,17 @@ export const api = {
       body,
     });
   },
+  uploadProjectAsset: (projectId, { file, assetRole, shotId, subtitleText }) => {
+    const body = new FormData();
+    body.append("asset_role", assetRole);
+    if (shotId) body.append("shot_id", shotId);
+    if (subtitleText) body.append("subtitle_text", subtitleText);
+    if (file) body.append("file", file);
+    return request(`/api/projects/${projectId}/assets/upload`, {
+      method: "POST",
+      body,
+    });
+  },
   generateVideo: (projectId, shotId, payload = {}) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video`, {
       method: "POST",

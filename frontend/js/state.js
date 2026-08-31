@@ -38,6 +38,7 @@ export const state = {
 
   /* ---- 流程控制由后端 checkpoint / project.status 决定，切换项目时清空本地提示 ---- */
   workflowControl: { paused: false },
+  assetUpload: { role: "", status: "idle", message: "" },
 
   stageModelDraft: {},
   /* ---- 成片配置草稿（未保存时刷新/任务更新不丢，切换项目时清空） ---- */
@@ -68,6 +69,7 @@ export function resetViewState() {
   state.stageEdit = null;
   state.stageModelDraft = {};
   state.workflowControl = { paused: false };
+  state.assetUpload = { role: "", status: "idle", message: "" };
   state.assemblyDraft = null;
   state.statusNotice = null;
 }

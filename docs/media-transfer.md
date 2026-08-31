@@ -28,3 +28,5 @@ VISIONCRAFT_MEDIA_PUBLIC_BASE_URL=https://your-public-media-domain.example
 每个下游 Provider 都要在自己的 Adapter 中调用本服务，并将得到的 `MediaReference.url` 编译为各自的 API 格式。若缺少首帧、格式不支持或模型不支持对应模式，必须返回明确错误，不能静默退化为文生视频。
 
 视觉理解（DeepSeek `deepseek-v4-flash-vision-exp`）同样只接收本层输出的 Data URL 或未来的 HTTPS URL / Files API `file_id`。本地测试优先 Data URL。视觉 Adapter 不得把本地绝对路径、项目外文件或其他项目资产发给远程接口；**SVG 不能用于 Vision 或 I2V**。Data URL 只留在待发送请求内存中，`media_transfers`、`job_events` 和 `vision_reviews` 只保存 `asset_id`、角色、MIME、尺寸和传输模式。详见 `docs/stage-model-selection.md`。
+
+P8-B 允许用户在网页向当前项目上传 JPEG/PNG（以及成片用音频/SRT）。上传入口是 `POST /api/projects/{project_id}/assets/upload`，文件保存到项目资产目录并登记 `assets`。Vision / I2V 仍然只消费本层校验过的**当前项目**栅格图；上传表单里的临时路径不得进入 Adapter。上传限制为图片 20 MB；传递层对即将发给模型的图片仍为 12 MB。完整合同见 `docs/asset-upload-design.md`。

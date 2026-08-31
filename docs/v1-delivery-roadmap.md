@@ -385,6 +385,21 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **验收：** `tools/test_workflow_pause_resume.py`、`tools/test_p8a_browser.py`、`docs/workflow-pause-resume-design.md`
 
+### P8-B：网页素材上传与项目资产管理基础
+
+**状态：** 2026-08-31 已完成（无费用，无真实模型请求）。
+
+**目标：** 用户可在网页向当前项目上传并管理 JPEG/PNG、音频和 SRT，不再依赖脚本或项目外路径。
+
+**已实现：**
+
+- 统一 `POST /api/projects/{id}/assets/upload`；既有 `register-local` 复用同一套校验与落盘；
+- 魔数/FFprobe/SRT 时间轴校验；图片 ≤ 20 MB、音频 ≤ 50 MB / 600 s、SRT ≤ 2 MB；同名不覆盖；失败回滚；
+- 资产记录项目归属、类型、`asset_role`、MIME、尺寸或时长；返回项目内路径，不返回绝对路径或 Data URL；
+- 镜头工作区上传首帧/尾帧/参考图；成片工作区上传背景音频与字幕，刷新后恢复；跨项目拒绝。
+
+**验收：** `tools/test_upload_assets.py`、`tools/test_p8b_browser.py`、`docs/asset-upload-design.md`
+
 ### P7：部署和非核心扩展（最后）
 
 - 部署时将媒体传递切为对象存储 HTTPS URL 或厂商文件上传。

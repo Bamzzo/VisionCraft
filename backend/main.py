@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from fastapi import BackgroundTasks, Body, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -58,6 +58,13 @@ from .services.export_service import build_markdown
 from .services.feedback_service import apply_feedback
 from .services.job_service import collect_sse_opening, create_job, format_sse, get_job, get_job_events, job_center_snapshot, list_active_jobs
 from .services.keyframe_service import redraw_shot_keyframes, select_shot_keyframes
+from .services.asset_upload_service import (
+    MAX_AUDIO_BYTES,
+    MAX_IMAGE_BYTES,
+    AssetUploadError,
+    public_asset_payload,
+    upload_project_asset,
+)
 from .services.local_keyframe_service import LocalKeyframeError, register_local_first_frame
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.model_config_service import list_stage_configs, save_stage_config, set_generation_mode
@@ -566,13 +573,52 @@ def select_keyframes_endpoint(project_id: str, shot_id: str, payload: KeyframeSe
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/assets/upload")
+async def upload_project_asset_endpoint(
+    project_id: str,
+    asset_role: str = Form(...),
+    shot_id: str | None = Form(default=None),
+    subtitle_text: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+) -> dict:
+    content = None
+    if file is not None:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            piece = await file.read(1024 * 1024)
+            if not piece:
+                break
+            total += len(piece)
+            if total > MAX_AUDIO_BYTES:
+                raise HTTPException(status_code=400, detail="上传文件超过大小限制。")
+            chunks.append(piece)
+        content = b"".join(chunks)
+    try:
+        result = upload_project_asset(
+            project_id,
+            asset_role=asset_role,
+            content=content,
+            filename=(file.filename if file else "") or "",
+            shot_id=shot_id or None,
+            subtitle_text=subtitle_text,
+        )
+    except AssetUploadError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail="上传失败，请检查文件后重试。") from exc
+    return {"ok": True, "asset": public_asset_payload(result["asset"]), "shot": result.get("shot")}
+
+
 @app.post("/api/projects/{project_id}/shots/{shot_id}/keyframes/register-local")
 async def register_local_keyframe_endpoint(
     project_id: str,
     shot_id: str,
     file: UploadFile = File(...),
 ) -> dict:
-    content = await file.read()
+    content = await file.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="上传文件超过大小限制。图片不超过 20 MB。")
     try:
         return register_local_first_frame(project_id, shot_id, content, filename=file.filename or "")
     except LocalKeyframeError as exc:

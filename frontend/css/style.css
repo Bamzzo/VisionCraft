@@ -356,10 +356,22 @@ button:focus-visible,
   align-items: center;
   gap: 8px;
   margin: 6px 0 10px;
+  max-width: 100%;
+}
+
+.local-keyframe-register .muted-text {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .local-keyframe-register .mini-btn {
   margin: 0;
+}
+
+.local-keyframe-register .mini-btn.disabled {
+  pointer-events: none;
+  opacity: 0.65;
 }
 
 .local-keyframe-thumb {

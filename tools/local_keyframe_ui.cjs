@@ -127,7 +127,7 @@ async function main() {
     }, null, { timeout: 8000 });
     pass("未登记首帧时 I2V 按钮不可用");
 
-    await page.setInputFiles("#localFirstFrameInput", JPEG_PATH);
+    await page.setInputFiles('[data-asset-upload="first_frame"]', JPEG_PATH);
     await page.waitForFunction(
       () => (document.querySelector("[data-first-frame-status]")?.textContent || "").includes("已登记为首帧"),
       null,
