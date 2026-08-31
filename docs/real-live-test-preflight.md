@@ -1,6 +1,6 @@
 # 真实前端闭环预检（P7-A 护栏）
 
-本页记录 DeepSeek + DeepSeek Vision + MiniMax 真实测试的护栏。**当前修复切片不发送真实请求，费用为 0 元。** 只有本页与路线图确认通过后，才能开始下一次 5 镜头真实前端成片测试。
+本页记录 DeepSeek + DeepSeek Vision + MiniMax 真实测试的护栏。**P7-B 本切片不发送真实请求，费用为 0 元。** 不得把上一次真实 5 镜测试重新算成本次调用。详细口径见 `docs/live-run-audit.md`。
 
 ## 1. 默认安全值（未覆盖时）
 
@@ -34,7 +34,7 @@ $env:VISIONCRAFT_ALLOW_LIVE_LLM="1"
 
 提高视频次数会按次数重算 MiniMax 费用。只改次数、不提高预算时，第一条真实请求前就会 `BLOCKED_BEFORE_CALL`。
 
-下次 5 镜测试的用户确认上限：预算 12 元；DeepSeek 文本最多 3 次；DeepSeek Vision 最多 1 次；MiniMax H3 I2V 最多 5 次（每镜只提交一次）。
+已完成的第三次 5 镜测试确认上限：预算 12 元；DeepSeek 文本最多 3 次；DeepSeek Vision 最多 1 次；MiniMax H3 I2V 最多 5 次（每镜只提交一次）。若再次真实测试，仍只在当前进程覆盖这些变量。
 
 ## 3. 调用前检查
 
@@ -80,5 +80,5 @@ $env:VISIONCRAFT_ALLOW_LIVE_LLM="1"
 
 - 第一次单镜头真实闭环已完成（含重复资产问题，历史重复不做破坏性清理）
 - 第二次 5 镜真实测试在启动前被默认 `MAX_VIDEO_CALLS=1` 与 5 元预算阻断，**未发请求、0 元**
-- 本切片已支持进程级 5 次 / 12 元覆盖，以及远程任务视频资产幂等
-- **尚未**进行第三次 5 镜头真实前端成片测试；修复报告确认前禁止真实 API
+- 第三次 5 镜头真实前端成片测试**已完成**：中断后只回查镜头 1 的原远程任务；**新提交 4 次，复用 1 个，唯一远程任务 5 个**；FFmpeg 成片已通过 ffprobe。临时项目已清理，数据库不能事后复核。
+- P7-B 起，真实测试结束必须在清理前写入脱敏 `live_run_audit.json` / `live_run_lineage.json` / `live_run_ffprobe.json`。本切片不重跑真实 API。

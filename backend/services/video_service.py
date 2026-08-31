@@ -55,9 +55,20 @@ def prepare_shot_video_generation(
             "SELECT COUNT(*) AS n FROM video_tasks WHERE version_id = ?",
             (version["id"],),
         ).fetchone()["n"]
+        inflight = conn.execute(
+            """
+            SELECT id, provider, model, remote_task_id, status
+            FROM video_tasks
+            WHERE version_id = ? AND status IN ('running', 'pending_remote')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (version["id"],),
+        ).fetchone()
         version = dict(version)
         project = dict(project)
         shot = dict(shot)
+        inflight = dict(inflight) if inflight else None
 
     plan = validate_video_generation(
         provider=provider,
@@ -74,7 +85,12 @@ def prepare_shot_video_generation(
         and (version["model"] or "") == plan["model"]
     )
     already_targeted = bool(version["provider"] or version["model"])
-    should_fork = allow_fork and (bool(version["video_path"]) or task_count > 0 or (already_targeted and not same_spec))
+    resume_inflight = bool(inflight) and same_spec
+    should_fork = allow_fork and (
+        bool(version["video_path"])
+        or (task_count > 0 and not resume_inflight)
+        or (already_targeted and not same_spec)
+    )
     if should_fork:
         version = _fork_generation_version(project_id, shot, dict(version), plan)
     elif allow_fork:
@@ -93,6 +109,7 @@ def prepare_shot_video_generation(
         "shot": dict(shot),
         "version": version,
         "version_id": version["id"],
+        "inflight_task": inflight if resume_inflight else None,
     }
 
 
@@ -122,17 +139,34 @@ def generate_shot_video(
         project = prepared["project"]
         shot = prepared["shot"]
         version = prepared["version"]
+        inflight = prepared.get("inflight_task")
 
-        update_job(
-            job_id,
-            "running",
-            24,
-            f"正在提交至{prepared['provider_label']}",
-            shot_id=shot_id,
-            stage="submit_provider",
-            detail={"provider": prepared["provider"], "model": prepared["model"]},
-        )
-        video_path = generate_video_asset(
+        if inflight:
+            update_job(
+                job_id,
+                "running",
+                24,
+                "正在回查同一云端任务，不会重复提交或重复计费",
+                shot_id=shot_id,
+                stage="poll_remote",
+                detail={
+                    "provider": inflight.get("provider"),
+                    "model": inflight.get("model"),
+                    "remote_task_id": inflight.get("remote_task_id"),
+                },
+            )
+            video_path = refresh_remote_video_task(inflight["id"])
+        else:
+            update_job(
+                job_id,
+                "running",
+                24,
+                f"正在提交至{prepared['provider_label']}",
+                shot_id=shot_id,
+                stage="submit_provider",
+                detail={"provider": prepared["provider"], "model": prepared["model"]},
+            )
+            video_path = generate_video_asset(
             VideoAssetRequest(
                 project_id=project_id,
                 shot_id=shot_id,

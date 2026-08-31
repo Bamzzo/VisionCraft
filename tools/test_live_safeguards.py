@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import sys
 import uuid
@@ -38,7 +37,9 @@ from backend.providers.video_provider import (
     VideoAssetRequest,
     ensure_remote_video_asset,
     reset_video_download_transport,
+    reset_video_json_transport,
     set_video_download_transport,
+    set_video_json_transport,
 )
 from backend.services.job_service import create_job, get_recent_job_events, update_job
 from backend.providers.llm_adapter import FunctionTransport, adaptation_messages, build_text_request, reset_chat_transport, set_chat_transport
@@ -50,6 +51,14 @@ from backend.services.local_keyframe_service import LocalKeyframeError, attach_e
 from backend.services.media_transfer_service import prepare_image_reference
 from backend.services.model_config_service import set_generation_mode
 from backend.services.project_service import get_project
+from backend.services.video_service import generate_shot_video, refresh_project_video_tasks
+from tools.live_run_audit import (
+    LAST_LIVE_RUN,
+    apply_count_fields,
+    has_secret_leak,
+    normalize_live_run_counts,
+    verify_pre_cleanup,
+)
 
 PNG_BYTES = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
@@ -204,19 +213,19 @@ def _leak_blob(project_id: str) -> str:
 
 
 def _assert_no_secrets(blob: str) -> None:
+    assert has_secret_leak(blob) is False
     lowered = blob.lower()
-    assert "data:image" not in lowered
-    assert "base64," not in lowered
     assert "x-amz-signature" not in lowered
     assert "x-amz-credential" not in lowered
     assert "https://cdn.example" not in lowered
-    assert not re.search(r"(?<![a-z])sk-[a-z0-9._\-]{8,}", lowered)
+    assert "sk-live" not in lowered
 
 
 def _cleanup() -> None:
     reset_chat_transport()
     reset_vision_transport()
     reset_video_download_transport()
+    reset_video_json_transport()
     for project_id in list(CREATED):
         with connect() as conn:
             conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
@@ -701,6 +710,190 @@ def test_five_shots_share_project_jpeg_without_image_provider() -> None:
         _cleanup()
 
 
+def test_last_live_run_counts_split_new_submits_from_unique_tasks() -> None:
+    counts = normalize_live_run_counts(LAST_LIVE_RUN)
+    assert counts["text_calls_total"] == 3
+    assert counts["vision_calls_total"] == 1
+    assert counts["video_submits_new"] == 4
+    assert counts["video_tasks_reused"] == 1
+    assert counts["unique_remote_tasks"] == 5
+    assert counts["video_submits_new"] + counts["video_tasks_reused"] == counts["unique_remote_tasks"]
+    assert counts["video_submits_new"] != counts["unique_remote_tasks"]
+    legacy = apply_count_fields(
+        {
+            "text_calls": 3,
+            "vision_calls": 1,
+            "video_submits": 4,
+            "remote_completed": 5,
+            "downloaded_videos": 5,
+            "duplicate_submits": 0,
+            "duplicate_assets": 0,
+            "notes": ["reuse_existing_task shot_1 4366…8674"],
+        }
+    )
+    assert legacy["video_submits_new"] == 4
+    assert legacy["video_tasks_reused"] == 1
+    assert legacy["unique_remote_tasks"] == 5
+    assert "video_submits" not in legacy
+    assert has_secret_leak('{"url": "<data-url omitted>"}') is False
+    assert has_secret_leak("data:image/jpeg;base64," + "a" * 80) is True
+    pass_("报告字段区分新提交 4 次与唯一远程任务 5 个，脱敏占位不算泄漏")
+
+
+def test_disconnect_resume_polls_same_remote_and_continues_remaining_shots() -> None:
+    project_id = _project()
+    shot_ids = [_add_shot(project_id, index) for index in range(1, 6)]
+    posts: list[str] = []
+    gets: list[str] = []
+    downloads: list[str] = []
+
+    def json_transport(method: str, url: str, _payload: dict | None) -> dict:
+        path = url.split("?", 1)[0]
+        if method == "POST":
+            posts.append(path)
+            return {"task_id": f"remote_new_{len(posts):02d}"}
+        gets.append(path)
+        return {
+            "status": "succeeded",
+            "task": {"status": "succeeded"},
+            "video_url": "https://cdn.example/video.mp4?X-Amz-Signature=secret&X-Amz-Credential=AKIA",
+        }
+
+    def fake_download(url: str) -> bytes:
+        downloads.append(url.split("?", 1)[0])
+        assert url.startswith("https://")
+        return FAKE_MP4
+
+    set_video_json_transport(json_transport)
+    set_video_download_transport(fake_download)
+    try:
+        with _env(
+            VISIONCRAFT_ALLOW_LIVE_VIDEO="1",
+            VISIONCRAFT_LIVE_MAX_VIDEO_CALLS="5",
+            VISIONCRAFT_LIVE_BUDGET_CNY="12",
+            MINIMAX_API_KEY="mock-minimax-key",
+            MINIMAX_VIDEO_POLL_SECONDS="8",
+            MINIMAX_VIDEO_POLL_INTERVAL="0",
+        ):
+            shot1 = shot_ids[0]
+            job1 = create_job(project_id, "generate_video", "生成视频", shot_id=shot1)
+            request1 = _video_request(project_id, shot1, job_id=job1)
+            request1.provider_override = "minimax"
+            request1.model_override = "MiniMax-H3"
+            remote_1 = "remote_resume_shot01"
+            local_1 = _insert_video_task(request1, remote_1)
+
+            with connect() as conn:
+                before = conn.execute(
+                    "SELECT COUNT(*) AS n FROM video_tasks WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()["n"]
+            assert before == 1
+            assert posts == []
+
+            # Re-enter after Playwright disconnect: only poll the original remote task.
+            resume_job = create_job(project_id, "generate_video", "恢复", shot_id=shot1)
+            generate_shot_video(
+                project_id,
+                shot1,
+                resume_job,
+                video_mode="t2v",
+                provider="minimax",
+                model="MiniMax-H3",
+                duration_seconds=4,
+            )
+            assert posts == []
+            assert any(remote_1 in url for url in gets)
+            assert downloads == ["https://cdn.example/video.mp4"]
+
+            with connect() as conn:
+                tasks = conn.execute("SELECT * FROM video_tasks WHERE project_id = ?", (project_id,)).fetchall()
+                videos = conn.execute(
+                    "SELECT * FROM assets WHERE project_id = ? AND type = 'video'",
+                    (project_id,),
+                ).fetchall()
+                ready = conn.execute(
+                    "SELECT COUNT(*) AS n FROM job_events WHERE project_id = ? AND event_type = 'asset.ready'",
+                    (project_id,),
+                ).fetchone()["n"]
+            assert len(tasks) == 1
+            assert tasks[0]["id"] == local_1
+            assert tasks[0]["remote_task_id"] == remote_1
+            assert tasks[0]["status"] == "completed"
+            assert len(videos) == 1
+            assert ready == 1
+            files = list((PROJECTS_DIR / project_id).glob("asset_*.mp4"))
+            assert len(files) == 1
+
+            # Duplicate completion of the same remote task reuses the local file.
+            again = ensure_remote_video_asset(
+                request1,
+                "https://cdn.example/video.mp4?X-Amz-Signature=secret",
+                "prompt",
+                "provider:minimax:MiniMax-H3",
+                provider="minimax",
+                remote_task_id=remote_1,
+                local_task_id=local_1,
+            )
+            assert again.reused is True
+            assert again.asset_id == videos[0]["id"]
+            assert downloads == ["https://cdn.example/video.mp4"]
+
+            refresh_job = create_job(project_id, "video_task_refresh", "再次回查")
+            refresh_project_video_tasks(project_id, refresh_job)
+
+            remaining_before_posts = len(posts)
+            for shot_id in shot_ids[1:]:
+                job = create_job(project_id, "generate_video", "生成视频", shot_id=shot_id)
+                generate_shot_video(
+                    project_id,
+                    shot_id,
+                    job,
+                    video_mode="t2v",
+                    provider="minimax",
+                    model="MiniMax-H3",
+                    duration_seconds=4,
+                )
+
+            assert len(posts) == remaining_before_posts + 4
+            with connect() as conn:
+                tasks = conn.execute("SELECT * FROM video_tasks WHERE project_id = ?", (project_id,)).fetchall()
+                videos = conn.execute(
+                    "SELECT * FROM assets WHERE project_id = ? AND type = 'video'",
+                    (project_id,),
+                ).fetchall()
+                remotes = [row["remote_task_id"] for row in tasks]
+                ready = conn.execute(
+                    "SELECT COUNT(*) AS n FROM job_events WHERE project_id = ? AND event_type = 'asset.ready'",
+                    (project_id,),
+                ).fetchone()["n"]
+            assert len(tasks) == 5
+            assert len(set(remotes)) == 5
+            assert remote_1 in remotes
+            assert len(videos) == 5
+            assert ready == 5
+            assert len(list((PROJECTS_DIR / project_id).glob("asset_*.mp4"))) == 5
+            assert len(downloads) == 5
+
+            from tools.live_run_audit import collect_project_lineage
+
+            lineage = collect_project_lineage(project_id)
+            pre = verify_pre_cleanup(lineage)
+            assert lineage["counts"]["final_videos"] == 0
+            assert pre["checks"]["shots"] is True
+            assert pre["checks"]["unique_remote_tasks"] is True
+            assert pre["checks"]["video_tasks"] is True
+            assert pre["checks"]["video_assets"] is True
+            assert pre["checks"]["duplicate_remote_groups"] is True
+            assert pre["checks"]["duplicate_assets"] is True
+            assert pre["checks"]["secret_leak"] is True
+            blob = _leak_blob(project_id)
+            _assert_no_secrets(blob)
+            pass_("断点恢复只回查原 remote_task_id，剩余 4 镜可继续且任务/资产一一对应")
+    finally:
+        _cleanup()
+
+
 def main() -> None:
     _guard_network()
     init_environment()
@@ -723,6 +916,8 @@ def main() -> None:
         test_sixth_video_and_over_budget_blocked_before_http()
         test_remote_task_video_asset_is_idempotent()
         test_five_shots_share_project_jpeg_without_image_provider()
+        test_last_live_run_counts_split_new_submits_from_unique_tasks()
+        test_disconnect_resume_polls_same_remote_and_continues_remaining_shots()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:
         _cleanup()

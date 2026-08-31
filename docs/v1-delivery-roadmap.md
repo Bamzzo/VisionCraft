@@ -321,7 +321,20 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **验收：** `tools/test_live_safeguards.py`、`tools/test_local_keyframe_browser.py`
 
-**尚未开始：** 第三次完整 5 镜头真实前端成片测试（预算 12 元）。须等本修复报告确认后再进行。
+**真实测试（当时，不计入本切片）：** 第三次 5 镜头真实前端成片已完成。镜头 1 中断后复用原远程任务；镜头 2～5 为续跑新提交。计数为新提交 4、复用 1、唯一远程任务 5。成片已通过 FFmpeg 与 ffprobe。临时项目已清理。
+
+### P7-B：真实运行审计、断点恢复证据与报告收口
+
+**状态：** 2026-08-31 已完成本地无费用收口。**不发送真实 API，费用 0 元。** 不得把上一次真实测试重新算成本次调用。
+
+**已实现：**
+
+- 报告字段拆分 `video_submits_new` / `video_tasks_reused` / `unique_remote_tasks`，禁止把 4 次新提交写成 5 次新提交；
+- 清理前写入脱敏 `live_run_audit.json`、`live_run_lineage.json`、`live_run_ffprobe.json`（`output/`，不提交 Git）；
+- 进行中的同一版本视频任务再次点击生成时，只回查原 `remote_task_id`，不创建第二条 `video_tasks`；
+- mock transport 覆盖：已提交 → 断开 → 再进入 → 只查询原任务 → 不重复下载 / INSERT / `asset.ready` → 剩余镜头可继续。
+
+**验收：** `tools/test_live_safeguards.py`、`tools/verify_live_multishot.py`、`docs/live-run-audit.md`
 
 ### P7：部署和非核心扩展（最后）
 

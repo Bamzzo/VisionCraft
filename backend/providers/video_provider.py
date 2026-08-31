@@ -66,6 +66,7 @@ class RecordedVideo:
 
 
 _video_download_transport: Callable[[str], bytes] | None = None
+_video_json_transport: Callable[[str, str, dict | None], dict] | None = None
 
 
 def set_video_download_transport(fn: Callable[[str], bytes] | None) -> None:
@@ -75,6 +76,16 @@ def set_video_download_transport(fn: Callable[[str], bytes] | None) -> None:
 
 def reset_video_download_transport() -> None:
     set_video_download_transport(None)
+
+
+def set_video_json_transport(fn: Callable[[str, str, dict | None], dict] | None) -> None:
+    """Test-only JSON GET/POST hook. Production code must leave this unset."""
+    global _video_json_transport
+    _video_json_transport = fn
+
+
+def reset_video_json_transport() -> None:
+    set_video_json_transport(None)
 
 
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
@@ -187,6 +198,8 @@ def _generate_siliconflow_video(request: VideoAssetRequest) -> VideoGenerationRe
 
 
 def _post_json(url: str, api_key: str, payload: dict, extra_headers: dict | None = None) -> dict:
+    if _video_json_transport:
+        return _video_json_transport("POST", url, payload)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     if extra_headers:
         headers.update(extra_headers)
@@ -205,6 +218,8 @@ def _post_json(url: str, api_key: str, payload: dict, extra_headers: dict | None
 
 
 def _get_json(url: str, api_key: str) -> dict:
+    if _video_json_transport:
+        return _video_json_transport("GET", url, None)
     http_request = urllib.request.Request(
         url,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -1126,7 +1141,7 @@ def _sanitize_payload(value: Any) -> Any:
     if isinstance(value, str):
         lowered = value.lower()
         if value.startswith("data:"):
-            return f"{value[:24]}...<omitted>"
+            return "<data-url omitted>"
         if "base64," in lowered and len(value) > 80:
             return "<base64 omitted>"
         if value.startswith("http://") or value.startswith("https://"):
