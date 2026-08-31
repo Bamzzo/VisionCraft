@@ -7,6 +7,15 @@ const path = require("path");
 const crypto = require("crypto");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const {
+  VIDEO_WAIT_USES_MODE_SELECT,
+  redact,
+  extractSubmitHint,
+  videoWaitDecision,
+  canEnterAssembly,
+  waitForVideoTaskPersist,
+  pollShotVideoReady,
+} = require("./live_2shot_helpers");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8040";
 const OUT = path.join(__dirname, "..", "output", "playwright", "live-2shot");
@@ -29,11 +38,6 @@ function fail(msg) {
 function setStage(name, status, extra) {
   stages[name] = { status, ...(extra || {}) };
   writeResult({ stages });
-}
-function redact(id) {
-  const text = String(id || "");
-  if (!text || text.length <= 8) return text;
-  return `${text.slice(0, 4)}…${text.slice(-4)}`;
 }
 function writeResult(patch, { replace = false } = {}) {
   const file = path.join(OUT, "result.json");
@@ -158,13 +162,19 @@ async function openStage(page, stageId) {
   await page.waitForTimeout(400);
   await clearUnsaved(page);
 }
-async function selectShotCard(page, index) {
+async function selectShotCard(page, index, waitFor = "mode") {
   await page.waitForSelector(".asset-card", { timeout: 15000 });
   const cards = page.locator(".asset-card");
   const count = await cards.count();
   if (count < index + 1) fail(`镜头卡片不足：${count}，需要第 ${index + 1} 个`);
   await cards.nth(index).click();
-  await page.waitForSelector("#videoModeSelect", { timeout: 15000 });
+  if (waitFor === "mode") {
+    await page.waitForSelector("#videoModeSelect", { timeout: 15000 });
+    return;
+  }
+  if (waitFor === "generate") {
+    await page.waitForSelector('[data-action="generate-video"]', { timeout: 15000 });
+  }
 }
 function assertNoFallback(proj, where) {
   const blobs = [
@@ -254,62 +264,58 @@ async function refreshSameRemoteTasks(page, projectId) {
 }
 
 async function waitShotVideoReady(page, projectId, target) {
-  const start = Date.now();
-  while (Date.now() - start < VIDEO_WAIT_MS) {
-    const proj = await apiGet(page, `/api/projects/${projectId}`);
-    const shotNow = (proj.shots || []).find((item) => item.id === target.id);
-    const jobs = (proj.jobs || []).filter((job) => job.shot_id === target.id);
-    const failed = jobs.find((job) => job.status === "failed");
-    if (failed) fail(`镜头 ${target.shot_index || target.id} 失败：${failed.error_message || failed.message || ""}`);
-    if (/BLOCKED_BEFORE_CALL/.test(JSON.stringify(jobs))) fail(`镜头 ${target.id} 触发 BLOCKED_BEFORE_CALL`);
-    const status = shotNow?.status || "";
-    const tasks = (proj.video_tasks || []).filter((task) => task.shot_id === target.id);
-    const task = tasks[0];
-    if (task) {
-      writeResult({
-        [`task_${target.id}`]: {
-          id: task.id,
-          remote_task_id: redact(task.remote_task_id),
-          status: task.status,
-          cloud_status: task.cloud_status,
-        },
-      });
-    }
-    if (status === "video_ready") {
-      if (tasks.length !== 1) fail(`镜头 ${target.id} video_tasks=${tasks.length}，期望 1`);
+  if (VIDEO_WAIT_USES_MODE_SELECT) fail("视频等待不得依赖 #videoModeSelect");
+  return pollShotVideoReady({
+    getProject: async () => {
+      const proj = await apiGet(page, `/api/projects/${projectId}`);
+      const jobs = (proj.jobs || []).filter((job) => job.shot_id === target.id);
+      if (/BLOCKED_BEFORE_CALL/.test(JSON.stringify(jobs))) fail(`镜头 ${target.id} 触发 BLOCKED_BEFORE_CALL`);
+      const task = (proj.video_tasks || []).find((item) => item.shot_id === target.id);
+      if (task) {
+        writeResult({
+          [`task_${target.id}`]: {
+            id: task.id,
+            remote_task_id: redact(task.remote_task_id),
+            status: task.status,
+            cloud_status: task.cloud_status,
+          },
+        });
+      }
       return proj;
-    }
-    if (status === "video_failed") fail(`镜头 ${target.id} 状态 video_failed`);
-    await refreshSameRemoteTasks(page, projectId);
-    await page.waitForTimeout(8000);
-  }
-  fail(`镜头 ${target.id} 等待远程任务超时（只回查，未补发）`);
+    },
+    refresh: async () => refreshSameRemoteTasks(page, projectId),
+    target,
+    timeoutMs: VIDEO_WAIT_MS,
+    intervalMs: 8000,
+    sleep: (ms) => page.waitForTimeout(ms),
+  });
 }
 
 async function generateOnceAndWait(page, projectId, index) {
-  await openStage(page, "video");
-  await selectShotCard(page, index);
   const before = await apiGet(page, `/api/projects/${projectId}`);
   const target = [...(before.shots || [])].sort((a, b) => a.shot_index - b.shot_index)[index];
   if (!target) fail(`找不到镜头 ${index + 1}`);
   if (submittedShots.has(target.id)) fail(`镜头 ${target.id} 已提交过，禁止补发`);
 
-  const existing = (before.video_tasks || []).filter((task) => task.shot_id === target.id && task.remote_task_id);
-  if (existing.length) {
+  const decision = videoWaitDecision(before, target.id);
+  if (!decision.allow_post_video) {
     submittedShots.add(target.id);
-    const task = existing[0];
+    const task = decision.task;
     writeResult({
       [`shot_${index + 1}_resume`]: {
         shot_id: target.id,
-        task_id: task.id,
-        remote_task_id: redact(task.remote_task_id),
-        status: task.status,
+        task_id: task?.id || "",
+        remote_task_id: redact(task?.remote_task_id),
+        status: task?.status || target.status,
+        reason: decision.reason,
       },
     });
-    pass(`镜头 ${index + 1} 已有远程任务 ${redact(task.remote_task_id)}，只回查不补发`);
+    pass(`镜头 ${index + 1} 已有远程任务 ${redact(task?.remote_task_id)}，只回查不补发`);
     return waitShotVideoReady(page, projectId, target);
   }
 
+  await openStage(page, "video");
+  await selectShotCard(page, index, "generate");
   const genBtn = page.locator('[data-action="generate-video"]');
   if (await genBtn.isDisabled()) {
     fail(`生成按钮不可用：${await genBtn.getAttribute("title")}`);
@@ -323,18 +329,36 @@ async function generateOnceAndWait(page, projectId, index) {
     const text = await response.text();
     fail(`镜头 ${index + 1} 提交失败 HTTP ${response.status()} ${text.slice(0, 400)}`);
   }
-  const after = await apiGet(page, `/api/projects/${projectId}`);
-  const submitted = (after.video_tasks || []).filter((task) => task.shot_id === target.id);
-  if (!submitted.length) fail(`镜头 ${index + 1} 提交后没有 video_task`);
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    body = {};
+  }
+  const hint = extractSubmitHint(body);
+  let persisted;
+  try {
+    persisted = await waitForVideoTaskPersist({
+      getProject: () => apiGet(page, `/api/projects/${projectId}`),
+      shotId: target.id,
+      shotLabel: String(index + 1),
+      hint,
+      sleep: (ms) => page.waitForTimeout(ms),
+    });
+  } catch (error) {
+    fail(String(error.message || error));
+  }
+  const submitted = persisted.task;
   writeResult({
     [`shot_${index + 1}_submit`]: {
       shot_id: target.id,
-      task_id: submitted[0].id,
-      remote_task_id: redact(submitted[0].remote_task_id),
-      status: submitted[0].status,
+      task_id: submitted.id,
+      remote_task_id: redact(submitted.remote_task_id || hint.remote_task_id),
+      status: submitted.status,
+      job_id: hint.job_id || submitted.job_id || "",
     },
   });
-  pass(`镜头 ${index + 1} 已提交一次 I2V（不再补发，只 refresh ${redact(submitted[0].remote_task_id)}）`);
+  pass(`镜头 ${index + 1} 已提交一次 I2V（不再补发，只 refresh ${redact(submitted.remote_task_id || hint.remote_task_id || hint.job_id)}）`);
   return waitShotVideoReady(page, projectId, target);
 }
 
@@ -494,6 +518,7 @@ async function main() {
       video_tasks_reused: 0,
     });
 
+    if (!canEnterAssembly(proj)) fail("镜头视频尚未全部完成，禁止进入合成/下载");
     await openStage(page, "assembly");
     await page.waitForSelector("#assembleProjectBtn", { timeout: 15000 });
     if (await page.locator("#assembleProjectBtn").isDisabled()) {

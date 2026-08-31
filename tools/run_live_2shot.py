@@ -77,7 +77,7 @@ def preflight() -> dict:
     init_db()
     with connect() as conn:
         active = conn.execute(
-            "SELECT COUNT(*) AS n FROM video_tasks WHERE status IN ('submitted','running','pending_remote')"
+            "SELECT COUNT(*) AS n FROM video_tasks WHERE status IN ('submitted','running','pending_remote','waiting_remote')"
         ).fetchone()["n"]
     ensure_process_path()
     blocked = []
@@ -196,6 +196,7 @@ def write_audits(result: dict, lineage: dict, ffprobe: dict, pre: dict) -> None:
     vision_calls = int(result.get("live_vision_call_count") or lineage.get("live_vision_call_count") or 0)
     new_submits = int(result.get("live_video_call_count") or result.get("video_submits_new") or 0)
     unique = int(lineage_counts.get("unique_remote_tasks") or result.get("unique_remote_tasks") or 0)
+    inflight = int(lineage_counts.get("remote_tasks_inflight") or result.get("remote_tasks_inflight") or 0)
     counts = {
         "text_calls_total": text_calls,
         "vision_calls_total": vision_calls,
@@ -204,6 +205,7 @@ def write_audits(result: dict, lineage: dict, ffprobe: dict, pre: dict) -> None:
         "video_tasks_reused": int(result.get("video_tasks_reused") or 0),
         "unique_remote_tasks": unique,
         "remote_tasks_completed": int(lineage_counts.get("remote_tasks_completed") or 0),
+        "remote_tasks_inflight": inflight,
         "downloaded_videos": int(lineage_counts.get("video_assets") or 0),
         "duplicate_submits": int(lineage_counts.get("duplicate_submits") or 0),
         "duplicate_assets": int(lineage_counts.get("duplicate_assets") or 0),
@@ -259,11 +261,45 @@ def write_audits(result: dict, lineage: dict, ffprobe: dict, pre: dict) -> None:
             raise SystemExit(f"审计文件疑似包含密钥：{path.name}")
 
 
+def _db_has_inflight(project_id: str) -> dict[str, int]:
+    with connect() as conn:
+        tasks = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM video_tasks
+            WHERE project_id = ? AND status IN ('submitted','running','pending_remote','waiting_remote')
+            """,
+            (project_id,),
+        ).fetchone()["n"]
+        shots = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM shots
+            WHERE project_id = ? AND status IN ('video_running','video_waiting_remote')
+            """,
+            (project_id,),
+        ).fetchone()["n"]
+    return {"tasks": int(tasks), "shots": int(shots)}
+
+
 def maybe_cleanup(project_id: str, created_this_run: bool, lineage: dict | None = None) -> dict:
     if not created_this_run or not project_id or project_id in PROTECTED:
         print("SKIP: 本次未创建临时项目，跳过清理")
         return {"ok": False, "skipped": True, "retain_for_resume": False}
     decision = cleanup_decision(lineage or {}, project_id=project_id, protected=PROTECTED, title_prefix=TITLE_PREFIX)
+    inflight = _db_has_inflight(project_id)
+    if inflight["tasks"] or inflight["shots"]:
+        print(f"SKIP: inflight_remote_tasks db_tasks={inflight['tasks']} db_shots={inflight['shots']}")
+        with connect() as conn:
+            protected = conn.execute("SELECT id FROM projects WHERE id = ?", ("project_5fdac03f50",)).fetchone()
+        return {
+            "cleanup": False,
+            "reason": "inflight_remote_tasks",
+            "retain_for_resume": True,
+            "ok": False,
+            "skipped": True,
+            "protected_untouched": bool(protected),
+            "inflight_task_count": inflight["tasks"],
+            "inflight_shot_count": inflight["shots"],
+        }
     if not decision["cleanup"]:
         print(f"SKIP: {decision['reason']} retain_for_resume={decision.get('retain_for_resume')}")
         if decision.get("note"):

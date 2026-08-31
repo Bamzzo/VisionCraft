@@ -27,6 +27,7 @@ COUNT_FIELDS = (
     "video_tasks_reused",
     "unique_remote_tasks",
     "remote_tasks_completed",
+    "remote_tasks_inflight",
     "downloaded_videos",
     "duplicate_submits",
     "duplicate_assets",
@@ -103,6 +104,7 @@ def normalize_live_run_counts(data: dict[str, Any]) -> dict[str, int]:
         reused = notes.count("reuse_existing_task")
     unique = int(data.get("unique_remote_tasks") or 0)
     completed = int(data.get("remote_tasks_completed") or data.get("remote_completed") or 0)
+    inflight = int(data.get("remote_tasks_inflight") or 0)
     downloaded = int(data.get("downloaded_videos") or 0)
     if unique == 0:
         unique = completed or downloaded
@@ -130,6 +132,7 @@ def normalize_live_run_counts(data: dict[str, Any]) -> dict[str, int]:
         "video_tasks_reused": reused,
         "unique_remote_tasks": unique,
         "remote_tasks_completed": completed,
+        "remote_tasks_inflight": inflight,
         "downloaded_videos": downloaded,
         "duplicate_submits": int(data.get("duplicate_submits") or 0),
         "duplicate_assets": int(data.get("duplicate_assets") or 0),
@@ -440,6 +443,16 @@ def write_audit_reports(
 ) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     counts = normalize_live_run_counts(result)
+    lineage_counts = ((lineage or {}).get("counts") or {}) if lineage else {}
+    if lineage_counts:
+        if "remote_tasks_completed" in lineage_counts:
+            counts["remote_tasks_completed"] = int(lineage_counts.get("remote_tasks_completed") or 0)
+        if "remote_tasks_inflight" in lineage_counts:
+            counts["remote_tasks_inflight"] = int(lineage_counts.get("remote_tasks_inflight") or 0)
+        if "unique_remote_tasks" in lineage_counts and not counts["unique_remote_tasks"]:
+            counts["unique_remote_tasks"] = int(lineage_counts.get("unique_remote_tasks") or 0)
+        if not counts["downloaded_videos"] and lineage_counts.get("video_assets") is not None:
+            counts["downloaded_videos"] = int(lineage_counts.get("video_assets") or 0)
     occurred = estimate_occurred_cny(
         text_calls=counts["text_calls_total"],
         vision_calls=counts["vision_calls_total"],
@@ -470,6 +483,7 @@ def write_audit_reports(
         "video_tasks_reused": counts["video_tasks_reused"],
         "unique_remote_tasks": counts["unique_remote_tasks"],
         "remote_tasks_completed": counts["remote_tasks_completed"],
+        "remote_tasks_inflight": counts["remote_tasks_inflight"],
         "downloaded_videos": counts["downloaded_videos"],
         "duplicate_submits": counts["duplicate_submits"],
         "duplicate_assets": counts["duplicate_assets"],

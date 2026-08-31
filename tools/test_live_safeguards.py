@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from contextlib import contextmanager
@@ -799,6 +800,7 @@ def test_audit_bundle_fields_and_no_secrets() -> None:
             "video_tasks_reused",
             "unique_remote_tasks",
             "remote_tasks_completed",
+            "remote_tasks_inflight",
             "downloaded_videos",
             "duplicate_submits",
             "duplicate_assets",
@@ -1111,6 +1113,24 @@ def test_cleanup_retains_inflight_temp_project() -> None:
     assert keep["cleanup"] is False
     assert keep["retain_for_resume"] is True
     assert keep["reason"] == "inflight_remote_tasks"
+    waiting = {
+        "ok": True,
+        "title": "LIVE2SHOT 等待远端",
+        "shots": [{"id": "s1", "status": "production_ready"}],
+        "video_tasks": [{"id": "vt1", "status": "waiting_remote", "remote_task_id": "abcd…1234"}],
+    }
+    keep_wait = cleanup_decision(waiting, project_id="project_temp_wait", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
+    assert keep_wait["cleanup"] is False
+    assert keep_wait["retain_for_resume"] is True
+    race = {
+        "ok": True,
+        "title": "LIVE2SHOT 竞态",
+        "shots": [{"id": "s1", "status": "video_running"}],
+        "video_tasks": [],
+    }
+    keep_race = cleanup_decision(race, project_id="project_temp_race", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
+    assert keep_race["cleanup"] is False
+    assert keep_race["retain_for_resume"] is True
     idle = {
         "ok": True,
         "title": "LIVE2SHOT 可清理",
@@ -1123,6 +1143,115 @@ def test_cleanup_retains_inflight_temp_project() -> None:
     blocked = cleanup_decision(idle, project_id="v1demo_main", protected={"v1demo_main"}, title_prefix="LIVE2SHOT")
     assert blocked["cleanup"] is False
     pass_("有进行中远程任务的临时项目不会被清理")
+
+
+def test_failed_task_not_counted_completed() -> None:
+    project_id = _project()
+    shot_id = _add_shot(project_id, 1)
+    job = create_job(project_id, "generate_video", "失败", shot_id=shot_id)
+    request = _video_request(project_id, shot_id, job_id=job)
+    task_id = _insert_video_task(request, "remote_failed_only")
+    with connect() as conn:
+        conn.execute(
+            "UPDATE video_tasks SET status = ?, cloud_status = ? WHERE id = ?",
+            ("failed", "failed", task_id),
+        )
+    try:
+        lineage = collect_project_lineage(project_id)
+        assert lineage["counts"]["remote_tasks_completed"] == 0
+        assert lineage["counts"]["remote_tasks_inflight"] == 0
+        assert lineage["counts"]["unique_remote_tasks"] == 1
+        assert lineage["counts"]["video_assets"] == 0
+        pass_("失败任务不计入 completed/downloaded")
+    finally:
+        _cleanup()
+
+
+def test_audit_running_is_inflight_not_completed() -> None:
+    out = ROOT / "output" / "playwright" / "_p7g_inflight_audit"
+    shutil.rmtree(out, ignore_errors=True)
+    try:
+        paths = write_audit_reports(
+            out,
+            result={
+                "project_id": "p_tmp",
+                "title": "LIVE2SHOT mock",
+                "source_text": SAMPLE,
+                "generation_mode": "live_strict",
+                "real_network": True,
+                "text_calls_total": 3,
+                "vision_calls_total": 1,
+                "video_submits_new": 1,
+                "video_tasks_reused": 0,
+                "unique_remote_tasks": 1,
+                "remote_tasks_completed": 1,
+                "downloaded_videos": 0,
+            },
+            lineage={
+                "ok": True,
+                "counts": {
+                    "remote_tasks_completed": 0,
+                    "remote_tasks_inflight": 1,
+                    "unique_remote_tasks": 1,
+                    "video_assets": 0,
+                },
+            },
+        )
+        audit = json.loads(paths["audit"].read_text(encoding="utf-8"))
+        assert audit["remote_tasks_completed"] == 0
+        assert audit["remote_tasks_inflight"] == 1
+        assert audit["video_submits_new"] == 1
+        assert audit["video_tasks_reused"] == 0
+        assert audit["unique_remote_tasks"] == 1
+        assert audit["downloaded_videos"] == 0
+        assert audit["platform_cost"] == "无法确认"
+        assert audit["cost_visibility"] == "无法确认"
+        pass_("审计以 lineage 为准：running 计入 inflight 而非 completed")
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
+def test_js_persist_wait_helpers() -> None:
+    completed = subprocess.run(
+        ["node", str(ROOT / "tools" / "test_live_2shot_wait.js")],
+        cwd=str(ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        raise AssertionError((completed.stdout or "") + (completed.stderr or ""))
+    pass_("Node 落库竞态 helpers 全部通过")
+
+
+def test_maybe_cleanup_retains_db_inflight_despite_stale_lineage() -> None:
+    from tools.run_live_2shot import maybe_cleanup
+
+    project_id = _project("LIVE2SHOT 脚本异常")
+    shot_id = _add_shot(project_id, 1)
+    job = create_job(project_id, "generate_video", "进行中", shot_id=shot_id)
+    request = _video_request(project_id, shot_id, job_id=job)
+    _insert_video_task(request, "remote_keep_inflight")
+    with connect() as conn:
+        conn.execute("UPDATE shots SET status = ? WHERE id = ?", ("video_running", shot_id))
+    stale = {
+        "ok": True,
+        "title": "LIVE2SHOT 脚本异常",
+        "shots": [{"id": shot_id, "status": "keyframes_ready"}],
+        "video_tasks": [],
+    }
+    try:
+        after = maybe_cleanup(project_id, True, stale)
+        assert after.get("retain_for_resume") is True
+        assert after.get("cleanup") is False
+        with connect() as conn:
+            still = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        assert still is not None
+        pass_("脚本异常且 lineage 过期时，DB inflight 仍阻止清理")
+    finally:
+        _cleanup()
 
 
 def test_occurred_cost_uses_actual_calls_not_full_budget() -> None:
@@ -1168,6 +1297,10 @@ def main() -> None:
         test_two_shot_interrupt_refresh_then_second_submit()
         test_lineage_completed_excludes_running()
         test_cleanup_retains_inflight_temp_project()
+        test_failed_task_not_counted_completed()
+        test_audit_running_is_inflight_not_completed()
+        test_js_persist_wait_helpers()
+        test_maybe_cleanup_retains_db_inflight_despite_stale_lineage()
         test_occurred_cost_uses_actual_calls_not_full_budget()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:
