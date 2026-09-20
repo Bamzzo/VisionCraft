@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -88,13 +89,11 @@ async function main() {
       null,
       { timeout: 15000 }
     );
-    if (await page.locator("#projectForm.hidden").count()) {
-      await page.click("#newProjectBtn");
-    }
-    await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 8000 });
+    // 原来这里是「按 class 判一次是否隐藏 → 点新建 → 一次性等表单可见」：判定的那一瞬间
+    // 若还在异步 init 之前，就会重复点击；而在 init 之后、表单又被收回时就空等超时。
+    await openCreateForm(page);
     await page.waitForSelector("#submitProjectBtn:visible");
-    await page.fill("#titleInput", UI_TITLE);
-    await page.fill("#sourceTextInput", SAMPLE);
+    await fillProjectForm(page, { "#titleInput": UI_TITLE, "#sourceTextInput": SAMPLE });
     if (await page.locator("#resolutionInput option[value='1280x720']").count()) {
       await page.selectOption("#resolutionInput", "1280x720");
     }

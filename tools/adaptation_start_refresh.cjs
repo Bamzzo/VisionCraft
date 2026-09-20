@@ -12,6 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -45,11 +46,11 @@ async function launchBrowser() {
 }
 
 async function createProject(page, title, text) {
-  // 查看已有项目时表单处于摘要态，先点击「新建项目」进入空白表单。
-  await page.click("#newProjectBtn");
-  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 5000 });
-  await page.fill("#titleInput", title);
-  await page.fill("#sourceTextInput", text);
+  // 查看已有项目时表单处于摘要态，需要先进入空白表单。原来这里是「点一次新建 +
+  // 一次性等表单可见（5s）」——正好落在 app.js 异步 init 收尾把表单模式重置回摘要态的
+  // 窗口里就会超时（实测在 run-20260920-153453 复现）。改走共享的稳定等待。
+  await openCreateForm(page);
+  await fillProjectForm(page, { "#titleInput": title, "#sourceTextInput": text });
   await page.click("#submitProjectBtn");
   await page.waitForFunction(
     (expected) => {

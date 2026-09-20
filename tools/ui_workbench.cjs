@@ -196,14 +196,13 @@ async function main() {
     if ((await activeProjectId(page)) !== idB) throw new Error("创建项目 B 后未自动切换");
 
     // 新建项目：只清空表单，不改变当前项目 B。
-    await page.click("#newProjectBtn");
-    await page.waitForSelector("#projectForm:not(.hidden)");
+    await openCreateForm(page);
     if ((await activeProjectId(page)) !== idB) throw new Error("点击新建项目后当前项目被改变");
     if (await page.locator("#projectSummaryPanel").isVisible()) throw new Error("新建态不应显示项目摘要");
     pass("新建项目仅进入空白表单，不改变当前项目");
 
     // 未保存守卫：填写草稿后切换项目。
-    await page.fill("#titleInput", "未提交的新项目草稿");
+    await fillProjectForm(page, { "#titleInput": "未提交的新项目草稿" });
     await page.click(`.project-item[data-project-id="${idA}"]`);
     await page.waitForSelector("#unsavedModal:not(.hidden)", { timeout: 5000 });
     if (await page.locator("#unsavedSaveBtn").isVisible()) throw new Error("新项目草稿守卫不应提供保存按钮");

@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -64,16 +65,11 @@ async function driveToStoryboard(page, id) {
 }
 
 async function uiCreateProject(page, title, text) {
-  const formVisible = await page.locator("#projectForm:not(.hidden)").count();
-  if (!formVisible) {
-    await page.click("#newProjectBtn", { force: true });
-  }
-  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 8000 });
-  await page.locator("#titleInput").scrollIntoViewIfNeeded();
-  await page.fill("#titleInput", title);
-  await page.locator("#sourceTextInput").scrollIntoViewIfNeeded();
-  await page.waitForSelector("#sourceTextInput:visible", { timeout: 8000 });
-  await page.fill("#sourceTextInput", text);
+  // 原写法是「按 :not(.hidden) 判一次是否可见 → force 点新建 → 一次性等表单可见」：
+  // 判断与点击之间若还在异步 init 之前，点击会被随后的 renderAll 抹掉，之后的一次性
+  // 等待就空等超时。改走共享的稳定等待（同一竞态已咬过五处）。
+  await openCreateForm(page);
+  await fillProjectForm(page, { "#titleInput": title, "#sourceTextInput": text });
   await page.locator("#submitProjectBtn").scrollIntoViewIfNeeded();
   await page.click("#submitProjectBtn");
   await page.waitForFunction(
