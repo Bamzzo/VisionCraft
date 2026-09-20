@@ -27,6 +27,11 @@ docs/*.docx
 .playwright-cli/
 output/
 
+# One-off diagnostic drivers written while pinning down a failure. Kept on disk
+# because the next person may want to re-run them, but they are not deliverables:
+# they hardcode this machine's paths and ports.
+tmp/
+
 # Logs and temporary files
 *.log
 *.tmp

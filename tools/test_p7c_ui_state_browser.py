@@ -419,28 +419,50 @@ def _ensure_playwright(harness: Path) -> None:
     subprocess.run([npx, "playwright", "install", "chromium"], cwd=harness, check=True)
 
 
+_BACKEND_LOG_HANDLE = None
+
+
+def _backend_log_path(port: int) -> Path:
+    # The backend used to write into subprocess.PIPE and nothing ever read that
+    # pipe. Whenever a step failed, the reason the *backend* gave -- the HTTP
+    # status, the traceback -- was unreachable, so the failure could only be
+    # described from the browser side ("state did not change"), which conflates
+    # "the backend refused" with "the backend was never called". A pipe nobody
+    # drains can also fill up and block the server outright. The isolated data
+    # directory is the natural home: it already collects this run's other logs.
+    data_dir = os.environ.get("VISIONCRAFT_DATA_DIR", "").strip()
+    root = Path(data_dir) if data_dir else ROOT / "output" / "playwright" / "stageC"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"backend_{port}.log"
+
+
 def _start_backend() -> tuple[subprocess.Popen, str]:
+    global _BACKEND_LOG_HANDLE
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     exe = str(python if python.exists() else sys.executable)
     env = _strip_live(os.environ.copy())
     for port in range(8013, 8019):
         if _port_in_use(port):
             continue
+        log_path = _backend_log_path(port)
+        _BACKEND_LOG_HANDLE = log_path.open("w", encoding="utf-8")
         proc = subprocess.Popen(
             [exe, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", str(port)],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stdout=_BACKEND_LOG_HANDLE,
+            stderr=subprocess.STDOUT,
         )
         base = f"http://127.0.0.1:{port}"
         deadline = time.time() + 20
         while time.time() < deadline:
             if proc.poll() is not None:
-                err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                _BACKEND_LOG_HANDLE.flush()
+                err = log_path.read_text(encoding="utf-8", errors="replace")
                 raise SystemExit(f"验收后端启动失败：{err[-500:]}")
             if _health_ok(base):
                 print(f"INFO: 验收后端 {base}")
+                print(f"INFO: 后端日志 {log_path}")
                 return proc, base
             time.sleep(0.3)
         proc.terminate()
