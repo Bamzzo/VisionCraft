@@ -88,41 +88,13 @@ async function driveToStoryboard(page, id) {
 }
 
 /* ---------- UI 辅助 ---------- */
-/**
- * 进入「新建项目」表单态，并确认表单真的留住了。
- *
- * app.js 的 init() 是异步的（health / capabilities / diagnostics / projects 四次往返），
- * 收尾动作才是「有项目则回到摘要态」并重新渲染。脚本若只等 #newProjectBtn 出现就点
- * 「新建」，表单会先显示、随即被 init 的收尾动作隐藏，之后在隐藏元素上 fill 会静默失效
- * （值没写进去 → 提交校验挡住 → 请求根本发不出去）。所以这里等状态稳定，而不是赌时机。
- */
-async function openCreateForm(page) {
-  await page.waitForSelector("#projectList .project-item", { timeout: 15000 }).catch(() => {});
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    if (await page.locator("#projectForm").isVisible()) {
-      // 连续两次采样都可见才算稳定，避免刚显示又被异步初始化收回。
-      await page.waitForTimeout(250);
-      if (await page.locator("#projectForm").isVisible()) return;
-      continue;
-    }
-    const newBtn = page.locator("#newProjectBtn");
-    if (await newBtn.isEnabled().catch(() => false)) {
-      await newBtn.click({ timeout: 5000 }).catch(() => {});
-    }
-    await page.waitForTimeout(250);
-  }
-  throw new Error("无法进入新建表单态：表单始终不可见");
-}
+// 「进入新建表单态 + 填入并读回校验」已抽到共享模块：同一竞态咬过三个脚本，各留一份
+// 就等于第四个还会再踩一次。模块里写明了根因。
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 async function uiCreateProject(page, title, text) {
   await openCreateForm(page);
-  await page.fill("#titleInput", title);
-  await page.fill("#sourceTextInput", text);
-  // 写入后再读一次：静默失败会让后面等摘要的断言变成难查的超时。
-  const readBack = await page.locator("#titleInput").inputValue();
-  if (readBack !== title) {
-    throw new Error(`新建表单被重置：标题写入 ${JSON.stringify(title)} 后读到 ${JSON.stringify(readBack)}`);
-  }
+  await fillProjectForm(page, { "#titleInput": title, "#sourceTextInput": text });
   await page.click("#submitProjectBtn");
   await page.waitForFunction(
     (t) => document.querySelector(".project-item.active strong")?.textContent.includes(t),

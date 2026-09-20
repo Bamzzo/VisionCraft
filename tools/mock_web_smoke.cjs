@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright", "mock-smoke");
@@ -129,15 +130,10 @@ async function main() {
       const summary = document.querySelector("#projectSummaryPanel");
       return Boolean(summary && !summary.classList.contains("hidden"));
     }, null, { timeout: 15000 });
-    await page.click("#newProjectBtn");
-    await page.waitForFunction(
-      () => !document.querySelector("#projectForm")?.classList.contains("hidden"),
-      null,
-      { timeout: 8000 }
-    );
-    await page.waitForSelector("#titleInput");
-    await page.fill("#titleInput", TITLE, { force: true });
-    await page.fill("#sourceTextInput", SAMPLE, { force: true });
+    // 原先是无条件点「新建」再一次性等表单可见，随后 force 填入 —— 与 ui_workbench /
+    // create_guard / local_keyframe 是同一个异步 init 竞态，只是这次侥幸没触发。
+    await openCreateForm(page);
+    await fillProjectForm(page, { "#titleInput": TITLE, "#sourceTextInput": SAMPLE });
     if (await page.locator("#generationModeInput").count()) {
       await page.selectOption("#generationModeInput", "mock");
     }

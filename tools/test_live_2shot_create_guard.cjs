@@ -24,6 +24,7 @@ const fs = require("fs");
 
 const ROOT = path.join(__dirname, "..");
 const { assertFreshCreatedId } = require("./live_2shot_helpers");
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 const { chromium } = require(path.join(ROOT, ".playwright-cli", "node_modules", "playwright"));
 
 const STAMP = new Date().toISOString().slice(11, 19).replace(/:/g, "");
@@ -151,24 +152,7 @@ async function main() {
     // app.js 的 init() 是异步的，收尾才把表单模式定为「有项目则摘要态」。若在它收尾前就点
     // 「新建」，表单会先显示、随即被隐藏，之后的 force 填入在隐藏元素上静默失效，提交校验
     // 挡下请求 —— 现象是等不到 POST（而不是收到错误响应），极难归因。故先等状态稳定。
-    await page.waitForSelector("#projectList .project-item", { timeout: 15000 }).catch(() => {});
-    const formVisible = () =>
-      page.evaluate(() => !document.querySelector("#projectForm")?.classList.contains("hidden"));
-    let formOpen = false;
-    for (let attempt = 0; attempt < 12 && !formOpen; attempt += 1) {
-      if (await formVisible()) {
-        // 连续两次采样都可见才算稳定。
-        await page.waitForTimeout(250);
-        formOpen = await formVisible();
-        break;
-      }
-      if (await page.locator("#newProjectBtn").isEnabled().catch(() => false)) {
-        await page.click("#newProjectBtn", { timeout: 5000 }).catch(() => {});
-      }
-      await page.waitForTimeout(250);
-    }
-    if (!formOpen) throw new Error("无法进入新建表单态：表单始终不可见");
-    await page.waitForTimeout(200);
+    await openCreateForm(page);
 
     // 1) 记录本轮开始前已存在的项目 id（事故形态的判定依据）
     const preexistingIds = await page.evaluate(() =>
@@ -193,12 +177,7 @@ async function main() {
     );
 
     // 3) 创建项目
-    await page.fill("#titleInput", TITLE, { force: true });
-    await page.fill("#sourceTextInput", SAMPLE, { force: true });
-    const sourceValue = await page.locator("#sourceTextInput").inputValue();
-    if (sourceValue !== SAMPLE) {
-      throw new Error(`原文未写入表单（读到 ${JSON.stringify(sourceValue)}），提交校验会挡下请求`);
-    }
+    await fillProjectForm(page, { "#titleInput": TITLE, "#sourceTextInput": SAMPLE });
     await page.selectOption("#shotModeInput", "manual", { force: true });
     await page.waitForFunction(
       () => !document.querySelector("#manualShotField")?.classList.contains("hidden")

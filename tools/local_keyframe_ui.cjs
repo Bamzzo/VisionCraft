@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -86,19 +87,11 @@ async function main() {
   try {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#newProjectBtn");
-    // 等待 app.init 完成首轮项目加载和项目区渲染，避免在事件绑定前点击。
-    await page.waitForFunction(() => {
-      const form = document.querySelector("#projectForm");
-      const summary = document.querySelector("#projectSummaryPanel");
-      return Boolean(form && summary && (!form.classList.contains("hidden") || !summary.classList.contains("hidden")));
-    }, null, { timeout: 15000 });
-    // 空项目时新建表单可以直接可见；已有项目时才需要点击“新建项目”。
-    if (!(await page.locator("#projectForm").isVisible())) {
-      await page.click("#newProjectBtn");
-    }
-    await page.waitForSelector("#projectForm:not(.hidden)");
-    await page.fill("#titleInput", UI_TITLE);
-    await page.fill("#sourceTextInput", SAMPLE);
+    // 原来这里等的是「表单或摘要之一可见」——上一轮渲染就已满足，等于空转；紧接着的
+    // 一次性 waitForSelector('#projectForm:not(.hidden)') 于是会撞上异步 init 的收尾
+    // 重置而超时（同一竞态已咬过 ui_workbench 与 live_2shot_create_guard）。
+    await openCreateForm(page);
+    await fillProjectForm(page, { "#titleInput": UI_TITLE, "#sourceTextInput": SAMPLE });
     await page.selectOption("#generationModeInput", "mock");
     await page.click("#submitProjectBtn");
     await page.waitForFunction(
