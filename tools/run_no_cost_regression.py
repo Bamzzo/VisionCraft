@@ -130,6 +130,7 @@ def build_checks() -> list[Check]:
         "test_p6d_assembly.py",
         "test_p6e_source_audio.py",
         "test_p6_demo_samples.py",
+        "test_anchor_assets.py",
         "test_cleanup_temp_project.py",
         "test_retire_remote_video_task.py",
     ):
@@ -139,6 +140,7 @@ def build_checks() -> list[Check]:
     for script in (
         "test_mock_web_smoke.py",
         "test_local_keyframe_browser.py",
+        "test_anchor_ui_browser.py",
         "test_p6c_real_assembly_browser.py",
         "test_p6d_assembly_browser.py",
         "test_p6e_source_audio_browser.py",
@@ -232,6 +234,7 @@ SERVER_DEPENDENT = {
     "test_adaptation_start_refresh.py",
     "test_p6b_assembly.py",
     "test_ui_workbench.py",
+    "test_anchor_ui_browser.py",
     "test_p6c_real_assembly_browser.py",
     "test_p6d_assembly_browser.py",
     "test_p6e_source_audio_browser.py",

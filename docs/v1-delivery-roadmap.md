@@ -163,6 +163,8 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **P4 其余节点（视觉锚点试生成审核、批量生成）不在本切片。**
 
+**2026-09-20 更新：** 批量生成已完成（`POST /api/projects/{id}/videos` + `assert_batch_generation_allowed`）。视觉锚点分两步补：**锚点数据通路已落地**——`characters.asset_id` / `scenes.asset_id` 此前没有任何流程会写入（实测 7 个项目 12 个角色全为 NULL），现在可通过 `character_anchor` / `scene_anchor` 上传角色或 `POST /api/projects/{id}/anchors` 挂载、`DELETE` 解除，前端 Bible 阶段卡片可直接挂载与预览。**锚点试生成审核门仍待做**：`checkpoint_service.REVIEW_NODES` 目前只有 `storyline_review / scope_review / bible_review / storyboard_review / quality_gate`，确认分镜后即可直接批量生成，中间没有"先看一张样片再花钱"的关卡。无费用验收：`tools/test_anchor_assets.py`、`tools/test_anchor_ui_browser.py`。
+
 ### P5：分级长文本适配
 
 **目标：** 支持最多 10 万中文字符导入，但以“选择故事线后局部创作”替代黑箱全文压缩。

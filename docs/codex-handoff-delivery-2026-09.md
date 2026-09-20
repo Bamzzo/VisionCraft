@@ -479,7 +479,8 @@ node tools\test_live_2shot_wait.js
 
 - 本文：`docs/codex-handoff-delivery-2026-09.md`，本次新建，**已于 2026-09-20 纳入版本控制并推送**（此前"保持未跟踪"的约定作废，见 14.8）。
 - 业务代码：当前 HEAD `5a2495b` 已提交并推送，与 origin 同步。
-- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，今为 **49 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，今为 **51 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（5 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。**审核门仍未兑现**（`REVIEW_NODES` 里没有锚点门），留在切片 2。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
 - `.env`、密钥、`backend/data/`、`output/` 和临时媒体不属于交付提交范围。`tmp/` 已加入 `.gitignore`——其中**只有诊断驱动器脚本**（`_*.py` / `_*.cjs`）需要保留，因为下次可能要重跑；数据目录副本、播种副本、运行日志与截图都是派生物，可随时清理。2026-09-20 已按此规则清掉 44 项派生物（26.6 MB → 74.6 KB），驱动器脚本一个未动。
 
@@ -1046,5 +1047,69 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 - **录屏成片本身还没录**：讲稿与样本就绪，录制需要用户在场（涉及演示节奏与讲解）。
 - **可选的真实录屏增强**（一次受控真实生成，≤ 5 元）已写进讲稿第 7 节，**未执行**，等单独授权。
 - 首尾帧真实三家验收、P5-B 长文本：仍未动。
+
+### 14.16 角色/场景视觉锚点数据通路（功能切片 1，2026-09-20）
+
+#### 14.16.1 为什么先做这个
+
+2026-09-20 竹木把方向从「P6 录屏」改为「先完善项目功能」，随后在四个候选里选定**锚点 + 审核门**。核查（有硬证据）表明缺口其实是两件事：
+
+1. **锚点是半成品。** `characters.asset_id` / `scenes.asset_id` 字段在、前端 `assetPathById` 预览位也在，但**全仓没有任何流程会写入这两个字段**——`_sync_bible_cards` 按 `project_id + name` 匹配后 INSERT 时写死 `asset_id = NULL`，UPDATE 也不碰该列。实测工作库 7 个项目 12 个角色，`asset_id` **全为 NULL**。
+2. **审核门缺一道。** `checkpoint_service.REVIEW_NODES` 只有 `storyline_review / scope_review / bible_review / storyboard_review / quality_gate`，**没有锚点门**；`assert_batch_generation_allowed` 只拦到「分镜未确认」，确认分镜后就能直接批量生成——中间没有"先花小钱看一张样片"的关卡。
+
+两者天然是一件事（没锚点就无可审的样片），但按路线图 §5「一次只解决一个阶段的一个可验收切片」拆成两步：**本切片只做数据通路**（零状态机改动，爆炸半径小），审核门留作切片 2。
+
+#### 14.16.2 交付内容
+
+- 新增 `backend/services/anchor_service.py`：`attach_anchor` / `detach_anchor` / `list_anchors`，目标可按 id 或**名称**定位（名称是 Bible 卡片与 `characters` 表的既有一致口径），错误码区分 `INVALID_KIND` / `TARGET_NOT_FOUND`(404) / `TARGET_MISMATCH` / `ASSET_MISMATCH` / `ASSET_NOT_IMAGE` 等。
+- `asset_upload_service.py` 新增两个上传角色 `character_anchor` / `scene_anchor`：**必须带 `anchor_name`**、**不接受 `shot_id`**；挂载失败时整批回滚（`_rollback_asset`），不留没人引用的孤儿素材。
+- 三个端点：`GET/POST /api/projects/{id}/anchors`、`DELETE /api/projects/{id}/anchors/{kind}/{target}`。**解除只清外键，不删素材文件**——删素材是不可逆动作，不放在这个接口里。
+- 前端：Bible 阶段角色/场景卡片内嵌锚点块（上传/替换/解除 + 缩略图），`resolveAnchor` 从 `workflowViewModel.js` 导出供渲染层复用。
+
+设计上有一处必须记牢：**占位图 `create_placeholder_svg` 没有 `mime_type`**，所以判"是不是图片"只能 `mime.startswith("image/") OR type in _IMAGE_TYPES` 双条件——只看 mime 会把旧演示项目的锚点图误判成"非图片"。
+
+#### 14.16.3 修掉的三个缺陷（两个是真·产品缺陷）
+
+浏览器验收第一版没通过，逐条取证后定案：
+
+| # | 现象 | 真因 | 性质 | 修法 |
+|---|---|---|---|---|
+| 1 | 上传后区块显示「已挂载」，块内却没有缩略图 | 预览被渲染成 `.anchor-block` 的**兄弟节点**；而 Bible 表单页没有别处展示这张图 | 产品缺陷 | 缩略图改由 `anchorControlsHtml(anchor, { withPreview: true })` 渲染**进块内**；素材详情面板已有大图，那里不传该选项以免重复 |
+| 2 | 点「解除锚点」无任何反应 | `[data-anchor-clear]` 分支只挂在 `onInspectorClick`（绑 `#assetDetail`），而 Bible 阶段的锚点块渲染在 `#stageWorkspace`（由 `onWorkspaceClick` 处理）→ 点击被静默丢弃 | 产品缺陷 | 在 `onWorkspaceClick` 开头补同源分支，置于卡片选择之前 |
+| 3 | 断言报「解除锚点不应删除素材：0 -> 1」 | 用例把基准值取在了**上传前**，上传后自然是 +1 | 用例缺陷 | 基准改取「上传后」，并把断言加强为「上传恰好新增 1 条素材」 |
+
+**#2 是靠静态读代码查出来的，不是等它失败**：这正是本项目反复踩到的那个 bug 类——「控件挂在 A 容器、处理器绑在 B 容器」，点击不报错、不发请求、不留日志。写新控件的 click 分支时，先确认它所在容器的处理器是谁。
+
+取证纪律照旧：`anchor_ui.cjs` 第一次 FAIL 时没有重跑猜因，而是用 DIAG 旁路取证打出 `executionStage` / nav 状态 / 卡片数，才定位到「Bible 阶段渲染的是表单式编辑器 `bibleStageHtml`，压根不产生 `.asset-card`」——锚点控件原先只挂在通用素材详情里，走不到那条路径。
+
+#### 14.16.4 截图证据的修正
+
+原实现用 `page.screenshot({ fullPage: true })`，但应用是**固定高度外壳 + 内部滚动区**，`fullPage` 拉不出工作区内容——三张截图实际只拍到工作区顶栏与一个 toast，**根本没有锚点块**。改为先 `scrollIntoViewIfNeeded` 再对 `.anchor-block` 单独截图（`anchor-0X-*-block.png`），未挂载/已挂载两态都能看清缩略图与按钮。
+
+#### 14.16.5 实测
+
+单项验收：
+
+| 检查 | 断言 | 两轮实测 |
+|---|---|---|
+| `tools/test_anchor_assets.py` | 13 | 13 pass / 0 fail（25.4s，两轮一致） |
+| `tools/test_anchor_ui_browser.py` | 5 | 5 pass / 0 fail（10.3s / 10.6s） |
+
+全量回归（**51 项**，49 → 51）：
+
+| 运行 | 结果 | 断言 | 耗时 |
+|---|---|---|---|
+| `run-20260920-194939` | 51/51 | 460 pass / 0 fail / 2 skip | 731.3s |
+| `run-20260920-200211` | 51/51 | 460 pass / 0 fail / 2 skip | 689.8s |
+
+**两轮口径完全一致（同为 51 项 / 460 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：上一轮基线 442 + 13（后端）+ 5（界面）= 460，与实测吻合——说明新增检查一条都没被静默跳过。2 条 skip 与 14.14 / 14.15 同口径，不是新增。
+
+`tools/run_no_cost_regression.py` 的接入点是三处：python 组在 `test_p6_demo_samples.py` 后插入 `test_anchor_assets.py`；browser 组在 `test_local_keyframe_browser.py` 后插入 `test_anchor_ui_browser.py`；`SERVER_DEPENDENT` 加入后者（**6 项 → 7 项**）。前者用 `fastapi.testclient.TestClient` 在进程内自起服务，因此**不进** `SERVER_DEPENDENT`。
+
+#### 14.16.6 仍未做（切片 2 范围，勿读成已闭环）
+
+- **锚点试生成审核门还没有。** 本切片只让锚点"能挂上去"，**没有让它成为花钱前的关卡**：现在确认分镜后依然可以直接批量生成。
+- 切片 2 的爆炸半径已探明：`production_ready` 被 `workflow_control_service.py:192`、`workflowViewModel.js:173`、`render.js` 及 `test_adaptation_workflow.py` / `test_medium_text_adaptation.py` / `local_keyframe_ui.cjs` / `test_p6d_assembly.py` / `test_p6c_real_assembly_browser.py` 等多处断言，**必须先改测试再改实现**。
+- 锚点与镜头参考图是两个作用域，切片 2 需要决定"镜头缺参考图时是否自动取用锚点"，本切片只提供数据，未接自动取用。
 
 
