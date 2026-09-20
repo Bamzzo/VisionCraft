@@ -133,6 +133,53 @@ function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// --- Run-provenance guards -------------------------------------------------
+// Added after an incident: the harness adopted a pre-existing project whose title matched the
+// generated title, drove the workflow on it, then deleted it as if it were this run's temp project.
+
+function minuteKey(value) {
+  return String(value || "").slice(0, 19);
+}
+
+function jobCreatedAfter(job, startedAtIso) {
+  const jobKey = minuteKey(job && job.created_at);
+  const startKey = minuteKey(startedAtIso);
+  if (!jobKey || !startKey) return false;
+  return jobKey >= startKey;
+}
+
+function findFailureFromThisRun(project, shotId, startedAtIso) {
+  return (project.jobs || []).find(
+    (job) =>
+      job &&
+      job.status === "failed" &&
+      jobCreatedAfter(job, startedAtIso) &&
+      (!shotId || !job.shot_id || job.shot_id === shotId)
+  );
+}
+
+function assertFreshCreatedId(preexistingIds, createdId) {
+  const existing = new Set(preexistingIds || []);
+  if (!createdId) {
+    throw new Error("新建项目后没有当前项目");
+  }
+  if (existing.has(createdId)) {
+    throw new Error(
+      `当前项目 ${createdId} 在本轮开始前就已存在，拒绝在非本轮新建项目上继续（可能是同名项目被选中）`
+    );
+  }
+  return true;
+}
+
+function cleanupTarget({ createdProjectId, preexistingIds, protectedIds }) {
+  const protectedSet = new Set(protectedIds || []);
+  const existing = new Set(preexistingIds || []);
+  if (!createdProjectId) return { ok: false, reason: "no_created_project_id" };
+  if (protectedSet.has(createdProjectId)) return { ok: false, reason: "protected_project" };
+  if (existing.has(createdProjectId)) return { ok: false, reason: "not_created_this_run" };
+  return { ok: true, project_id: createdProjectId };
+}
+
 async function waitForVideoTaskPersist(options) {
   const {
     getProject,
@@ -203,4 +250,8 @@ module.exports = {
   canEnterAssembly,
   waitForVideoTaskPersist,
   pollShotVideoReady,
+  jobCreatedAfter,
+  findFailureFromThisRun,
+  assertFreshCreatedId,
+  cleanupTarget,
 };

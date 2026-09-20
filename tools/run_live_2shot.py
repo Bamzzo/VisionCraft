@@ -366,6 +366,11 @@ def main() -> int:
         result["cost_visibility"] = "无法确认"
         result["platform_cost"] = "无法确认"
         project_id = result.get("project_id")
+        # 只允许清理本轮真正新建的项目：曾发生同名旧项目被采纳后再被清理的事故。
+        created_id = str(result.get("created_project_id") or "")
+        preexisting = [str(item) for item in (result.get("preexisting_project_ids") or [])]
+        result["cleanup_target"] = created_id
+        result["preexisting_project_ids"] = preexisting
         lineage = collect_project_lineage(project_id) if project_id else {"ok": False, "reason": "no_project"}
         if lineage.get("ok"):
             result["live_text_call_count"] = lineage.get("live_text_call_count")
@@ -396,7 +401,21 @@ def main() -> int:
         _save_result(result)
         write_audits(result, lineage, ffprobe, pre)
         print("INFO: audits written under", OUT)
-        created_this_run = bool(project_id) and project_id not in PROTECTED
+        created_this_run = (
+            bool(created_id)
+            and created_id not in PROTECTED
+            and created_id not in set(preexisting)
+            and created_id == project_id
+        )
+        if not created_this_run and created_id:
+            reasons = []
+            if created_id in set(preexisting):
+                reasons.append("该 id 在本轮开始前就已存在")
+            if created_id in PROTECTED:
+                reasons.append("属于受保护项目")
+            if created_id != project_id:
+                reasons.append("与 lineage 所用项目不一致")
+            print(f"SKIP: 拒绝清理 {created_id}（{'; '.join(reasons) or '缺少本轮新建证据'}）")
         if created_this_run:
             after = maybe_cleanup(project_id, True, lineage)
             result = _load_result()

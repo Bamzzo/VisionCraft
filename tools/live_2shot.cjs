@@ -15,12 +15,19 @@ const {
   canEnterAssembly,
   waitForVideoTaskPersist,
   pollShotVideoReady,
+  findFailureFromThisRun,
+  assertFreshCreatedId,
 } = require("./live_2shot_helpers");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8040";
 const OUT = path.join(__dirname, "..", "output", "playwright", "live-2shot");
 const JPEG_PATH = process.env.LIVE2SHOT_JPEG;
-const TITLE = "LIVE2SHOT 春秋蝉鸣少年归";
+// 标题带时间戳后缀：同名项目会让侧边栏选中产生歧义（曾因此采纳并删除旧项目）。
+const TITLE_STAMP = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+const TITLE = `LIVE2SHOT-${TITLE_STAMP} 春秋蝉鸣少年归`;
+const TITLE_PREFIX = "LIVE2SHOT";
+// 本轮开始时刻：只承认此刻之后创建的失败 job 属于本轮。
+const RUN_STARTED_AT = new Date().toISOString();
 const SAMPLE = "春秋蝉鸣少年归。";
 const VIDEO_WAIT_MS = 12 * 60 * 1000;
 const TEXT_WAIT_MS = 4 * 60 * 1000;
@@ -85,7 +92,7 @@ async function waitProject(page, id, pred, timeout = 25000, label = "waitProject
   for (;;) {
     const proj = await apiGet(page, `/api/projects/${id}`);
     if (pred(proj)) return proj;
-    const failed = (proj.jobs || []).find((job) => job.status === "failed");
+    const failed = findFailureFromThisRun(proj, null, RUN_STARTED_AT);
     if (failed) {
       fail(`${label} 任务失败：${failed.message || ""} ${failed.error_message || ""}`);
     }
@@ -380,6 +387,12 @@ async function main() {
     await page.waitForSelector("#newProjectBtn");
     await openCreateForm(page);
     await screenshot(page, "00-create-form-1440.png");
+    const preexistingIds = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("#projectList .project-item")).map((el) =>
+        el.getAttribute("data-project-id")
+      )
+    );
+    writeResult({ run_started_at: RUN_STARTED_AT, preexisting_project_ids: preexistingIds });
     await page.fill("#titleInput", TITLE, { force: true });
     await page.fill("#sourceTextInput", SAMPLE, { force: true });
     await setSelectValue(page, "#shotModeInput", "manual");
@@ -412,7 +425,17 @@ async function main() {
     const createdId = await page.evaluate(() => document.querySelector(".project-item.active")?.getAttribute("data-project-id"));
     if (!createdId) fail("新建项目后没有当前项目");
     if (createdId === "project_5fdac03f50" || createdId === "v1demo_main") fail("拒绝复用受保护项目");
-    writeResult({ project_id: createdId });
+    try {
+      assertFreshCreatedId(preexistingIds, createdId);
+    } catch (error) {
+      fail(`${error.message}（本轮新建项目应不在 ${JSON.stringify(preexistingIds)} 中）`);
+    }
+    writeResult({
+      project_id: createdId,
+      created_project_id: createdId,
+      preexisting_project_ids: preexistingIds,
+      run_started_at: RUN_STARTED_AT,
+    });
     const created = await apiGet(page, `/api/projects/${createdId}`);
     if (created.generation_mode !== "live_strict") fail(`生成模式不是 live_strict：${created.generation_mode}`);
     if (created.requested_shot_count !== 2 || created.shot_count_mode !== "manual") {
