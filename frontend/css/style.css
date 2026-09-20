@@ -1041,6 +1041,14 @@ button:disabled {
   margin-bottom: 10px;
 }
 
+/* 真实模式受阻时逐条列出的原因，紧跟在说明段落之后 */
+.live-blocked-list {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 2px;
+}
+
 .stage-model-picker .form-grid,
 .stage-model-picker select,
 .stage-model-picker label {

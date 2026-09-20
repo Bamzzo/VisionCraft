@@ -14,7 +14,8 @@ const el = (id) => document.getElementById(id);
 
 const LAST_PROJECT_KEY = "vc:lastProjectId";
 const VIEW_STORAGE_PREFIX = "vc:view:";
-let flowBusy = false;
+// 「流程控制正在执行」的状态放在共享 state.js 里（state.flowBusy），这样 render.js
+// 也能据此禁用按钮，见该字段上的说明。它不在这里声明，避免渲染层读不到。
 
 function persistLastProject(projectId) {
   try {
@@ -579,13 +580,13 @@ async function redoStage(project, stage) {
 
 async function onFlowAction(event) {
   const trigger = event.target.closest("[data-flow]");
-  if (!trigger || !state.project || flowBusy) return;
+  if (!trigger || !state.project || state.flowBusy) return;
   const action = trigger.dataset.flow;
   const projectId = state.project.id;
   const workflow = computeWorkflow(state.project);
   const frontier = workflow.executionStage;
   try {
-    flowBusy = true;
+    state.flowBusy = true;
     trigger.disabled = true;
     if (action === "pause") {
       const result = await api.pauseProject(projectId);
@@ -614,8 +615,11 @@ async function onFlowAction(event) {
   } catch (error) {
     showError(error.message);
   } finally {
-    flowBusy = false;
-    trigger.disabled = false;
+    state.flowBusy = false;
+    // 横幅（含 data-flow 的整块）在 busy 期间按 state.flowBusy 渲染为禁用，所以
+    // 复位后必须重绘一次，否则它会一直卡在禁用态。原本这里改的是 trigger.disabled，
+    // 但 trigger 多半已被这轮重绘换成了新节点，改它没有意义。
+    renderAll();
   }
 }
 
@@ -997,9 +1001,9 @@ async function waitForAdaptationSurface({ token, projectId, timeoutMs = 10000 })
 }
 
 async function onResumeWorkflow() {
-  if (!state.project || flowBusy) return;
+  if (!state.project || state.flowBusy) return;
   try {
-    flowBusy = true;
+    state.flowBusy = true;
     el("resumeWorkflowBtn").disabled = true;
     const checkpointId = el("resumeWorkflowBtn").dataset.checkpointId || state.project.checkpoint?.id;
     const result = checkpointId
@@ -1012,8 +1016,11 @@ async function onResumeWorkflow() {
   } catch (error) {
     showError(`恢复流程失败：${error.message}`);
   } finally {
-    flowBusy = false;
-    el("resumeWorkflowBtn").disabled = false;
+    state.flowBusy = false;
+    // 按钮可用态统一由渲染层按 can_resume && !state.flowBusy 决定，这里不能无条件
+    // 解禁：refreshProject 会在这之前先按 can_resume 把按钮解禁一次，而那时 busy 仍
+    // 为真，落在这个窗口里的点击会被入口守卫静默吞掉（不发请求、不报错、无提示）。
+    renderAll();
   }
 }
 

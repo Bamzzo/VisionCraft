@@ -317,7 +317,9 @@ function renderSummaryFields() {
   const control = project.workflow || {};
   const canResume = Boolean(control.can_resume);
   const canRetry = !!project && !["running"].includes(project.status);
-  el("resumeWorkflowBtn").disabled = !canResume;
+  // 忙时禁用，理由同 renderGateBanner：刷新会在 finally 复位 busy 之前先按
+  // can_resume 把它解禁，那个窗口里的点击会被 onResumeWorkflow 的守卫静默吞掉。
+  el("resumeWorkflowBtn").disabled = !canResume || state.flowBusy;
   el("retryWorkflowBtn").disabled = !canRetry;
   el("resumeWorkflowBtn").textContent = project.status === "failed" ? "从检查点恢复" : "继续执行";
   el("resumeWorkflowBtn").dataset.checkpointId = canResume ? (project.checkpoint?.id || "") : "";
@@ -509,6 +511,13 @@ function renderGateBanner(project, workflow) {
   const failedHint = (project.jobs || []).find((job) => job.status === "failed")?.message
     || (project.jobs || []).find((job) => job.status === "failed")?.error_message
     || "请查看任务中心中的失败原因，再从有效检查点继续。";
+  // 流程控制正在执行（暂停/继续/采用/重做）时，横幅按钮一律禁用。
+  //
+  // 不这样做就会出现「按钮显示可用、点了毫无反应也没有提示」：onFlowAction 开头是
+  // `if (... || state.flowBusy) return;`，而按钮会被刷新按 can_resume / can_pause
+  // 重新渲染成可用，早于 finally 复位 busy —— 落在这个窗口里的点击被静默吞掉。
+  // 这里是整块 innerHTML 替换，所以判断必须写进模板；只在 app.js 里改 disabled 无效。
+  const gateLocked = state.flowBusy;
 
   if (project.status === "failed") {
     banner.innerHTML = `
@@ -517,7 +526,7 @@ function renderGateBanner(project, workflow) {
         <span>${escapeHtml(failedHint)}</span>
         ${pauseReason ? `<span>上次暂停：${escapeHtml(pauseReason)}</span>` : ""}
         <div class="button-row compact-row">
-          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume ? "" : "disabled"}>从检查点恢复</button>
+          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume && !gateLocked ? "" : "disabled"}>从检查点恢复</button>
         </div>
       </div>`;
     return;
@@ -532,10 +541,10 @@ function renderGateBanner(project, workflow) {
         ${summary ? `<span>可恢复输入：${escapeHtml(summary)}</span>` : ""}
         ${confirmedHint ? `<span>${escapeHtml(confirmedHint)}</span>` : ""}
         <div class="button-row compact-row">
-          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume ? "" : "disabled"}>继续执行</button>
-          <button class="secondary-btn mini-btn" data-flow="adopt">${escapeHtml(adoptLabel(frontier.id))}</button>
-          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause ? "" : "disabled"}>暂停流程</button>
-          ${review ? `<button class="secondary-btn mini-btn" data-flow="redo">基于已保存内容重做此阶段</button>` : ""}
+          <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume && !gateLocked ? "" : "disabled"}>继续执行</button>
+          <button class="secondary-btn mini-btn" data-flow="adopt" ${gateLocked ? "disabled" : ""}>${escapeHtml(adoptLabel(frontier.id))}</button>
+          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause && !gateLocked ? "" : "disabled"}>暂停流程</button>
+          ${review ? `<button class="secondary-btn mini-btn" data-flow="redo" ${gateLocked ? "disabled" : ""}>基于已保存内容重做此阶段</button>` : ""}
         </div>
       </div>`;
     return;
@@ -548,7 +557,7 @@ function renderGateBanner(project, workflow) {
         <span class="gate-title">「${escapeHtml(stageLabel)}」处理中</span>
         <span>${waitingRemote ? "云端视频仍在查询原来的远程任务，暂停不会中断或重新提交。" : "任务进度见底部任务中心，无需刷新页面。"}</span>
         <div class="button-row compact-row">
-          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause && !waitingRemote ? "" : "disabled"}>暂停流程</button>
+          <button class="secondary-btn mini-btn" data-flow="pause" ${control.can_pause && !waitingRemote && !gateLocked ? "" : "disabled"}>暂停流程</button>
         </div>
       </div>`;
     return;
@@ -1752,6 +1761,15 @@ function generationModePickerHtml(project) {
   const hint = liveSelected
     ? (access.hint || "真实模型访问取决于服务是否已开通，页面不会自动发出付费请求。")
     : "当前为本地演示：改编、视觉检查和镜头结果都来自本地夹具，不会伪装成真实模型。";
+  // 后端把「未配置密钥」和「授权开关未开」分成两条独立原因上报，因为两者的处置
+  // 完全不同（前者要配 Key，后者要显式开授权）。只渲染整段 hint 的话，这份逐条
+  // 原因就永远到不了界面，成为空转字段——真实模式下受阻时用户仍不知道卡在哪。
+  const blocked = liveSelected && !access.ready ? (access.blocked_by || []) : [];
+  const blockedHtml = blocked.length
+    ? `<ul class="muted-text live-blocked-list" data-live-blocked="true">${blocked
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("")}</ul>`
+    : "";
   return `<section class="stage-model-picker" data-generation-mode="${escapeHtml(current)}" data-live-ready="${access.ready ? "true" : "false"}">
     <div class="section-title">
       <h3>项目生成模式</h3>
@@ -1763,6 +1781,7 @@ function generationModePickerHtml(project) {
       </select>
     </label>
     <p class="muted-text">${escapeHtml(hint)}</p>
+    ${blockedHtml}
     <div class="button-row compact-row">
       <button class="secondary-btn mini-btn" data-adapt="save-generation-mode">保存生成模式</button>
     </div>

@@ -161,6 +161,36 @@ async function main() {
     pass("默认文本模型仅为预选值，生成模式为 Mock");
     await page.screenshot({ path: path.join(OUT, "01-default-models-1440.png"), fullPage: true });
 
+    // C-3：真实模式下受阻时，界面必须说清"卡在哪一步"，而不是只显示一个不可用状态。
+    // 回归环境把三个授权开关钉死为 0，因此保存真实模式后必然受阻。后端把「未配置密钥」
+    // 与「授权开关未开」分开上报（capabilities._live_access_payload），若界面不消费
+    // blocked_by，这份逐条原因就永远到不了用户眼前。
+    const liveModeSelect = page.locator("#generationModeSelect");
+    if (await liveModeSelect.count()) {
+      await liveModeSelect.selectOption("live_strict");
+      await page.click('[data-adapt="save-generation-mode"]');
+      await page.waitForFunction(
+        () => document.querySelector("[data-generation-mode]")?.getAttribute("data-generation-mode") === "live_strict",
+        null,
+        { timeout: 15000 }
+      );
+      const readyFlag = await page.locator("[data-generation-mode]").getAttribute("data-live-ready");
+      if (readyFlag !== "false") throw new Error(`未授权时真实模式不应标记为就绪（data-live-ready=${readyFlag}）`);
+      const blockedText = await page.locator("[data-live-blocked]").innerText().catch(() => "");
+      if (!blockedText.includes("授权未开启")) {
+        throw new Error(`真实模式受阻时界面未逐条说明原因：${blockedText.trim() || "(没有 blocked_by 渲染)"}`);
+      }
+      pass("未授权时切到真实模式会显示受阻原因，不会伪装成可用");
+      await page.screenshot({ path: path.join(OUT, "01b-live-blocked-1440.png"), fullPage: true });
+      await liveModeSelect.selectOption("mock");
+      await page.click('[data-adapt="save-generation-mode"]');
+      await page.waitForFunction(
+        () => document.querySelector("[data-generation-mode]")?.getAttribute("data-generation-mode") === "mock",
+        null,
+        { timeout: 15000 }
+      );
+    }
+
     const textSelect = page.locator('section[data-model-stage="text_understanding"] [data-model-field="model"]');
     if ((await textSelect.locator("option").count()) > 1) {
       const current = await textSelect.inputValue();

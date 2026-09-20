@@ -15,6 +15,10 @@ export const state = {
   timelineOpen: false,
   remoteRefreshTimer: null,
   refreshInFlight: false,
+  // 「流程控制正在执行」（暂停/继续/采用/重做）。放在共享 state 而不是 app.js 的
+  // 模块级变量，是因为 render.js 需要据此禁用按钮：刷新会在 finally 复位之前先按
+  // can_resume 把按钮解禁，那个窗口里的点击会被入口守卫静默吞掉。
+  flowBusy: false,
   observerToken: 0,
   observedProjectId: null,
 
