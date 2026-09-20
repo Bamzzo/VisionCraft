@@ -246,7 +246,12 @@ async function main() {
 
   if (plan.stop) {
     fail(`镜头失败，停止：不允许自动补发`);
-    report.result = { status: "stopped_on_failure", failures: plan.failures };
+    report.result = {
+      status: "stopped_on_failure",
+      failures: plan.failures,
+      submits_issued: state.submitsIssued.slice(),
+      refresh_count: state.refreshCount,
+    };
     write();
     return 2;
   }
@@ -262,7 +267,14 @@ async function main() {
     report.steps.push({ name: "plan_after_refresh", plan: summarizePlan(plan) });
     if (plan.stop) {
       fail("回查后发现镜头失败，停止：不补发");
-      report.result = { status: "stopped_after_refresh", failures: plan.failures };
+      report.result = {
+        status: "stopped_after_refresh",
+        failures: plan.failures,
+        submits_issued: state.submitsIssued.slice(),
+        refresh_count: state.refreshCount,
+        cost_visibility: "无法确认",
+        platform_cost: "无法确认",
+      };
       write();
       return 2;
     }

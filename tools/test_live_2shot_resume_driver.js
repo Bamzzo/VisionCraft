@@ -252,12 +252,16 @@ async function scenarioAssemblyPendingIsNotSuccess() {
 async function scenarioFailedShotStopsEverything() {
   fixture = projectFixture({ shot1Status: "video_failed", task1Status: "failed" });
   requests = [];
-  const { code, out } = await runDriver([`--project=${PROJECT}`, `--allow-submit=${SHOT2}`]);
+  const { code, out, reportPath } = await runDriver([`--project=${PROJECT}`, `--allow-submit=${SHOT2}`]);
   assert.strictEqual(code, 2, out);
   assert.strictEqual(videoPosts().length, 0, "失败即停，不得补发");
   assert.strictEqual(requests.filter((entry) => entry.endsWith("/videos/refresh")).length, 0);
   assert.match(out, /STOP: 镜头失败，停止/);
-  pass("镜头失败时直接停止：不回查、不提交");
+  const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+  assert.strictEqual(report.result.status, "stopped_on_failure");
+  assert.deepStrictEqual(report.result.submits_issued, [], "停止分支也必须写清提交计数");
+  assert.strictEqual(report.result.refresh_count, 0);
+  pass("镜头失败时直接停止：不回查、不提交，报告仍带计数");
 }
 
 async function main() {
