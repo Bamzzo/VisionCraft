@@ -27,9 +27,12 @@ docs/*.docx
 .playwright-cli/
 output/
 
-# One-off diagnostic drivers written while pinning down a failure. Kept on disk
-# because the next person may want to re-run them, but they are not deliverables:
-# they hardcode this machine's paths and ports.
+# One-off diagnostic drivers written while pinning down a failure. Only the
+# scripts themselves (_*.py, _*.cjs) are kept on disk, because the next person
+# may want to re-run them: they are not deliverables and they hardcode this
+# machine's paths and ports. Everything else under tmp/ is a by-product —
+# isolated data directories, seeded fixture copies, run logs, screenshots — and
+# can be deleted at any time without losing anything that is not reproducible.
 tmp/
 
 # Logs and temporary files
