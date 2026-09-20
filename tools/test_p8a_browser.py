@@ -18,6 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 
+# Kept open for the lifetime of the acceptance backend so its log can be read
+# after the run (see _backend_log_path).
+_BACKEND_LOG_HANDLE = None
+
 
 def _strip_live(env: dict[str, str]) -> dict[str, str]:
     cleaned = dict(env)
@@ -64,28 +68,50 @@ def _ensure_playwright(harness: Path) -> None:
     subprocess.run([npx, "playwright", "install", "chromium"], cwd=harness, check=True)
 
 
+def _backend_log_path(port: int) -> Path:
+    """Where the acceptance backend's own log goes.
+
+    It used to go to ``subprocess.PIPE`` and nothing ever read that pipe. So when
+    a step failed, the reason the *backend* gave — the actual HTTP status, the
+    traceback — was unreachable, and the failure could only be described from the
+    browser side ("状态没变"), which conflates "the backend refused" with "the
+    backend was never called". A pipe nobody drains can also fill up and block the
+    server outright. The isolated data directory is the natural home: it already
+    collects this run's other logs.
+    """
+    data_dir = os.environ.get("VISIONCRAFT_DATA_DIR", "").strip()
+    root = Path(data_dir) if data_dir else ROOT / "output" / "playwright" / "stageC"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"p8a_backend_{port}.log"
+
+
 def _start_backend() -> tuple[subprocess.Popen, str]:
+    global _BACKEND_LOG_HANDLE
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     exe = str(python if python.exists() else sys.executable)
     env = _strip_live(os.environ.copy())
     for port in range(8013, 8019):
         if _port_in_use(port):
             continue
+        log_path = _backend_log_path(port)
+        _BACKEND_LOG_HANDLE = log_path.open("w", encoding="utf-8")
         proc = subprocess.Popen(
             [exe, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", str(port)],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stdout=_BACKEND_LOG_HANDLE,
+            stderr=subprocess.STDOUT,
         )
         base = f"http://127.0.0.1:{port}"
         deadline = time.time() + 20
         while time.time() < deadline:
             if proc.poll() is not None:
-                err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                _BACKEND_LOG_HANDLE.flush()
+                err = log_path.read_text(encoding="utf-8", errors="replace")
                 raise SystemExit(f"验收后端启动失败：{err[-500:]}")
             if _health_ok(base):
                 print(f"INFO: 验收后端 {base}")
+                print(f"INFO: 后端日志 {log_path}")
                 return proc, base
             time.sleep(0.3)
         proc.terminate()
@@ -124,6 +150,8 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 server.kill()
             print("CLEANED: 验收后端进程")
+        if _BACKEND_LOG_HANDLE is not None:
+            _BACKEND_LOG_HANDLE.close()
 
 
 if __name__ == "__main__":

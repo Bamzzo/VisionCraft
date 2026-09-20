@@ -88,11 +88,41 @@ async function driveToStoryboard(page, id) {
 }
 
 /* ---------- UI 辅助 ---------- */
+/**
+ * 进入「新建项目」表单态，并确认表单真的留住了。
+ *
+ * app.js 的 init() 是异步的（health / capabilities / diagnostics / projects 四次往返），
+ * 收尾动作才是「有项目则回到摘要态」并重新渲染。脚本若只等 #newProjectBtn 出现就点
+ * 「新建」，表单会先显示、随即被 init 的收尾动作隐藏，之后在隐藏元素上 fill 会静默失效
+ * （值没写进去 → 提交校验挡住 → 请求根本发不出去）。所以这里等状态稳定，而不是赌时机。
+ */
+async function openCreateForm(page) {
+  await page.waitForSelector("#projectList .project-item", { timeout: 15000 }).catch(() => {});
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (await page.locator("#projectForm").isVisible()) {
+      // 连续两次采样都可见才算稳定，避免刚显示又被异步初始化收回。
+      await page.waitForTimeout(250);
+      if (await page.locator("#projectForm").isVisible()) return;
+      continue;
+    }
+    const newBtn = page.locator("#newProjectBtn");
+    if (await newBtn.isEnabled().catch(() => false)) {
+      await newBtn.click({ timeout: 5000 }).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error("无法进入新建表单态：表单始终不可见");
+}
+
 async function uiCreateProject(page, title, text) {
-  await page.click("#newProjectBtn");
-  await page.waitForSelector("#projectForm:not(.hidden)", { timeout: 5000 });
+  await openCreateForm(page);
   await page.fill("#titleInput", title);
   await page.fill("#sourceTextInput", text);
+  // 写入后再读一次：静默失败会让后面等摘要的断言变成难查的超时。
+  const readBack = await page.locator("#titleInput").inputValue();
+  if (readBack !== title) {
+    throw new Error(`新建表单被重置：标题写入 ${JSON.stringify(title)} 后读到 ${JSON.stringify(readBack)}`);
+  }
   await page.click("#submitProjectBtn");
   await page.waitForFunction(
     (t) => document.querySelector(".project-item.active strong")?.textContent.includes(t),
@@ -104,8 +134,28 @@ async function uiCreateProject(page, title, text) {
 async function activeProjectId(page) {
   return page.locator(".project-item.active").getAttribute("data-project-id");
 }
+/**
+ * 切项目会顺带触发「离开当前阶段」的守卫：当前镜头若有未保存草稿（例如上游重做后生成了
+ * 新草稿，`shot.has_unsaved_changes` 为真），app 会先弹 #unsavedModal 并推迟切换。
+ * 脚本不处理它就会一直等不到切换完成。这里显式选择「放弃修改」，并留一条日志——
+ * 守卫是刻意设计的产品行为，静默绕过会让下一次回归丢掉这个信号。
+ */
+async function dismissUnsavedGuardIfAny(page) {
+  const appeared = await page
+    .waitForSelector("#unsavedModal:not(.hidden)", { timeout: 1500 })
+    .then(() => true)
+    .catch(() => false);
+  if (!appeared) return false;
+  await page.click("#unsavedDiscardBtn");
+  await page.waitForSelector("#unsavedModal.hidden", { state: "attached", timeout: 5000 }).catch(() => {});
+  return true;
+}
+
 async function selectProject(page, id) {
   await page.click(`.project-item[data-project-id="${id}"]`);
+  if (await dismissUnsavedGuardIfAny(page)) {
+    console.log("INFO: 切换项目时被未保存草稿守卫拦下，已按「放弃修改」继续");
+  }
   await page.waitForFunction(
     (pid) => document.querySelector(".project-item.active")?.getAttribute("data-project-id") === pid,
     id,

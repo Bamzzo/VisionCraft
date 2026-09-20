@@ -18,6 +18,11 @@ from backend.database import connect, init_db  # noqa: E402
 
 TOOL = ROOT / "tools" / "cleanup_temp_project.py"
 PROTECTED = "v1demo_main"
+# Mirrors cleanup_temp_project.PROTECTED. The queries below must exclude these,
+# otherwise they can select a protected project: the refusal case would then pass
+# for the wrong reason, and the dry-run case would fail because the tool refuses
+# protected ids before it ever looks at emptiness.
+TOOL_PROTECTED = ("v1demo_main", "project_5fdac03f50")
 
 
 def run_tool(*args: str) -> subprocess.CompletedProcess:
@@ -29,6 +34,18 @@ def run_tool(*args: str) -> subprocess.CompletedProcess:
 def project_exists(pid: str) -> bool:
     with connect() as conn:
         return bool(conn.execute("SELECT COUNT(*) AS n FROM projects WHERE id = ?", (pid,)).fetchone()["n"])
+
+
+def pick_non_protected_project_with_shots() -> str:
+    """First project that has shots and is not protected by the cleanup tool."""
+    placeholders = ", ".join("?" for _ in TOOL_PROTECTED)
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT p.id FROM projects p JOIN shots s ON s.project_id = p.id "
+            f"WHERE p.id NOT IN ({placeholders}) GROUP BY p.id LIMIT 1",
+            TOOL_PROTECTED,
+        ).fetchone()
+    return row["id"] if row else ""
 
 
 def test_protected_project_refused() -> None:
@@ -54,14 +71,10 @@ def test_title_prefix_mismatch_refused() -> None:
 
 
 def test_non_empty_project_refused() -> None:
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT p.id FROM projects p JOIN shots s ON s.project_id = p.id GROUP BY p.id LIMIT 1"
-        ).fetchone()
-    if not row:
-        print("SKIP: 没有含镜头的项目可供断言")
+    pid = pick_non_protected_project_with_shots()
+    if not pid:
+        print("SKIP: 没有不受保护且含镜头的项目可供断言")
         return
-    pid = row["id"]
     result = run_tool(f"--project-id={pid}", "--expect-title-prefix=", "--apply")
     assert result.returncode == 1, result.stdout + result.stderr
     assert project_exists(pid), "有镜头的项目不得被删除"
@@ -69,14 +82,10 @@ def test_non_empty_project_refused() -> None:
 
 
 def test_allow_non_empty_still_requires_apply() -> None:
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT p.id FROM projects p JOIN shots s ON s.project_id = p.id GROUP BY p.id LIMIT 1"
-        ).fetchone()
-    if not row:
-        print("SKIP: 没有含镜头的项目可供断言")
+    pid = pick_non_protected_project_with_shots()
+    if not pid:
+        print("SKIP: 没有不受保护且含镜头的项目可供断言")
         return
-    pid = row["id"]
     result = run_tool(f"--project-id={pid}", "--expect-title-prefix=", "--allow-non-empty")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "DRY-RUN" in result.stdout

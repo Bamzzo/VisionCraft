@@ -17,9 +17,14 @@ sys.path.insert(0, str(ROOT))
 from backend.config import PROJECTS_DIR, init_environment
 from backend.database import connect, init_db, utc_now
 from backend.services.asset_service import public_asset_path
+from tools.p6c_ffmpeg import ensure_process_path, ffmpeg_available, make_color_clip
 
 BASE = os.environ.get("VISIONCRAFT_BASE_URL", "http://127.0.0.1:8000")
-FFMPEG_AVAILABLE = bool(shutil.which("ffmpeg"))
+# 用项目自己的探测口径，而不是裸 shutil.which("ffmpeg")：后者只看 PATH，而
+# video_service._ffmpeg_executable() 还会依次看 VISIONCRAFT_FFMPEG_DIR 和仓库内外
+# 若干 .tools/ffmpeg/bin。裸探测会把"本机确实装了 ffmpeg"误判成没有，于是夹具按
+# 假字节写，同时脚本又走进真实 concat 分支 —— 必然失败且失败信息很难读。
+FFMPEG_AVAILABLE = ffmpeg_available()
 CREATED: list[str] = []
 
 
@@ -83,7 +88,13 @@ def _seed_shots(project_id: str, count: int = 3) -> None:
             )
         folder = PROJECTS_DIR / project_id
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / filename).write_bytes(b"local-test-video")
+        if FFMPEG_AVAILABLE:
+            # 本机有 ffmpeg 时，合成会真的走 concat，夹具就必须是能解码的真视频。
+            # 原先写的是 b"local-test-video" 这类假字节，真 ffmpeg 会报
+            # "moov atom not found"，而失败在界面上只表现为"等不到某个元素"。
+            make_color_clip(folder / filename, color="red", size="320x180", duration=0.6)
+        else:
+            (folder / filename).write_bytes(b"local-test-video")
         marker = f"<svg xmlns='http://www.w3.org/2000/svg' width='64' height='36'><rect width='64' height='36' fill='#111'/></svg>"
         (folder / first_name).write_text(marker, encoding="utf-8")
         (folder / last_name).write_text(marker, encoding="utf-8")
@@ -93,7 +104,11 @@ def _seed_final(project_id: str, label: str) -> None:
     filename = f"final_{uuid.uuid4().hex[:8]}.mp4"
     path = PROJECTS_DIR / project_id / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"local-final-cut")
+    if FFMPEG_AVAILABLE:
+        # 已存在成片的用例同样需要可播放的真文件，否则预览/校验都只能靠猜。
+        make_color_clip(path, color="blue", size="320x180", duration=0.8)
+    else:
+        path.write_bytes(b"local-final-cut")
     now = utc_now()
     with connect() as conn:
         conn.execute(

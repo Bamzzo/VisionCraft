@@ -67,6 +67,28 @@ async function summaryValue(page, key) {
     return null;
   }, key);
 }
+/**
+ * 等界面摘要里的某个字段真正变成目标文案。
+ *
+ * 后端推进与界面刷新是两个不同的异步：`waitProject` 一旦看到后端 status 翻转就
+ * 立刻返回，而界面要么等 4 秒轮询、要么等一次 refreshProject 才重绘。此时直接
+ * `summaryValue` 读到的是**上一轮**的文案。旧写法在这里栽过一次：等横幅是否含
+ * 「等待审核」是空转——范围审核和 Bible 审核的横幅都写着「等待审核」，条件瞬间
+ * 成立，随后立刻读到的执行状态仍是「等待范围审核」。
+ */
+async function waitSummaryLabel(page, key, includes, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  let seen = null;
+  for (;;) {
+    seen = await summaryValue(page, key);
+    if (String(seen || "").includes(includes)) return seen;
+    if (Date.now() > deadline) {
+      throw new Error(`等待界面摘要「${key}」包含「${includes}」超时，当前读到：${JSON.stringify(seen)}`);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
 async function horizontalOverflow(page) {
   return page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 }
@@ -79,19 +101,65 @@ function pass(msg) {
   console.log(`PASS: ${msg}`);
 }
 
-async function clickSyncedResume(page, projectId, expectedNode) {
-  const deadline = Date.now() + 15000;
+/** 等界面进入「可从此节点继续」的状态（横幅 checkpoint 与后端一致且按钮可用）。 */
+async function waitResumable(page, projectId, expectedNode, timeout = 15000) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const proj = await apiGet(page, `/api/projects/${projectId}`);
     const bannerId = await page.locator("[data-flow='resume-auto']").getAttribute("data-checkpoint-id").catch(() => "");
     const enabled = await page.locator("#resumeWorkflowBtn").isEnabled().catch(() => false);
-    if (proj.checkpoint?.node === expectedNode && bannerId === proj.checkpoint.id && enabled) {
-      await page.click("#resumeWorkflowBtn");
-      return;
-    }
+    if (proj.checkpoint?.node === expectedNode && bannerId === proj.checkpoint.id && enabled) return true;
     await new Promise((r) => setTimeout(r, 250));
   }
-  await apiPost(page, `/api/projects/${projectId}/resume`);
+  return false;
+}
+
+/** 等后端离开某个审核节点，返回新状态；超时返回空串。 */
+async function waitLeaveNode(page, projectId, node, timeout) {
+  const deadline = Date.now() + timeout;
+  let last = {};
+  for (;;) {
+    last = await apiGet(page, `/api/projects/${projectId}`);
+    if ((last.checkpoint?.node || "") !== node) return last.status || "(未知状态)";
+    if (Date.now() > deadline) return "";
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+async function clickSyncedResume(page, projectId, expectedNode) {
+  // 界面点击是首选路径：这条验收要证明的正是「界面能继续执行」。
+  //
+  // 但界面在这里有一个能被踩中的窗口：onResumeWorkflow 一进来就把按钮置灰，随后
+  // refreshProject → renderSummary 又会按 can_resume 重算 disabled 把它恢复，而
+  // flowBusy 要等到 finally 才复位。落在这个窗口里的点击会被
+  // `if (!state.project || flowBusy) return;` 静默吞掉——不发请求、不报错、界面毫无
+  // 变化，现象与「后端拒绝推进」完全一致。所以点完必须回查后端是否真的动了。
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    if (!(await waitResumable(page, projectId, expectedNode))) break;
+    await page.click("#resumeWorkflowBtn");
+    const moved = await waitLeaveNode(page, projectId, expectedNode, 8000);
+    if (moved) {
+      console.log(`INFO: 界面点击「继续执行」已生效（${expectedNode} → ${moved}）`);
+      return;
+    }
+    console.log(`WARN: 第 ${attempt} 次界面点击后后端仍停在 ${expectedNode}，重试（界面 flowBusy 窗口吞掉点击）`);
+  }
+  // 兜底仍然必须走**带 checkpoint id** 的端点。
+  //
+  // 旧写法兜底打的是 POST /api/projects/{id}/resume（不带 id）。后端在没有 id 时会
+  // 把请求解析到「当前已完成」的那个节点上，命中 workflow_control_service.py 的幂等
+  // 守卫后原样返回 _idempotent_resume，流程一动不动。于是失败现象是「点了继续执行，
+  // 等了 25 秒后端没推进」——和真实缺陷长得一模一样，无法归因。带上 id 才能让兜底与
+  // 界面点击命中同一条代码路径；退化本身也必须留痕，不能静默。
+  const proj = await apiGet(page, `/api/projects/${projectId}`);
+  const checkpointId = proj.checkpoint?.id || "";
+  if (!checkpointId) {
+    console.log(`WARN: 界面同步等待超时，且后端无 checkpoint，只能退回不带 id 的 /resume（流程可能不推进）`);
+    await apiPost(page, `/api/projects/${projectId}/resume`);
+    return;
+  }
+  console.log(`WARN: 界面同步等待超时（期望节点 ${expectedNode}），改走带 checkpoint id 的 API 兜底：${checkpointId}`);
+  await apiPost(page, `/api/projects/${projectId}/checkpoints/${checkpointId}/resume`);
 }
 
 async function main() {
@@ -151,11 +219,15 @@ async function main() {
 
     await clickSyncedResume(page, projectA.id, "scope_review");
     proj = await waitProject(page, projectA.id, (item) => item.status === "awaiting_bible_review");
+    // 先等界面追上后端，再断言。此处原来只等横幅文案含「等待审核」——范围审核和
+    // Bible 审核的横幅都满足这个条件，所以它是空转，紧接着读到的执行状态仍是旧的
+    // 「等待范围审核」，测试于是报「确认范围后未进入 Bible 审核」。
+    await waitSummaryLabel(page, "执行状态", "Bible");
+    const bibleLabel = await summaryValue(page, "执行状态");
+    if (!String(bibleLabel || "").includes("Bible")) throw new Error(`确认范围后未进入 Bible 审核：${bibleLabel}`);
     await page.waitForFunction(() => (document.querySelector("#stageGateBanner")?.textContent || "").includes("等待审核"), null, {
       timeout: 10000,
     });
-    const bibleLabel = await summaryValue(page, "执行状态");
-    if (!String(bibleLabel || "").includes("Bible")) throw new Error(`确认范围后未进入 Bible 审核：${bibleLabel}`);
     pass("确认范围后只恢复必要下游，进入 Bible 审核暂停");
 
     await clickSyncedResume(page, projectA.id, "bible_review");
@@ -169,6 +241,9 @@ async function main() {
 
     await clickSyncedResume(page, projectA.id, "storyboard_review");
     proj = await waitProject(page, projectA.id, (item) => item.status === "production_ready");
+    // 同上：先等界面追上后端再读按钮状态。production_ready 时 can_resume 为假，
+    // 但界面若还停在分镜审核上，这个按钮仍是可用的，断言会因陈旧状态而误报。
+    await waitSummaryLabel(page, "执行状态", "可进入制作");
     const shots = (proj.shots || []).length;
     if (!shots) throw new Error("确认分镜后没有制作镜头");
     const confirmAgain = await page.request.post(`${BASE}/api/projects/${projectA.id}/adaptation/storyboard/confirm`, { data: {} });
