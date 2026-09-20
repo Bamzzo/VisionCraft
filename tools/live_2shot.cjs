@@ -417,18 +417,33 @@ async function main() {
     if (!createdRes.ok()) {
       fail(`创建项目失败 HTTP ${createdRes.status()} ${((await createdRes.text()) || "").slice(0, 400)}`);
     }
-    await page.waitForFunction(
-      (title) => (document.querySelector("#summaryFields")?.innerText || "").includes(title.slice(0, 8)),
-      TITLE,
-      { timeout: 20000 }
-    );
-    const createdId = await page.evaluate(() => document.querySelector(".project-item.active")?.getAttribute("data-project-id"));
-    if (!createdId) fail("新建项目后没有当前项目");
+    // 项目 id 必须取自服务端对这个 POST 的应答，而不是从 DOM 猜。
+    // 曾两次踩坑：页面加载时前端自动选中 projects[0]，创建请求返回后侧栏还停留在上一次渲染，
+    // 此时读 .project-item.active 会拿到"上一个项目"，且旧标题前缀能直接满足旧的等待条件。
+    const createdBody = await createdRes.json().catch(() => null);
+    const createdId = String((createdBody && (createdBody.id || createdBody.project_id)) || "");
+    if (!createdId) {
+      fail(`创建项目响应缺少 id：${JSON.stringify(createdBody).slice(0, 200)}`);
+    }
     if (createdId === "project_5fdac03f50" || createdId === "v1demo_main") fail("拒绝复用受保护项目");
     try {
       assertFreshCreatedId(preexistingIds, createdId);
     } catch (error) {
       fail(`${error.message}（本轮新建项目应不在 ${JSON.stringify(preexistingIds)} 中）`);
+    }
+    // 再等前端真的把这个 id 渲染成当前项目（此时表单也已切到摘要态）。
+    // 这同时取代了原先"等摘要出现"的判断：那个条件用 title.slice(0, 8) 会被同名旧项目满足。
+    try {
+      await page.waitForFunction(
+        (id) => {
+          const item = document.querySelector(`#projectList .project-item[data-project-id="${id}"]`);
+          return !!item && item.classList.contains("active");
+        },
+        createdId,
+        { timeout: 20000 }
+      );
+    } catch {
+      fail(`新建项目 ${createdId} 未在 20s 内成为前端当前项目，拒绝继续`);
     }
     writeResult({
       project_id: createdId,
