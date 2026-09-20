@@ -332,6 +332,34 @@ Provider 选择建议：
 
 模型 ID 请照抄控制台里真实存在的值：曾经猜测的 Seedance 2.5 接入点在默认项目下并未开通。
 
+## 演示样本
+
+路线图 P6 要求的三条固定演示样本可以一条命令准备好：
+
+```powershell
+.venv\Scripts\python.exe tools\prepare_p6_demo_samples.py
+```
+
+| 项目 | 演示什么 |
+| --- | --- |
+| `p6demo_story` | 短文本完整闭环：4 个真实镜头 + 本地 FFmpeg 合成的 20 秒成片 |
+| `p6demo_compare` | 同镜头多模型对比：同一提示词、同一首帧交给三家，实际输出规格互不相同 |
+| `p6demo_recovery` | 失败恢复案例：真实的云端任务丢失记录与处置入口 |
+
+样本的镜头视频取自 2026-08 的真实付费产物（复制，不重新生成），改编走本地 mock
+规划器，成片由本地 FFmpeg 合成——**准备与演示全程零外发**。脚本只创建或重置
+`p6demo_*` 项目，`--clean` 也只删这些。
+
+录屏讲稿见 `docs/v1-demo-script.md`；无费用验收见 `tools/test_p6_demo_samples.py`。
+
+三家对比图（同一提示词、同一首帧，抽帧横向拼接）可单独生成：
+
+```powershell
+.venv\Scripts\python.exe tools\make_p6_compare_sheet.py
+```
+
+产出 `output/playwright/p6demo/compare-three-providers.png`。
+
 ## 使用流程
 
 1. 启动后端并打开本地页面。
@@ -459,4 +487,4 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 .venv\Scripts\python.exe tools\run_no_cost_regression.py
 ```
 
-串行执行静态检查、Node 单测、服务契约测试与浏览器测试。**每一项用例都拿到自己的数据目录**——驱动器先把历史夹具种成一个模板，再为每条用例拷贝一份，因此用例之间不会观察到彼此的残留状态；三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
+串行执行 **49 项**静态检查、Node 单测、服务契约测试与浏览器测试。**每一项用例都拿到自己的数据目录**——驱动器先把历史夹具种成一个模板，再为每条用例拷贝一份，因此用例之间不会观察到彼此的残留状态；三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
