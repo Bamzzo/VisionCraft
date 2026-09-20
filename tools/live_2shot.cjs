@@ -18,6 +18,9 @@ const {
   findFailureFromThisRun,
   assertFreshCreatedId,
 } = require("./live_2shot_helpers");
+// 新建表单的进入与填写统一走共享模块：本地那一份用的是「点一次 + 一次性等待」，
+// 撞上 app.js 异步 init 的收尾就会静默失败（详见 ui_project_form.cjs 的说明）。
+const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8040";
 const OUT = path.join(__dirname, "..", "output", "playwright", "live-2shot");
@@ -129,32 +132,6 @@ async function waitAppReady(page) {
     const summary = document.querySelector("#projectSummaryPanel");
     return Boolean(summary && !summary.classList.contains("hidden"));
   }, null, { timeout: 15000 });
-}
-
-async function openCreateForm(page) {
-  await waitAppReady(page);
-  const newBtn = page.locator("#newProjectBtn");
-  if (await newBtn.isDisabled()) fail("新建项目按钮不可用");
-  await newBtn.click();
-  await page.waitForFunction(
-    () => !document.querySelector("#projectForm")?.classList.contains("hidden"),
-    null,
-    { timeout: 8000 }
-  );
-  await page.waitForTimeout(400);
-  if (await page.evaluate(() => document.querySelector("#projectForm")?.classList.contains("hidden"))) {
-    await newBtn.click();
-    await page.waitForFunction(
-      () => !document.querySelector("#projectForm")?.classList.contains("hidden"),
-      null,
-      { timeout: 8000 }
-    );
-  }
-  const visible = await page.evaluate(() => {
-    const form = document.querySelector("#projectForm");
-    return Boolean(form && !form.classList.contains("hidden"));
-  });
-  if (!visible) fail("点击新建后创建表单仍隐藏");
 }
 
 async function setSelectValue(page, selector, value) {
@@ -385,6 +362,7 @@ async function main() {
   try {
     await page.goto(BASE, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#newProjectBtn");
+    await waitAppReady(page);
     await openCreateForm(page);
     await screenshot(page, "00-create-form-1440.png");
     const preexistingIds = await page.evaluate(() =>
@@ -393,11 +371,10 @@ async function main() {
       )
     );
     writeResult({ run_started_at: RUN_STARTED_AT, preexisting_project_ids: preexistingIds });
-    await page.fill("#titleInput", TITLE, { force: true });
-    await page.fill("#sourceTextInput", SAMPLE, { force: true });
+    await fillProjectForm(page, { "#titleInput": TITLE, "#sourceTextInput": SAMPLE });
     await setSelectValue(page, "#shotModeInput", "manual");
     await page.waitForFunction(() => !document.querySelector("#manualShotField")?.classList.contains("hidden"));
-    await page.fill("#shotCountInput", "2", { force: true });
+    await fillProjectForm(page, { "#shotCountInput": "2" });
     // ProjectCreate 校验 ge=5；MiniMax 最短 4s 在镜头级设置，不改业务代码。
     const projectDuration = (await page.locator("#durationInput option[value='5']").count())
       ? "5"
