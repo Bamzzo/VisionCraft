@@ -93,17 +93,29 @@ export const api = {
       body,
     });
   },
-  uploadProjectAsset: (projectId, { file, assetRole, shotId, subtitleText }) => {
+  uploadProjectAsset: (projectId, { file, assetRole, shotId, subtitleText, anchorName }) => {
     const body = new FormData();
     body.append("asset_role", assetRole);
     if (shotId) body.append("shot_id", shotId);
     if (subtitleText) body.append("subtitle_text", subtitleText);
+    if (anchorName) body.append("anchor_name", anchorName);
     if (file) body.append("file", file);
     return request(`/api/projects/${projectId}/assets/upload`, {
       method: "POST",
       body,
     });
   },
+  listAnchors: (projectId) => request(`/api/projects/${projectId}/anchors`),
+  attachAnchor: (projectId, { kind, target, assetId }) =>
+    request(`/api/projects/${projectId}/anchors`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ kind, target, asset_id: assetId }),
+    }),
+  detachAnchor: (projectId, kind, target) =>
+    request(`/api/projects/${projectId}/anchors/${encodeURIComponent(kind)}/${encodeURIComponent(target)}`, {
+      method: "DELETE",
+    }),
   generateVideo: (projectId, shotId, payload = {}) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video`, {
       method: "POST",

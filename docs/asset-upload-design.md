@@ -38,7 +38,7 @@ multipart 表单：
 }
 ```
 
-`type` 实际值为资产表类型：`first-frame` / `last-frame` / `keyframe` / `reference` / `audio` / `subtitle`。`file_path` 始终是项目内公开路径 `/assets/{project_id}/asset_{id}.{ext}`。
+`type` 实际值为资产表类型：`first-frame` / `last-frame` / `keyframe` / `reference` / `character-anchor` / `scene-anchor` / `audio` / `subtitle`。`file_path` 始终是项目内公开路径 `/assets/{project_id}/asset_{id}.{ext}`。
 
 ## 角色
 
@@ -48,8 +48,12 @@ multipart 表单：
 | `first_frame` | `first-frame` | 可挂当前镜头，新建版本，旧版本保留 |
 | `last_frame` | `last-frame` | 同上 |
 | `reference_image` | `reference` | 写入当前镜头草稿 `reference_frame_path` |
+| `character_anchor` | `character-anchor` | 写入 `characters.asset_id`，须带 `anchor_name` |
+| `scene_anchor` | `scene-anchor` | 写入 `scenes.asset_id`，须带 `anchor_name` |
 | `audio` / `background_audio` | `audio` | 仅成片背景音 |
 | `subtitle` | `subtitle` | 仅成片字幕 |
+
+锚点（`character_anchor` / `scene_anchor`）与镜头参考图的区别是作用域：参考图属于单个镜头，锚点属于角色或场景，供多个镜头取用。锚点不接受 `shot_id`（传了会被拒），且挂载失败时整批回滚，不留孤儿素材。解除锚点用 `DELETE /api/projects/{id}/anchors/{kind}/{target}`，只清外键、不删素材文件。
 
 ## 文件类型与限制
 

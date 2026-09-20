@@ -1006,6 +1006,50 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* 角色/场景视觉锚点：跨镜头一致性素材，挂在 Bible 阶段。 */
+.anchor-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft, rgba(255, 255, 255, 0.08));
+}
+
+.anchor-block .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.anchor-preview {
+  position: relative;
+  max-width: 220px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm);
+  background: var(--preview-bg);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.anchor-preview img,
+.anchor-preview video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: var(--preview-bg);
+}
+
+.anchor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.anchor-actions label.secondary-btn {
+  cursor: pointer;
+}
+
 .dirty-flag {
   display: inline-flex;
   align-items: center;

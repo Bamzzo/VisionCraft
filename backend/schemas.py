@@ -66,6 +66,12 @@ class KeyframeRedrawRequest(BaseModel):
     target: Literal["first", "last", "both"] = "both"
 
 
+class AnchorAttachRequest(BaseModel):
+    kind: Literal["character", "scene"]
+    target: str = Field(min_length=1, max_length=80)
+    asset_id: str = Field(min_length=3, max_length=40)
+
+
 class AdaptationSelectRequest(BaseModel):
     option_id: str = Field(min_length=3, max_length=40)
 

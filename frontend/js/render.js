@@ -5,6 +5,7 @@ import {
   computeWorkflow,
   jobCenterRows,
   jobStatusLabel,
+  resolveAnchor,
   resolveStageId,
   stageAssets,
   stageBriefModel,
@@ -793,6 +794,12 @@ function adaptationStageHtml(project, options = {}) {
 }
 
 /* ---- Story Bible ---- */
+/* ---- Story Bible ---- */
+function bibleAnchorHtml(project, kind, name) {
+  // Bible 卡片是表单式布局，没有别处会展示锚点图，因此预览必须由锚点块自带。
+  return anchorControlsHtml(resolveAnchor(project, kind, name), { withPreview: true });
+}
+
 function bibleStageHtml(project) {
   const bible = project.story_bible;
   if (!bible) {
@@ -808,6 +815,7 @@ function bibleStageHtml(project) {
         <label>外观<input data-bible-card="character" data-index="${index}" data-field="appearance" value="${escapeHtml(card.appearance || "")}" /></label>
         <label>动机<input data-bible-card="character" data-index="${index}" data-field="motivation" value="${escapeHtml(card.motivation || "")}" /></label>
         <label>不可改变特征<input data-bible-card="character" data-index="${index}" data-field="invariant" value="${escapeHtml(card.invariant || "")}" /></label>
+        ${bibleAnchorHtml(project, "character", card.name)}
       </div>`
     )
     .join("");
@@ -821,6 +829,7 @@ function bibleStageHtml(project) {
         <label>时间<input data-bible-card="scene" data-index="${index}" data-field="time" value="${escapeHtml(card.time || "")}" /></label>
         <label>视觉元素<input data-bible-card="scene" data-index="${index}" data-field="visuals" value="${escapeHtml(card.visuals || "")}" /></label>
         <label>不可改变特征<input data-bible-card="scene" data-index="${index}" data-field="invariant" value="${escapeHtml(card.invariant || "")}" /></label>
+        ${bibleAnchorHtml(project, "scene", card.name)}
       </div>`
     )
     .join("");
@@ -963,6 +972,42 @@ function genericDetailHtml(card, stage) {
       <div class="asset-detail-fields">
         ${card.summary ? `<p>${escapeHtml(card.summary)}</p>` : ""}
         <div class="detail-meta-grid">${meta}</div>
+        ${anchorControlsHtml(card.anchor)}
+      </div>
+    </div>`;
+}
+
+/**
+ * 角色/场景锚点：Bible 阶段挂上参考图，供所有含该角色/场景的镜头复用。
+ * withPreview=true 时把当前锚点图渲染进块内；Bible 表单没有别处展示这张图，
+ * 而素材详情面板已有大图预览，那里不重复渲染。
+ */
+function anchorControlsHtml(anchor, { withPreview = false } = {}) {
+  if (!anchor) return "";
+  const role = anchor.kind === "character" ? "character_anchor" : "scene_anchor";
+  const label = anchor.kind === "character" ? "角色锚点" : "场景锚点";
+  const preview = withPreview && anchor.preview
+    ? `<div class="anchor-preview">${renderAssetMedia(anchor.preview, anchor.name, assetForPath(anchor.preview))}</div>`
+    : "";
+  return `
+    <div class="anchor-block" data-anchor-kind="${escapeHtml(anchor.kind)}" data-anchor-name="${escapeHtml(anchor.name)}">
+      <div class="section-title">
+        <strong>${label}</strong>
+        <span class="tag">${anchor.assetId ? "已挂载" : "未挂载"}</span>
+      </div>
+      ${preview}
+      <p class="muted-text">锚点用于跨镜头保持一致。镜头缺参考图时可取用锚点，不必逐镜头上传。</p>
+      <div class="anchor-actions">
+        <label class="secondary-btn mini-btn">
+          ${anchor.assetId ? "替换锚点图" : "上传锚点图"}
+          <input type="file" accept="image/png,image/jpeg" data-asset-upload="${role}"
+                 data-anchor-name="${escapeHtml(anchor.name)}" hidden />
+        </label>
+        ${anchor.assetId
+          ? `<button type="button" class="secondary-btn mini-btn" data-anchor-clear
+                     data-anchor-kind="${escapeHtml(anchor.kind)}"
+                     data-anchor-name="${escapeHtml(anchor.name)}">解除锚点</button>`
+          : ""}
       </div>
     </div>`;
 }

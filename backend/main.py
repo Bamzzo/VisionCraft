@@ -18,6 +18,7 @@ from .providers.llm_provider import live_llm_available
 from .schemas import (
     AdaptationRegenerateRequest,
     AdaptationSelectRequest,
+    AnchorAttachRequest,
     AssemblySettingsUpdate,
     DemoCleanupRequest,
     FeedbackCreate,
@@ -71,6 +72,7 @@ from .services.asset_upload_service import (
     upload_project_asset,
 )
 from .services.local_keyframe_service import LocalKeyframeError, register_local_first_frame
+from .services.anchor_service import AnchorError, attach_anchor, detach_anchor, list_anchors
 from .services.memory_service import index_project_memory, search_project_memory
 from .services.model_config_service import list_stage_configs, save_stage_config, set_generation_mode
 from .providers.llm_catalog import ModelConfigError
@@ -598,6 +600,7 @@ async def upload_project_asset_endpoint(
     asset_role: str = Form(...),
     shot_id: str | None = Form(default=None),
     subtitle_text: str | None = Form(default=None),
+    anchor_name: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
 ) -> dict:
     content = None
@@ -621,12 +624,45 @@ async def upload_project_asset_endpoint(
             filename=(file.filename if file else "") or "",
             shot_id=shot_id or None,
             subtitle_text=subtitle_text,
+            anchor_name=anchor_name,
         )
     except AssetUploadError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail="上传失败，请检查文件后重试。") from exc
-    return {"ok": True, "asset": public_asset_payload(result["asset"]), "shot": result.get("shot")}
+    return {
+        "ok": True,
+        "asset": public_asset_payload(result["asset"]),
+        "shot": result.get("shot"),
+        "anchor": result.get("anchor"),
+    }
+
+
+@app.get("/api/projects/{project_id}/anchors")
+def list_anchors_endpoint(project_id: str) -> dict:
+    try:
+        return {"items": list_anchors(project_id)}
+    except AnchorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/anchors")
+def attach_anchor_endpoint(project_id: str, payload: AnchorAttachRequest) -> dict:
+    try:
+        anchor = attach_anchor(project_id, kind=payload.kind, target=payload.target, asset_id=payload.asset_id)
+    except AnchorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"ok": True, "anchor": anchor}
+
+
+@app.delete("/api/projects/{project_id}/anchors/{kind}/{target}")
+def detach_anchor_endpoint(project_id: str, kind: str, target: str) -> dict:
+    """只解除锚点关联，不删除素材文件。"""
+    try:
+        anchor = detach_anchor(project_id, kind=kind, target=target)
+    except AnchorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"ok": True, "anchor": anchor}
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/keyframes/register-local")

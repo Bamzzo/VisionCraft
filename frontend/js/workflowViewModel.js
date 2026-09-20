@@ -685,15 +685,42 @@ function bibleAssets(project) {
     const card = baseCard("character-card", item.name || `角色 ${index + 1}`, { ...item, id: `char-${index}`, cardIndex: index, cardKind: "character" });
     card.summary = item.appearance || item.identity || "";
     card.meta = { 动机: item.motivation || "", 不可改变: item.invariant || "" };
+    applyAnchor(card, project, "character", item.name);
     cards.push(card);
   });
   (bible.scene_cards || []).forEach((item, index) => {
     const card = baseCard("scene-card", item.name || `场景 ${index + 1}`, { ...item, id: `scene-${index}`, cardIndex: index, cardKind: "scene" });
     card.summary = item.environment || "";
     card.meta = { 时间: item.time || "", 视觉: item.visuals || "" };
+    applyAnchor(card, project, "scene", item.name);
     cards.push(card);
   });
   return cards;
+}
+
+/**
+ * 锚点住在 characters/scenes 表上，而 Bible 卡片来自 story_bible 的 JSON 卡片，
+ * 两者只以名字对接（后端 _sync_bible_cards 也是按名字匹配的）。
+ */
+export function resolveAnchor(project, kind, name) {
+  if (!name) return null;
+  const rows = kind === "character" ? project?.characters || [] : project?.scenes || [];
+  const row = rows.find((item) => item.name === name);
+  if (!row) return null;
+  return {
+    kind,
+    name: row.name,
+    rowId: row.id,
+    assetId: row.asset_id || "",
+    preview: assetPathById(project, row.asset_id),
+  };
+}
+
+function applyAnchor(card, project, kind, name) {
+  const anchor = resolveAnchor(project, kind, name);
+  if (!anchor) return;
+  card.anchor = anchor;
+  if (anchor.preview) card.preview = anchor.preview;
 }
 
 function storyboardAssets(project) {

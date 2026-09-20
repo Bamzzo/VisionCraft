@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from ..database import connect
+from ..services.anchor_service import AnchorError, attach_anchor
 from ..services.asset_service import persist_uploaded_asset
 from ..services.media_transfer_service import MediaTransferError, sniff_raster_image
 from ..services.project_service import get_project
@@ -19,13 +20,18 @@ MAX_SRT_CUES = 500
 IMAGE_ROLES = {"keyframe", "first_frame", "last_frame", "reference_image"}
 AUDIO_ROLES = {"audio", "background_audio"}
 SUBTITLE_ROLES = {"subtitle"}
-ALLOWED_ROLES = IMAGE_ROLES | AUDIO_ROLES | SUBTITLE_ROLES
+# 锚点属于角色/场景，不属于镜头，因此单独一类，且必须带 anchor_name。
+ANCHOR_ROLE_KIND = {"character_anchor": "character", "scene_anchor": "scene"}
+ANCHOR_ROLES = set(ANCHOR_ROLE_KIND)
+ALLOWED_ROLES = IMAGE_ROLES | AUDIO_ROLES | SUBTITLE_ROLES | ANCHOR_ROLES
 
 ROLE_ASSET_TYPE = {
     "keyframe": "keyframe",
     "first_frame": "first-frame",
     "last_frame": "last-frame",
     "reference_image": "reference",
+    "character_anchor": "character-anchor",
+    "scene_anchor": "scene-anchor",
     "audio": "audio",
     "background_audio": "audio",
     "subtitle": "subtitle",
@@ -51,6 +57,7 @@ def upload_project_asset(
     filename: str = "",
     shot_id: str | None = None,
     subtitle_text: str | None = None,
+    anchor_name: str | None = None,
 ) -> dict:
     project = get_project(project_id)
     if not project:
@@ -59,8 +66,14 @@ def upload_project_asset(
     if role not in ALLOWED_ROLES:
         raise AssetUploadError(
             "INVALID_ROLE",
-            "素材角色无效。图片请使用 keyframe / first_frame / last_frame / reference_image；音频请使用 background_audio；字幕请使用 subtitle。",
+            "素材角色无效。图片请使用 keyframe / first_frame / last_frame / reference_image；"
+            "锚点请使用 character_anchor / scene_anchor；音频请使用 background_audio；字幕请使用 subtitle。",
         )
+    if role in ANCHOR_ROLES:
+        if shot_id:
+            raise AssetUploadError("INVALID_ROLE", "视觉锚点属于角色或场景，不能挂到镜头上。")
+        if not (anchor_name or "").strip():
+            raise AssetUploadError("ANCHOR_TARGET_REQUIRED", "请选择要挂载锚点的角色或场景。")
     if shot_id:
         _require_shot(project, project_id, shot_id)
         if role in AUDIO_ROLES or role in SUBTITLE_ROLES:
@@ -69,14 +82,28 @@ def upload_project_asset(
             raise AssetUploadError("INVALID_ROLE", "该图片角色不能挂到镜头。")
 
     safe_name = _safe_filename(filename)
-    if role in IMAGE_ROLES:
+    if role in IMAGE_ROLES or role in ANCHOR_ROLES:
         asset = _save_image(project_id, role, content or b"", safe_name)
         try:
             attached = _attach_image(project_id, shot_id, role, asset["file_path"]) if shot_id else None
+            anchor = (
+                attach_anchor(
+                    project_id,
+                    kind=ANCHOR_ROLE_KIND[role],
+                    target=anchor_name or "",
+                    asset_id=asset["id"],
+                )
+                if role in ANCHOR_ROLES
+                else None
+            )
         except AssetUploadError:
             _rollback_asset(asset["id"], _disk_path(asset["file_path"], project_id))
             raise
-        return {"ok": True, "asset": asset, "shot": attached}
+        except AnchorError as exc:
+            # 挂不上就整批回滚：不留一张没人引用的孤儿素材。
+            _rollback_asset(asset["id"], _disk_path(asset["file_path"], project_id))
+            raise AssetUploadError(exc.code, str(exc), status_code=exc.status_code) from exc
+        return {"ok": True, "asset": asset, "shot": attached, "anchor": anchor}
     if role in AUDIO_ROLES:
         asset = _save_audio(project_id, role, content or b"", safe_name)
         return {"ok": True, "asset": asset}

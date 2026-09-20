@@ -451,6 +451,13 @@ async function setViewStage(stageId) {
 /* ================================================================== */
 
 function onWorkspaceClick(event) {
+  // 锚点块在 Bible 阶段渲染进工作区（不在 #assetDetail 里），解除按钮必须先于
+  // 卡片选择处理，否则会被当成"未命中任何卡片"而静默丢弃。
+  const clearAnchor = event.target.closest("[data-anchor-clear]");
+  if (clearAnchor) {
+    onClearAnchor(clearAnchor);
+    return;
+  }
   // 素材卡片选择
   const card = event.target.closest("[data-asset-key]");
   if (card) {
@@ -701,6 +708,12 @@ async function onInspectorClick(event) {
     await onAdaptationAction(adapt);
     return;
   }
+  // 锚点属于角色/场景，不属于镜头，因此必须在"必须先选中镜头"的守卫之前处理。
+  const clearAnchor = event.target.closest("[data-anchor-clear]");
+  if (clearAnchor) {
+    await onClearAnchor(clearAnchor);
+    return;
+  }
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
   const shot = selectedShot();
@@ -833,6 +846,8 @@ async function onApplyKeyframes(trigger) {
 
 async function onUploadProjectFile(input) {
   const role = input.dataset.assetUpload || "first_frame";
+  const anchorName = input.dataset.anchorName || "";
+  const isAnchor = role === "character_anchor" || role === "scene_anchor";
   const file = input.files && input.files[0];
   input.value = "";
   if (!state.project) {
@@ -846,6 +861,10 @@ async function onUploadProjectFile(input) {
     showError("请先选择一个镜头，再上传图片。");
     return;
   }
+  if (isAnchor && !anchorName) {
+    showError("请先选择要挂载锚点的角色或场景。");
+    return;
+  }
   if (state.assetUpload?.status === "uploading") return;
   state.assetUpload = { role, status: "uploading", message: "正在上传" };
   renderAll();
@@ -854,6 +873,7 @@ async function onUploadProjectFile(input) {
       file,
       assetRole: role,
       shotId: needsShot ? shot.id : undefined,
+      anchorName: isAnchor ? anchorName : undefined,
     });
     const path = result.asset?.file_path;
     if (path && state.videoDraft && shot && state.videoDraft.shotId === shot.id) {
@@ -872,11 +892,26 @@ async function onUploadProjectFile(input) {
     await refreshProject();
     state.assetUpload = { role, status: "success", message: "上传成功" };
     renderAll();
-    showSuccess("素材已上传到当前项目。");
+    showSuccess(isAnchor ? `锚点已挂到「${anchorName}」。` : "素材已上传到当前项目。");
   } catch (error) {
     state.assetUpload = { role, status: "failed", message: error.message };
     renderAll();
     showError(`上传失败：${error.message}`);
+  }
+}
+
+/** 解除锚点：只清外键，不删素材文件，所以不需要二次确认。 */
+async function onClearAnchor(trigger) {
+  if (!state.project) return;
+  const kind = trigger.dataset.anchorKind || "character";
+  const name = trigger.dataset.anchorName || "";
+  if (!name) return;
+  try {
+    await api.detachAnchor(state.project.id, kind, name);
+    await refreshProject();
+    showSuccess(`已解除「${name}」的锚点，素材仍保留在项目中。`);
+  } catch (error) {
+    showError(`解除锚点失败：${error.message}`);
   }
 }
 
