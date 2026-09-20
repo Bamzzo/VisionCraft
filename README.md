@@ -459,4 +459,4 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 .venv\Scripts\python.exe tools\run_no_cost_regression.py
 ```
 
-串行执行静态检查、Node 单测、服务契约测试与浏览器测试，全部落在隔离数据目录中，并把三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
+串行执行静态检查、Node 单测、服务契约测试与浏览器测试。**每一项用例都拿到自己的数据目录**——驱动器先把历史夹具种成一个模板，再为每条用例拷贝一份，因此用例之间不会观察到彼此的残留状态；三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
