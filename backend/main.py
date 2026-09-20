@@ -8,7 +8,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import FRONTEND_DIR, PROJECTS_DIR, init_environment
 from .database import connect, init_db
-from .providers.capabilities import CapabilityError, get_provider_capabilities, get_provider_diagnostics
+from .providers.capabilities import (
+    CapabilityError,
+    get_provider_capabilities,
+    get_provider_diagnostics,
+    live_access_snapshot,
+)
 from .providers.llm_provider import live_llm_available
 from .schemas import (
     AdaptationRegenerateRequest,
@@ -128,7 +133,21 @@ app.mount("/assets", StaticFiles(directory=PROJECTS_DIR), name="assets")
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "mode": "live-ready" if live_llm_available() else "mock-ready", "llm_live": live_llm_available()}
+    """Liveness plus an unambiguous view of what is actually authorized.
+
+    ``mode`` and ``llm_live`` only report whether a key is present, which is easy
+    to misread as "real calls are enabled". ``live_access`` carries the real
+    authorization state and ``note`` spells out which field means what, so a
+    reader never has to guess why a provider call is being refused.
+    """
+    keys_present = live_llm_available()
+    return {
+        "ok": True,
+        "mode": "live-ready" if keys_present else "mock-ready",
+        "llm_live": keys_present,
+        "live_access": live_access_snapshot(),
+        "note": "mode/llm_live 只表示 Key 已配置，不代表真实调用已授权；授权状态与受阻原因见 live_access。",
+    }
 
 
 @app.get("/api/providers/capabilities")

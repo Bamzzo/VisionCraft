@@ -341,22 +341,61 @@ def _live_access_payload() -> dict:
     from .llm_catalog import deepseek_configured, live_llm_authorized, live_vision_authorized
     from .live_budget import live_video_authorized
 
-    text_ready = bool(live_llm_authorized() and deepseek_configured())
-    vision_ready = bool(live_vision_authorized() and deepseek_configured())
-    video_ready = bool(live_video_authorized() and os.getenv("MINIMAX_API_KEY"))
+    deepseek_key = deepseek_configured()
+    minimax_key = bool(os.getenv("MINIMAX_API_KEY"))
+    llm_authorized = live_llm_authorized()
+    vision_authorized = live_vision_authorized()
+    video_authorized = live_video_authorized()
+
+    text_ready = bool(llm_authorized and deepseek_key)
+    vision_ready = bool(vision_authorized and deepseek_key)
+    video_ready = bool(video_authorized and minimax_key)
     ready = text_ready or vision_ready or video_ready
+
+    # Report the two gates separately. A missing key and a closed authorization
+    # switch collapse into the same false flag above, and telling them apart is
+    # the entire point of a diagnostic.
+    #
+    # Keep this payload free of environment variable names: it is returned to the
+    # browser, and test_stage_models.py asserts that no key or switch name leaks
+    # through here. Deployment detail belongs in the repository docs instead.
+    blocked_by: list[str] = []
+    if not deepseek_key:
+        blocked_by.append("文本与视觉：未配置访问密钥")
+    if not minimax_key:
+        blocked_by.append("视频：未配置访问密钥")
+    if not llm_authorized:
+        blocked_by.append("文本：真实调用授权未开启")
+    if not vision_authorized:
+        blocked_by.append("视觉：真实调用授权未开启")
+    if not video_authorized:
+        blocked_by.append("视频：真实调用授权未开启")
+
     hint = (
         "真实模型已开通。严格真实失败会标记任务失败；允许本地回退时会明确写明「已使用本地回退」。"
         if ready
-        else "真实模型访问尚未开通。当前可以用本地演示走完整流程；如需真实生成，请由开发者完成服务配置后再切换模式。"
+        else (
+            "真实调用尚未授权，当前只走本地演示路径。仅配置密钥不会发起真实请求，"
+            "还需要显式开启真实调用授权开关（文本、视觉、视频各一个，默认都关闭；"
+            "文本总开关会连带打开视觉与视频）。单次闭环的护栏默认为视频 1 次、总额 5 元。"
+            "具体开启方式见仓库内的配置模板注释与交付文档。"
+        )
     )
     return {
         "ready": ready,
         "text_ready": text_ready,
         "vision_ready": vision_ready,
         "video_ready": video_ready,
+        "authorized": {"llm": llm_authorized, "vision": vision_authorized, "video": video_authorized},
+        "keys_present": {"deepseek": deepseek_key, "minimax": minimax_key},
+        "blocked_by": blocked_by,
         "hint": hint,
     }
+
+
+def live_access_snapshot() -> dict:
+    """Public view of authorization state, used by ``/api/health``."""
+    return _live_access_payload()
 
 
 def _llm_models_payload() -> list[dict]:
