@@ -129,6 +129,7 @@ def build_checks() -> list[Check]:
         "test_p6c_real_assembly.py",
         "test_p6d_assembly.py",
         "test_p6e_source_audio.py",
+        "test_p6_demo_samples.py",
         "test_cleanup_temp_project.py",
         "test_retire_remote_video_task.py",
     ):
