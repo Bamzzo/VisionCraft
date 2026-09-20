@@ -51,9 +51,9 @@ VisionCraft 的做法是把生成过程拆开：先建立故事和视觉锚点�
 | 多智能体工作流 | 已完成 | LangGraph 节点化编排，状态写入数据库 |
 | 记忆检索 | 已完成 | ChromaDB 项目记忆，镜头侧展示 RAG 证据 |
 | 图像生成 | 已完成 | 支持火山方舟和 SiliconFlow 图像接口，本地占位用于开发兜底 |
-| 关键帧管理 | 已完成 | 支持首尾帧生成、重绘、手动选择和相邻镜头连续性更新 |
-| 视频生成 | 已完成 | 支持 T2V、I2V、首尾帧模式，保存远程任务号和错误信息 |
-| Seedance 回查 | 已完成 | 云端任务未完成时可稍后回查并下载结果 |
+| 关键帧管理 | 已完成 | 首帧生成、重绘、手动选择和相邻镜头连续性更新均已真实验证 |
+| 视频生成 | 已完成（首尾帧模式除外） | T2V 与 I2V 已真实验证；首尾帧（keyframes）模式的参数与数据字段已就位，真实 Provider 路径尚未做专项验收 |
+| 远程任务回查 | 已完成 | 云端任务未完成时可稍后回查并下载结果，支持从残留任务恢复 |
 | 版本历史 | 已完成 | 反馈、重绘、重试都会生成新版本，支持回滚 |
 | 成片合成 | 已完成 | FFmpeg 合成前检查真实视频来源，避免静帧占位混入成片 |
 | 任务同步 | 已完成 | Server-Sent Events 加前端轮询兜底 |
@@ -250,7 +250,7 @@ Seedance 这类视频模型经常是异步任务。后端会保存远程任务�
 | 依赖 | 建议 |
 | --- | --- |
 | Python | 3.10+ |
-| FFmpeg | 已加入系统 PATH |
+| FFmpeg | 需要 `ffmpeg` 与 `ffprobe`。查找顺序：系统 PATH → `VISIONCRAFT_FFMPEG_DIR` → 仓库同级的 `.tools/ffmpeg/bin` → `C:\ffmpeg\bin`。**不必改系统 PATH**，把便携版放进上面任一位置即可 |
 | 浏览器 | Chrome / Edge |
 | 网络 | 能访问所配置的模型 API |
 
@@ -283,31 +283,54 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env`，填入自己的 Key 和接入点。`.env` 只用于本地运行，不属于项目示例配置。
+复制 `.env.example` 为 `.env`，填入自己的 Key 和接入点。`.env` 只用于本地运行，不属于项目示例配置。`.env.example` 里每个键都标了 `[护栏]`、`[必需]`、`[可选]` 或 `[遗留]`，按标注填即可。
+
+环境变量分两类，先看第一类，它决定系统会不会花钱：
+
+### 真实调用授权门（默认为关闭）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `VISIONCRAFT_ALLOW_LIVE_LLM` | `0` | 文本真实调用授权 |
+| `VISIONCRAFT_ALLOW_LIVE_VISION` | `0` | 视觉检查授权 |
+| `VISIONCRAFT_ALLOW_LIVE_VIDEO` | `0` | 视频生成授权 |
+| `VISIONCRAFT_LIVE_MAX_VIDEO_CALLS` | `1` | 单次闭环视频提交上限，硬上限 5 |
+| `VISIONCRAFT_LIVE_BUDGET_CNY` | `5.0` | 单次闭环费用上限（元） |
+
+**只配好 Key 并不会发起真实调用。** 系统默认停在 Mock 路径；要真实调用必须显式打开对应开关。上层是授权门，下层还有次数与预算护栏，超限时返回 `BLOCKED_BEFORE_CALL` 并说明原因。
+
+⚠️ **一个容易踩的语义**：`VISIONCRAFT_ALLOW_LIVE_LLM=1` 会**同时打开文本、视觉、视频三扇门**，因为视觉与视频的授权判定都是「自身开关为 1 **或** LLM 已授权」。只想开文本或只想开文本+视觉时，请分别显式设置三个开关，不要用 LLM 总开关。
+
+### Provider 凭据与模型
 
 ```text
-VISIONCRAFT_PROVIDER_MODE=live
 VISIONCRAFT_IMAGE_PROVIDER=ark
 VISIONCRAFT_VIDEO_PROVIDER=ark
 
+# 文本与视觉
 DEEPSEEK_API_KEY=
-SILICONFLOW_API_KEY=
-VOLC_API_KEY=
-VOLC_IMAGE_API_KEY=
-VOLC_VIDEO_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
 
-DOUBAO_IMAGE_ENDPOINT=
-SEEDANCE_V2_ENDPOINT=doubao-seedance-2-0-260128
+# 视频
+MINIMAX_API_KEY=
+MINIMAX_VIDEO_MODEL=MiniMax-H3
+ARK_API_KEY=
+ARK_VIDEO_MODEL=doubao-seedance-2-0-260128
+DASHSCOPE_API_KEY=
+DASHSCOPE_I2V_MODEL=wan2.7-i2v
 ```
 
 Provider 选择建议：
 
 | 目标 | 建议 |
 | --- | --- |
-| 文本规划 | DeepSeek 或 SiliconFlow 兼容接口 |
+| 文本规划 | DeepSeek（真实计费路径固定用 `deepseek-v4-flash`） |
+| 视觉检查 | DeepSeek `deepseek-v4-flash-vision-exp` |
+| 视频生成 | MiniMax H3（V1 真实 2 镜验收走这家）；Seedance 与 Wan 已比测通过，可换 |
 | 图像生成 | 火山方舟图像模型或 SiliconFlow Image |
-| 视频生成 | Seedance 接入点 |
-| 本地调试 | 保留 `.env.example`，先检查页面和工作流 |
+| 本地调试 | 保持授权门关闭，先检查页面与工作流 |
+
+模型 ID 请照抄控制台里真实存在的值：曾经猜测的 Seedance 2.5 接入点在默认项目下并未开通。
 
 ## 使用流程
 
@@ -328,12 +351,16 @@ Provider 选择建议：
 
 | 现象 | 常见原因 | 处理 |
 | --- | --- | --- |
+| 配好 Key 但仍走 Mock、拿不到真实结果 | 真实调用授权门默认关闭（设计如此） | 显式把 `VISIONCRAFT_ALLOW_LIVE_LLM` / `_VISION` / `_VIDEO` 设为 `1`；只要配 Key 就自动真实调用是不存在的 |
+| 提示 `BLOCKED_BEFORE_CALL` | 触发了次数或预算护栏 | 返回原文会写明是哪一条：文本上限 3 次、视觉上限 1 次、视频默认 1 次（`VISIONCRAFT_LIVE_MAX_VIDEO_CALLS` 可调，硬上限 5）、总费用上限默认 5 元（`VISIONCRAFT_LIVE_BUDGET_CNY`） |
+| 提示真实调用尚未授权 | 生成路径被授权门拦住（回查路径不受此门限制） | 先确认 Provider、模型、次数、参数和预算，再打开对应开关 |
 | 图像显示为 SVG | 图像 Provider 未配置或调用失败 | 检查图像 Key、模型接入点和控制台权限 |
-| 视频显示等待远程 | 视频模型任务仍在云端运行 | 稍后点击回查 Seedance 任务 |
+| 视频显示等待远程 | 视频模型任务仍在云端运行 | 稍后点击回查远程任务；远端结果有保留期，过期后只能重新生成 |
 | 视频被内容策略拦截 | Prompt 过度贴近已有作品、含敏感内容或平台策略限制 | 使用安全改写后重试，减少作品名和风格复刻表达 |
 | 提示额度或并发限制 | 平台账号余额、并发或推理限制不足 | 检查控制台额度、账单和模型限制 |
-| 提示权限不足 | API Key 或模型接入点未开通 | 检查火山方舟模型权限和接入点配置 |
-| 成片合成失败 | 有镜头没有真实模型视频 | 先生成或回查对应镜头 |
+| 提示权限不足 | API Key 或模型接入点未开通 | 检查对应平台（火山方舟、百炼、MiniMax）的模型权限和接入点配置 |
+| 成片合成失败 | 有镜头没有真实模型视频 | 先生成或回查对应镜头；静帧占位不会被计入成片 |
+| 找不到 ffmpeg | 未安装或不在 PATH | 安装后加入 PATH，或设置 `VISIONCRAFT_FFMPEG_DIR` 指向其 bin 目录 |
 | 页面没有立即更新 | SSE 断开或后台任务仍在执行 | 前端会轮询兜底，必要时手动刷新 |
 | 端口占用 | 本机已有服务使用 8000 | 换端口启动或结束旧进程 |
 
@@ -392,7 +419,7 @@ visioncraft/
 - ChromaDB 项目记忆检索。
 - 角色图、场景图、关键帧生成。
 - 关键帧选择、重绘和相邻镜头连续性更新。
-- Seedance 视频生成、远程任务回查和错误记录。
+- 三家视频 Provider（Ark Seedance、阿里 Wan、MiniMax H3）的 T2V 与 I2V 真实提交、回查、下载与错误记录。
 - 分镜版本历史和回滚。
 - 视频失败诊断和安全改写重试。
 - FFmpeg 成片合成和真实视频校验。
@@ -400,6 +427,7 @@ visioncraft/
 
 后续计划：
 
+- **首尾帧路径真实验收**：工作区根目录 `../task_plan.md` 的 Phase 3 里唯一未勾选的验证项。用固定的首帧/尾帧 JPEG 对，在 Ark、Wan、MiniMax 上各跑一次，记录画面质量、时延与费用。属付费项，需逐次授权；排期位置与验收口径见 `docs/codex-handoff-delivery-2026-09.md` 第 9 节。
 - 接入更稳定的 embedding 模型，替换本地 hash embedding。
 - 把长耗时视频任务移到 Celery / Redis 队列。
 - 增加对象存储，减少本地资产目录压力。
@@ -413,3 +441,22 @@ visioncraft/
 - `.env.example` 提供字段示例，仓库只保留这个模板。
 - `backend/data/` 是运行时目录，包含 SQLite 数据库、ChromaDB 文件、生成图片和视频。
 - `docs/` 可以放置界面截图、示例输入和少量演示素材。
+
+### 隔离数据目录
+
+验收与浏览器测试会创建并删除项目。直接在真实数据库上跑它们有误伤工作数据的风险，因此可以把一次运行的数据库与资产目录整体挪到别处：
+
+```powershell
+$env:VISIONCRAFT_DATA_DIR = "output/playwright/stageC/isolated"
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+相对路径按仓库根解析；不设置时仍使用 `backend/data`，默认行为不变。该变量只在进程启动时读取，写在 `.env` 里不会生效——这是为了防止配置文件意外把真实数据切走。
+
+### 无费用回归
+
+```powershell
+.venv\Scripts\python.exe tools\run_no_cost_regression.py
+```
+
+串行执行静态检查、Node 单测、服务契约测试与浏览器测试，全部落在隔离数据目录中，并把三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
