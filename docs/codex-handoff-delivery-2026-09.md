@@ -399,7 +399,7 @@ node tools\test_live_2shot_wait.js
 |---|---|---|---|---|
 | 1 | 阶段 A | 处理保留的远程任务 | ✅ 已关闭（14.1） | 1 次查询，0 元生成 |
 | 2 | 阶段 B | V1 真实 2 镜验收收口 | ✅ 已关闭（14.6） | 本地估算 5.4395 元 |
-| 3 | 阶段 C | V1 发布前收口 | ✅ C-1～C-5 全部关闭：C-1 48/48、400 断言 0 失败（14.13.1）；C-2 `.env.example`/README 已核；C-3 前后端与浏览器侧均已闭环（14.13.2/14.13.3）；C-4 冒烟截图已出；C-5 归档已出 | 无 |
+| 3 | 阶段 C | V1 发布前收口 | ✅ C-1～C-5 全部关闭：C-1 **连续两次 48/48、各 401 断言 0 失败 / 2 skip**（14.13.1、14.13.5）；C-2 `.env.example`/README 已核；C-3 前后端与浏览器侧均已闭环（14.13.2/14.13.3）；C-4 冒烟截图已出；C-5 归档已出 | 无 |
 | 4 | **首尾帧路径验收** | `../task_plan.md` Phase 3 唯一未勾选项（见下） | ⏳ 已排期，排在阶段 C 之后 | **需逐次授权** |
 | 5 | P6 合成／导出与演示打包（含 P3） | 关键帧／版本／局部重生成体验、演示打包 | ⏳ 待定 | 无 |
 | 6 | 阶段 D | P5-B 长文本 | ⏳ 待定 | 无 |
@@ -842,5 +842,66 @@ C-3 原本只完成了后端 payload（`authorized` / `keys_present` / `blocked_
 | `/api/health` 语义 | ✅ `mode` / `llm_live` 只表示 Key 已配置，不代表已授权；`live_access` 与 `note` 一并返回 | `backend/main.py:139-149` |
 | 界面渲染 | ✅ `hint` 与 `blocked_by` 都消费 | `render.js` `generationModePickerHtml` |
 | 浏览器侧验证 | ✅ 新增回归检查并实测通过，附截图 | `run-20260920-151819/`、`mock-smoke/01b-live-blocked-1440.png` |
+
+#### 14.13.4 提交后复跑抓到第三个竞态实例：`test_local_keyframe_browser.py`
+
+**过程值得记下来**：C-3 改动了共用渲染层 `frontend/js/render.js`，旧的全量数字不再覆盖新代码，于是在**已提交的 HEAD 上**重跑全量（`run-20260920-152129/`）。结果 **47/48**：
+
+```
+[37/48] test_local_keyframe_browser.py ... FAIL 29.2s
+  page.waitForSelector: Timeout 20000ms exceeded.
+  waiting for locator('#projectForm:not(.hidden)') to be visible
+  at main (tools/local_keyframe_ui.cjs:99:16)
+```
+
+**与前面的五项失败同属一类，是同一 `init()` 竞态的第三个实例**（前两个是 `test_live_2shot_create_guard.cjs` 与 `test_ui_workbench.py`）。原代码是这样等的：
+
+```js
+await page.waitForFunction(() => {          // ← 表单或摘要**任一**可见就通过
+  const form = document.querySelector("#projectForm");
+  const summary = document.querySelector("#projectSummaryPanel");
+  return Boolean(form && summary && (!form.classList.contains("hidden") || !summary.classList.contains("hidden")));
+}, null, { timeout: 15000 });
+if (!(await page.locator("#projectForm").isVisible())) await page.click("#newProjectBtn");
+await page.waitForSelector("#projectForm:not(.hidden)");   // ← 一次性等待，撞上 init 收尾就超时
+```
+
+前一句的等待条件太松（上一轮渲染就满足，等于空转），于是后一句的一次性等待正好落在 init 收尾把表单模式重置回摘要态的窗口里。**它是偶发的**——同一次改动前的 `run-20260920-150736/` 里这一项还是 PASS。这也解释了为什么它会潜伏到现在。
+
+**顺带抽了共享模块 `tools/ui_project_form.cjs`**（`openCreateForm` 稳定等待 + `fillProjectForm` 填入并读回校验）。同一份逻辑此前在三个脚本里各写了一份——各留一份就等于第四个还会再踩一次；`mock_web_smoke.cjs` 是第四处（无条件点「新建」+ 一次性等待 + `force` 填入，本轮侥幸未触发），一并统一。四处调用点现在都是同一个函数。
+
+`--only local_keyframe,ui_workbench,create_guard,mock_web_smoke` 实测 **4/4、52 pass / 0 fail**（`run-20260920-153231/`）。
+
+**这条经历本身就是结论**：48/48 是**单次运行**的结果，不是"这个缺陷不存在"的证明。改动共用代码后必须在新 HEAD 上复跑；对偶发项，一次 PASS 不足以定案。
+
+#### 14.13.5 再复跑又换了一项：第五个实例，于是改为全量清扫
+
+在 `bca0323` 上再跑全量（`run-20260920-153453/`）→ **47/48**，这次是 `test_adaptation_start_refresh.py` 在 `adaptation_start_refresh.cjs:50` 等 `#projectForm:not(.hidden)` 超时。
+
+**同一根因的第五个实例。** 两次连续全量各有一项偶发失败（前一次 #37、这次 #21），说明此前那两个"48/48"是运气好，不是这一缺陷类不存在。
+
+于是不再逐次打地鼠，改为**全量清扫**。判据很直接：`tools/*.cjs` 里凡是出现 `#titleInput` / `#sourceTextInput` 的，就是驱动新建表单的脚本。
+
+| 文件 | 原写法 | 处置 |
+|---|---|---|
+| `adaptation_start_refresh.cjs` | 点一次「新建」+ 一次性等 5s | 改走共享辅助（**本次失败项**） |
+| `v1_qa.cjs` | 按 `:not(.hidden)` 判一次可见 → `force` 点击 → 一次性等 | 改走共享辅助 |
+| `v1_demo.cjs` | 按单个 class 判定是否点击 → 一次性等 | 改走共享辅助 |
+| `ui_workbench.cjs` | 第二处「点新建 + 一次性等」，服务于"新建只清空表单、不改当前项目"这条断言 | 改走共享辅助。表单在该处确为隐藏，辅助仍会真点一次，**断言强度不变** |
+| `live_2shot.cjs` | locator + `force` 填入 | **不改**：付费驱动器，不在 48 项内，改了无法在本轮验证 |
+| `p6b/p6c/p6d/p6e`、`p7c_ui_state`、`p8b_assets`、`mock_video_refresh`、`p8a_pause_resume` | 只有 `waitForSelector("#newProjectBtn")`（页面加载等待），项目经 API 创建 | **无需改**：不驱动表单 |
+
+清扫后静态核对：`openCreateForm` / `fillProjectForm` 的使用方共 7 个，require 全部齐备。
+
+> **一处自己犯的错，值得记**：第一遍清扫漏了 `v1_demo.cjs` 的 `require`，验证跑当场报 `ReferenceError: openCreateForm is not defined`（6/7）。这正是"改完必须实测"的价值——静态看代码是"对的"，跑起来才露。
+
+**连续两次全量全绿**（同一份代码，两次独立运行）：
+
+```
+run-20260920-154915/ : 48/48   401 pass / 0 fail / 2 skip   567.5s
+run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
+```
+
+两次都全绿才是可引用的事实。单次 48/48 此前出现过两次，而紧接着的两次都各挂一项——**所以"跑一次绿了"和"这事儿完了"之间还差一次复跑**。
 
 
