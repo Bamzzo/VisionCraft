@@ -116,6 +116,13 @@ export const api = {
     request(`/api/projects/${projectId}/anchors/${encodeURIComponent(kind)}/${encodeURIComponent(target)}`, {
       method: "DELETE",
     }),
+  anchorReview: (projectId) => request(`/api/projects/${projectId}/anchors/review`),
+  confirmAnchors: (projectId, { allowWithoutAnchors = false } = {}) =>
+    request(`/api/projects/${projectId}/anchors/confirm`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ allow_without_anchors: allowWithoutAnchors }),
+    }),
   generateVideo: (projectId, shotId, payload = {}) =>
     request(`/api/projects/${projectId}/shots/${shotId}/video`, {
       method: "POST",

@@ -7,8 +7,8 @@ import {
   stopObservation,
 } from "./jobObserver.js";
 import { renderAll, renderCapabilities, renderFeedbackResult, currentVideoDraftPayload } from "./render.js";
-import { selectedShot, state, resetViewState } from "./state.js";
-import { computeWorkflow, resolveStageId } from "./workflowViewModel.js";
+import { disarmAnchorSkip, selectedShot, state, resetViewState } from "./state.js";
+import { anchorSkipSignature, computeWorkflow, resolveStageId } from "./workflowViewModel.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -595,6 +595,34 @@ async function onFlowAction(event) {
   try {
     state.flowBusy = true;
     trigger.disabled = true;
+    if (action === "goto-bible") {
+      // 门横幅上的「去挂锚点」：只切查看阶段，不触发任务——与右侧阶段导航同源。
+      // 顺带撤掉武装：用户离开这道门去改锚点了，回来应重新从一次点击开始。
+      disarmAnchorSkip();
+      await setViewStage("bible");
+      return;
+    }
+    if (action === "anchor-confirm-skip" && !state.anchorSkipArmed) {
+      // 跳过一致性机制是重动作：第一次点击只「武装」，第二次才真的放行。
+      // 刻意不用 window.confirm：无头浏览器默认自动关闭原生对话框，跳过会静默失效，
+      // 症状与「按钮点不动」完全一样，最难归因。
+      // 武装连同当时的就绪度快照一起记下：渲染层据此判断这次武装是否还作数
+      // （就绪度变过就失效），公式在 anchorSkipSignature 里只有一份。
+      state.anchorSkipArmed = true;
+      state.anchorSkipArmedSig = anchorSkipSignature(state.project);
+      el("jobMessage").textContent = "再点一次「确认跳过：不带锚点进入制作」才会放行。";
+      return; // finally 复位 busy 并重绘，横幅随之换成确认态
+    }
+    if (action === "anchor-confirm" || action === "anchor-confirm-skip") {
+      disarmAnchorSkip();
+      const updated = await api.confirmAnchors(projectId, {
+        allowWithoutAnchors: action === "anchor-confirm-skip",
+      });
+      if (updated) state.project = updated;
+      el("jobMessage").textContent = "视觉锚点已确认，可以开始批量生成。";
+      await refreshProject();
+      return;
+    }
     if (action === "pause") {
       const result = await api.pauseProject(projectId);
       state.project = result.checkpoint ? await api.getProject(projectId) : state.project;
@@ -890,6 +918,10 @@ async function onUploadProjectFile(input) {
       state.assemblyDraft = { projectId: state.project.id, dirty: true, values };
     }
     await refreshProject();
+    // 锚点集合变了 → 门横幅上那次「跳过」的武装作废。render 层还有一道按就绪度指纹
+    // 比对的兜底，但 0→1→0 会回到同一个指纹，只靠指纹会把失效的武装重新算成有效，
+    // 于是"先武装、去挂锚点、再摘掉、回来一次点击放行"能绕过二次确认——这里显式清掉。
+    if (isAnchor) disarmAnchorSkip();
     state.assetUpload = { role, status: "success", message: "上传成功" };
     renderAll();
     showSuccess(isAnchor ? `锚点已挂到「${anchorName}」。` : "素材已上传到当前项目。");
@@ -908,6 +940,8 @@ async function onClearAnchor(trigger) {
   if (!name) return;
   try {
     await api.detachAnchor(state.project.id, kind, name);
+    // 同 onUploadProjectFile：锚点集合变了，门横幅上那次「跳过」的武装作废。
+    disarmAnchorSkip();
     await refreshProject();
     showSuccess(`已解除「${name}」的锚点，素材仍保留在项目中。`);
   } catch (error) {

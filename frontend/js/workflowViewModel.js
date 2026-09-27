@@ -170,6 +170,8 @@ const STAGE_LOCKED_HINT = {
 };
 
 const PRODUCTION_STATUSES = new Set([
+  // 锚点门内已经 promote 出制作镜头，属于制作期；阶段渲染为「关键帧 · 等待审核」。
+  "awaiting_anchor_review",
   "production_ready",
   "ready_for_review",
   "review_pending",
@@ -342,6 +344,8 @@ function frontierState(project, stageId) {
       const shots = project?.shots || [];
       if (hasRunningJob(project, ["keyframe_redraw", "adaptation_production"])) return STAGE_STATE.PROCESSING;
       if (!shots.length) return STAGE_STATE.NOT_STARTED;
+      // 锚点门内：分镜已确认、关键帧尚未开始，等用户挂锚点并确认后再放行批量生成。
+      if (status === "awaiting_anchor_review") return STAGE_STATE.AWAITING_REVIEW;
       if (shots.every((shot) => shotPastKeyframes(project, shot))) return STAGE_STATE.COMPLETED;
       return STAGE_STATE.NOT_STARTED;
     }
@@ -721,6 +725,19 @@ function applyAnchor(card, project, kind, name) {
   if (!anchor) return;
   card.anchor = anchor;
   if (anchor.preview) card.preview = anchor.preview;
+}
+
+/**
+ * 视觉锚点门的「就绪度快照」指纹。
+ *
+ * 「跳过」是二次确认的重动作：第一次点击只武装按钮。武装状态必须绑定在**当时的**
+ * 就绪度上——否则用户武装完去挂/摘锚点再回来，一次点击就能放行，二次确认形同虚设。
+ * 武装与横幅必须读同一个指纹，所以公式只写在这里，两端都从这里取（写两份必然漂移）。
+ */
+export function anchorSkipSignature(project) {
+  const readiness = project?.anchor_review || {};
+  const attached = (readiness.attached || []).join("|");
+  return `${project?.status || ""}#${readiness.total || 0}#${attached}`;
 }
 
 function storyboardAssets(project) {

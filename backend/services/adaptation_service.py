@@ -51,15 +51,21 @@ STORYBOARD_FIELDS = (
 )
 SCOPE_STATUSES = {"created", "draft", "adaptation_options_ready", "awaiting_scope_review", "running", "failed"}
 PRODUCTION_OK = {"production_ready", "ready_for_review", "review_pending", "video_ready", "completed"}
+
+# 视觉锚点审核门：分镜确认后先停在这里，显式确认锚点才进入 PRODUCTION_OK。
+# 门内制作镜头已经 promote 完毕，所以它算「分镜已确认」，只是还不许批量生成。
+ANCHOR_REVIEW_STATUS = "awaiting_anchor_review"
+ANCHOR_REVIEW_NODE = "anchor_review"
+
+PAST_STORYBOARD = set(PRODUCTION_OK) | {ANCHOR_REVIEW_STATUS}
 PAST_SCOPE = {
     "awaiting_bible_review",
     "story_bible_ready",
     "awaiting_storyboard_review",
     "storyboard_draft_ready",
-    *PRODUCTION_OK,
+    *PAST_STORYBOARD,
 }
-PAST_BIBLE = {"awaiting_storyboard_review", "storyboard_draft_ready", *PRODUCTION_OK}
-PAST_STORYBOARD = set(PRODUCTION_OK)
+PAST_BIBLE = {"awaiting_storyboard_review", "storyboard_draft_ready", *PAST_STORYBOARD}
 
 
 def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dict:
@@ -352,7 +358,9 @@ def confirm_storyboard(project_id: str, items: list[dict] | None = None, job_id:
         if items:
             raise AdaptationError("ALREADY_CONFIRMED", "分镜已确认并进入制作，不能倒退重复确认。如需修改，请重生成分镜。")
         paused = get_paused_checkpoint(project_id)
-        if paused:
+        # 停在视觉锚点门口时，这个 paused 检查点代表「门」而不是「分镜」：重复确认分镜
+        # 不能把它顺手完成掉，否则项目看着还停在门口，恢复却报 NO_CHECKPOINT。
+        if paused and (paused.get("node") or "") != ANCHOR_REVIEW_NODE:
             complete_checkpoint(paused["id"])
         state = get_adaptation_state(project_id)
         state["resumed_idempotent"] = True
@@ -375,12 +383,27 @@ def confirm_storyboard(project_id: str, items: list[dict] | None = None, job_id:
             "UPDATE storyboard_drafts SET review_status = ?, updated_at = ? WHERE project_id = ?",
             ("confirmed", utc_now(), project_id),
         )
-    update_project_status(project_id, "production_ready")
+    # 分镜确认不再直接等于「可以批量生成」：先把项目停在视觉锚点门口。
+    # 制作镜头在上一步已经 promote 完毕——这道门拦的是花钱，不是建镜头。
+    update_project_status(project_id, ANCHOR_REVIEW_STATUS)
     paused = get_paused_checkpoint(project_id)
     if paused:
         complete_checkpoint(paused["id"])
-    _record_review(project_id, "storyboard", "confirm", "确认分镜，进入镜头制作", None)
-    update_job(job_id, "completed", 100, "分镜已确认，可进行关键帧、模型选择与局部生成", stage="production_ready")
+    save_workflow_checkpoint(
+        project_id,
+        job_id,
+        ANCHOR_REVIEW_NODE,
+        {
+            "project_id": project_id,
+            "job_id": job_id,
+            "node": ANCHOR_REVIEW_NODE,
+            "stage": ANCHOR_REVIEW_STATUS,
+            "option_id": project.get("selected_option_id"),
+            "input_summary": "分镜已确认，等待视觉锚点",
+        },
+    )
+    _record_review(project_id, "storyboard", "confirm", "确认分镜，进入视觉锚点审核", None)
+    update_job(job_id, "paused", 95, "分镜已确认，等待视觉锚点确认后再批量生成", stage=ANCHOR_REVIEW_STATUS)
     return get_adaptation_state(project_id)
 
 
@@ -467,6 +490,12 @@ def get_adaptation_state(project_id: str) -> dict:
 
 def assert_batch_generation_allowed(project: dict) -> None:
     status = project.get("status") or ""
+    if status == ANCHOR_REVIEW_STATUS:
+        raise AdaptationError(
+            "ANCHOR_REVIEW_PENDING",
+            "分镜已确认，但还没过视觉锚点审核门。请先在 Story Bible 阶段给角色/场景挂上参考图，"
+            "再确认进入制作；确有不需锚点的可直接确认跳过。单镜头局部生成不受此限。",
+        )
     if status in {
         "created",
         "draft",
@@ -482,6 +511,91 @@ def assert_batch_generation_allowed(project: dict) -> None:
             "STORYBOARD_NOT_CONFIRMED",
             "分镜尚未确认，不能批量生成关键帧或视频。请先完成三次审核，或使用单镜头局部生成。",
         )
+
+
+def anchor_review_readiness(project_id: str) -> dict:
+    """视觉锚点门的就绪度：还差哪些角色/场景没挂参考图。
+
+    没有角色也没有场景的项目（纯空镜）不存在可挂对象，`required` 为 False，可直接过门。
+    """
+    with connect() as conn:
+        characters = conn.execute(
+            "SELECT name, asset_id FROM characters WHERE project_id = ? ORDER BY created_at", (project_id,)
+        ).fetchall()
+        scenes = conn.execute(
+            "SELECT name, asset_id FROM scenes WHERE project_id = ? ORDER BY created_at", (project_id,)
+        ).fetchall()
+
+    targets: list[dict] = []
+    for kind, rows in (("character", characters), ("scene", scenes)):
+        for row in rows:
+            name = (row["name"] or "").strip()
+            if not name:
+                continue
+            targets.append({"kind": kind, "name": name, "attached": bool(row["asset_id"])})
+
+    attached = [item["name"] for item in targets if item["attached"]]
+    missing = [item["name"] for item in targets if not item["attached"]]
+    return {
+        "required": bool(targets),
+        # 就绪 = 至少挂上一个。门要求用户真的动手建立锚点，但不因某个配角/场景
+        # 不想出图就把整条流程锁死——`missing` 只用于界面提示还差谁。
+        "ready": bool(attached),
+        "attached": attached,
+        "missing": missing,
+        "total": len(targets),
+        "targets": targets,
+    }
+
+
+def confirm_anchors(project_id: str, *, allow_without_anchors: bool = False) -> dict:
+    """通过视觉锚点审核门，进入可批量生成的 production_ready。
+
+    - 有角色/场景时至少挂上一个锚点才放行；`allow_without_anchors` 是调用方显式跳过。
+    - 门内重复确认、过门后重复确认都是幂等的：不倒退，也不重复记审核。
+    """
+    project = _require_project(project_id)
+    status = project.get("status") or ""
+    if status in PRODUCTION_OK:
+        state = get_adaptation_state(project_id)
+        state["resumed_idempotent"] = True
+        state["resume_message"] = "视觉锚点已确认，无需重复进入制作。"
+        return state
+    if status != ANCHOR_REVIEW_STATUS:
+        raise AdaptationError(
+            "NOT_AT_ANCHOR_REVIEW",
+            "当前不在视觉锚点审核节点。请先确认分镜，再确认锚点。",
+        )
+
+    readiness = anchor_review_readiness(project_id)
+    if readiness["required"] and not readiness["ready"] and not allow_without_anchors:
+        raise AdaptationError(
+            "ANCHOR_NOT_ATTACHED",
+            f"项目里有 {readiness['total']} 个角色/场景，但还没有任何一个挂载视觉锚点。"
+            "请先在 Story Bible 阶段为其中一个挂上参考图，再确认进入制作；"
+            "确有不需锚点的可直接确认跳过。",
+        )
+
+    job_id = _reuse_or_create_job(project_id, "adaptation_production", "正在确认视觉锚点")
+    update_project_status(project_id, "production_ready")
+    checkpoint = get_paused_checkpoint(project_id)
+    if checkpoint:
+        complete_checkpoint(checkpoint["id"])
+    _record_review(
+        project_id,
+        "anchor",
+        "confirm",
+        "未挂锚点直接进入制作" if not readiness["attached"] else "确认视觉锚点，进入制作",
+        None,
+    )
+    update_job(
+        job_id,
+        "completed",
+        100,
+        "视觉锚点已确认，可进行关键帧、模型选择与批量生成",
+        stage="production_ready",
+    )
+    return get_adaptation_state(project_id)
 
 
 def planner_source_text(project: dict) -> str:

@@ -51,6 +51,7 @@ REVIEW_NODES = {
     "scope_review",
     "bible_review",
     "storyboard_review",
+    "anchor_review",
     "quality_gate",
 }
 
@@ -62,6 +63,7 @@ REVIEW_STATUSES = {
     "story_bible_ready",
     "awaiting_storyboard_review",
     "storyboard_draft_ready",
+    "awaiting_anchor_review",
     "review_pending",
 }
 
@@ -73,6 +75,7 @@ NODE_FOR_STATUS = {
     "story_bible_ready": "bible_review",
     "awaiting_storyboard_review": "storyboard_review",
     "storyboard_draft_ready": "storyboard_review",
+    "awaiting_anchor_review": "anchor_review",
     "review_pending": "quality_gate",
 }
 
@@ -81,6 +84,7 @@ PAUSE_REASON = {
     "scope_review": "已到达改编范围审核节点，等待选择并确认方案。",
     "bible_review": "已到达 Story Bible 审核节点，等待确认后再生成分镜。",
     "storyboard_review": "已到达分镜审核节点，等待确认后进入镜头制作。",
+    "anchor_review": "已到达视觉锚点审核节点，等待挂载角色/场景锚点并确认后再批量生成。",
     "quality_gate": "已到达旧版监制质检节点，等待人工确认后继续。",
 }
 

@@ -65,6 +65,20 @@ def attach_workflow_control(project: dict | None) -> dict | None:
     status = project.get("status") or "created"
     waiting_remote = has_waiting_remote_video(project["id"], project)
     project["checkpoint"] = public or None
+    # 视觉锚点门：只有停在门口才带就绪度，界面据此渲染「已挂 N / 共 M」与放行按钮。
+    # 状态常量与就绪度都取自 adaptation_service，不在这里另立第二份。
+    from .adaptation_service import ANCHOR_REVIEW_STATUS, anchor_review_readiness
+
+    at_anchor_gate = status == ANCHOR_REVIEW_STATUS
+    anchor_gate = anchor_review_readiness(project["id"]) if at_anchor_gate else None
+    if anchor_gate is not None:
+        project["anchor_review"] = anchor_gate
+    can_resume = bool(public) and (status in REVIEW_STATUSES or status == "failed")
+    if at_anchor_gate:
+        # 通用「继续执行」在门口只在门真的能过时才可用。按钮可用态必须与守卫同源：
+        # 否则没挂锚点时按钮可点却必被 confirm_anchors 拒绝——正是本项目反复踩到的
+        # 「能点、无反应、无提示」那一类静默失效。
+        can_resume = can_resume and bool(anchor_gate and anchor_gate["ready"])
     project["workflow"] = {
         "execution_status": status,
         "paused": bool(public) and status in REVIEW_STATUSES,
@@ -72,7 +86,7 @@ def attach_workflow_control(project: dict | None) -> dict | None:
         "pause_reason": public.get("pause_reason") if public else "",
         "input_summary": public.get("input_summary") if public else "",
         "can_pause": status in REVIEW_STATUSES and not waiting_remote,
-        "can_resume": bool(public) and (status in REVIEW_STATUSES or status == "failed"),
+        "can_resume": can_resume,
         "waiting_remote": waiting_remote,
         "confirmed_readonly": status in PAST_STORYBOARD,
     }
@@ -189,6 +203,12 @@ def resume_project(project_id: str, checkpoint_id: str | None = None, job_id: st
     status = project.get("status") or ""
     if node not in REVIEW_NODES and node:
         raise CheckpointError("CHECKPOINT_INVALID", "当前检查点不是可恢复的审核节点。")
+    if node == "anchor_review":
+        # 「已过门」的判定与 adaptation_service 同源，避免在这里并列维护第二份状态集。
+        from .adaptation_service import PRODUCTION_OK
+
+        if status in PRODUCTION_OK:
+            return _idempotent_resume(project, checkpoint, "视觉锚点已确认，无需重复进入制作。")
     if status == "production_ready" and node == "storyboard_review":
         return _idempotent_resume(project, checkpoint, "分镜已确认，无需重复进入制作。")
     if node == "scope_review" and status in PAST_SCOPE and _bible_ready(project):
@@ -270,7 +290,15 @@ def _resume_review_node(project_id: str, project: dict, checkpoint: dict) -> dic
             state = confirm_storyboard(project_id)
         except AdaptationError as exc:
             raise CheckpointError(exc.code, str(exc)) from exc
-        return _resume_result(project_id, checkpoint, state, "已确认分镜并进入镜头制作。")
+        return _resume_result(project_id, checkpoint, state, "已确认分镜并进入视觉锚点审核。")
+    if node == "anchor_review":
+        from .adaptation_service import AdaptationError, confirm_anchors
+
+        try:
+            state = confirm_anchors(project_id)
+        except AdaptationError as exc:
+            raise CheckpointError(exc.code, str(exc)) from exc
+        return _resume_result(project_id, checkpoint, state, "已确认视觉锚点并进入制作。")
     raise CheckpointError("CHECKPOINT_INVALID", "无法从当前检查点继续。请在审核面板确认当前步骤。")
 
 

@@ -19,6 +19,7 @@ from .schemas import (
     AdaptationRegenerateRequest,
     AdaptationSelectRequest,
     AnchorAttachRequest,
+    AnchorConfirmRequest,
     AssemblySettingsUpdate,
     DemoCleanupRequest,
     FeedbackCreate,
@@ -38,7 +39,9 @@ from .schemas import (
 )
 from .services.adaptation_service import (
     AdaptationError,
+    anchor_review_readiness,
     assert_batch_generation_allowed,
+    confirm_anchors,
     confirm_bible,
     confirm_scope,
     confirm_storyboard,
@@ -663,6 +666,29 @@ def detach_anchor_endpoint(project_id: str, kind: str, target: str) -> dict:
     except AnchorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     return {"ok": True, "anchor": anchor}
+
+
+@app.get("/api/projects/{project_id}/anchors/review")
+def anchor_review_endpoint(project_id: str) -> dict:
+    """视觉锚点门的就绪度：还差哪些角色/场景没挂参考图。"""
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在。")
+    return {
+        "ok": True,
+        "review": anchor_review_readiness(project_id),
+        "status": project.get("status") or "",
+    }
+
+
+@app.post("/api/projects/{project_id}/anchors/confirm")
+def confirm_anchors_endpoint(project_id: str, payload: AnchorConfirmRequest | None = None) -> dict:
+    """确认视觉锚点并进入制作；重复调用幂等。allow_without_anchors 才是显式跳过。"""
+    body = payload or AnchorConfirmRequest()
+    try:
+        return confirm_anchors(project_id, allow_without_anchors=body.allow_without_anchors)
+    except AdaptationError as exc:
+        _raise_adaptation(exc)
 
 
 @app.post("/api/projects/{project_id}/shots/{shot_id}/keyframes/register-local")

@@ -2,6 +2,7 @@ import { currentVersion, latestVersion, selectedShot, state } from "./state.js";
 import {
   STAGES,
   STAGE_STATE,
+  anchorSkipSignature,
   computeWorkflow,
   jobCenterRows,
   jobStatusLabel,
@@ -29,7 +30,7 @@ function escapeHtml(value) {
 
 function statusClass(status) {
   if (["completed", "ready_for_review", "keyframes_ready", "passed", "video_ready", "production_ready"].includes(status)) return "success";
-  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote", "awaiting_storyline_review", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "adaptation_options_ready", "story_bible_ready", "storyboard_draft_ready"].includes(status)) return "warning";
+  if (["running", "queued", "needs_regeneration", "paused", "review_pending", "waiting_remote", "awaiting_storyline_review", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "awaiting_anchor_review", "adaptation_options_ready", "story_bible_ready", "storyboard_draft_ready"].includes(status)) return "warning";
   if (["video_running", "video_waiting_remote"].includes(status)) return "active";
   if (["failed", "video_failed", "video_invalid"].includes(status)) return "danger";
   return "neutral";
@@ -371,6 +372,7 @@ function projectStageLabel(project) {
     awaiting_bible_review: "Story Bible",
     storyboard_draft_ready: "分镜设计",
     awaiting_storyboard_review: "分镜设计",
+    awaiting_anchor_review: "关键帧",
     production_ready: "镜头制作",
     ready_for_review: "镜头制作",
     review_pending: "镜头制作",
@@ -382,7 +384,7 @@ function projectStageLabel(project) {
 }
 
 function projectProgress(project) {
-  const order = ["created", "awaiting_storyline_review", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "production_ready", "video_ready", "completed"];
+  const order = ["created", "awaiting_storyline_review", "awaiting_scope_review", "awaiting_bible_review", "awaiting_storyboard_review", "awaiting_anchor_review", "production_ready", "video_ready", "completed"];
   const index = order.indexOf(project.status);
   if (project.status === "failed") return 100;
   if (index < 0) return 8;
@@ -528,6 +530,51 @@ function renderGateBanner(project, workflow) {
         ${pauseReason ? `<span>上次暂停：${escapeHtml(pauseReason)}</span>` : ""}
         <div class="button-row compact-row">
           <button class="primary-btn mini-btn" data-flow="resume-auto" data-checkpoint-id="${escapeHtml(checkpoint.id || "")}" ${control.can_resume && !gateLocked ? "" : "disabled"}>从检查点恢复</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  // 视觉锚点审核门：分镜已确认，但还没放行批量生成。必须排在通用 AWAITING_REVIEW
+  // 分支之前，否则会被那句泛泛的「确认后继续必要下游」盖住，用户看不到锚点进度。
+  if (project.status === "awaiting_anchor_review") {
+    const readiness = project.anchor_review || {};
+    const total = readiness.total || 0;
+    const attachedCount = (readiness.attached || []).length;
+    const missing = readiness.missing || [];
+    // 纯空镜项目没有可挂对象，门对它不成立：确认按钮直接可用，且不出现跳过按钮。
+    const passable = !readiness.required || Boolean(readiness.ready);
+    // 武装只在「跳过确实还有用」时才作数，且必须与武装时的就绪度快照一致：
+    //  - 已就绪（或无需锚点）时跳过已无意义，按钮和提示一起撤掉——否则会出现
+    //    「提示你『再点一次确认跳过』，但那个按钮已经不在横幅里」的悬空指令；
+    //  - 就绪度变过（挂上/摘掉锚点）则视为用户换了主意，武装失效，重新从一次点击开始。
+    const skipArmed = Boolean(state.anchorSkipArmed)
+      && state.anchorSkipArmedSig === anchorSkipSignature(project)
+      && !passable;
+    const progress = total ? `锚点进度：已挂 ${attachedCount} / 共 ${total}` : "本项目没有角色或场景，无需锚点。";
+    const missingLine = missing.length
+      ? `<span>还没挂：${escapeHtml(missing.slice(0, 6).join("、"))}${missing.length > 6 ? " 等" : ""}</span>`
+      : "";
+    // 跳过一致性机制是重动作：第一次点击只把按钮换文案（武装），第二次才真的放行。
+    const skipBtn = passable
+      ? ""
+      : `<button class="${skipArmed ? "danger-btn" : "secondary-btn"} mini-btn" data-flow="anchor-confirm-skip" ${gateLocked ? "disabled" : ""}>${skipArmed ? "确认跳过：不带锚点进入制作" : "无锚点直接进入制作"}</button>`;
+    const skipHint = skipArmed
+      ? `<span>再点一次「确认跳过」即会放行。跳过表示这次不设锚点。</span>`
+      : "";
+    banner.innerHTML = `
+      <div class="gate-card review">
+        <span class="gate-title">「${escapeHtml(stageLabel)}」等待视觉锚点确认</span>
+        <span>分镜已确认。批量生成关键帧或视频前，先给主要角色/场景挂上参考图，把他们在本片里的形象定下来。</span>
+        <span>${escapeHtml(progress)}</span>
+        ${missingLine}
+        <span>边界：当前生成链路只吃角色/场景的视觉提示词，挂上的参考图尚未参与生成——接入生成是下一步。</span>
+        <span>单镜头局部生成不受这道门限制，可以先生成一张样片看效果。</span>
+        ${skipHint}
+        <div class="button-row compact-row">
+          <button class="primary-btn mini-btn" data-flow="anchor-confirm" ${passable && !gateLocked ? "" : "disabled"}>确认锚点并开始制作</button>
+          <button class="secondary-btn mini-btn" data-flow="goto-bible" ${gateLocked ? "disabled" : ""}>去挂锚点</button>
+          ${skipBtn}
         </div>
       </div>`;
     return;
@@ -1647,6 +1694,7 @@ function jobEventTag(item) {
     awaiting_scope_review: "范围审核暂停",
     awaiting_bible_review: "Bible 审核暂停",
     awaiting_storyboard_review: "分镜审核暂停",
+    awaiting_anchor_review: "锚点审核暂停",
     review_pending: "监制审核暂停",
     failed: "失败",
     waiting_remote: "等待远端",
@@ -1766,6 +1814,7 @@ function executionStatusLabel(status) {
     story_bible_ready: "等待 Story Bible 审核",
     awaiting_storyboard_review: "等待分镜审核",
     storyboard_draft_ready: "等待分镜审核",
+    awaiting_anchor_review: "等待视觉锚点确认",
     production_ready: "可进入制作",
     review_pending: "等待监制审核",
     failed: "失败，可从检查点恢复",
@@ -1780,6 +1829,7 @@ function reviewNodeLabel(node) {
     scope_review: "改编范围审核",
     bible_review: "Story Bible 审核",
     storyboard_review: "分镜审核",
+    anchor_review: "视觉锚点审核",
     quality_gate: "监制质检",
   }[node] || (node ? String(node) : "无");
 }

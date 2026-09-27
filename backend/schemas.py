@@ -72,6 +72,12 @@ class AnchorAttachRequest(BaseModel):
     asset_id: str = Field(min_length=3, max_length=40)
 
 
+class AnchorConfirmRequest(BaseModel):
+    """视觉锚点审核门：默认可不挂锚点也要挂，allow_without_anchors 才是显式跳过。"""
+
+    allow_without_anchors: bool = False
+
+
 class AdaptationSelectRequest(BaseModel):
     option_id: str = Field(min_length=3, max_length=40)
 
