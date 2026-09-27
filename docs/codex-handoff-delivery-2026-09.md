@@ -1251,14 +1251,13 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 
 #### 14.17.8 实测（连续两轮，同口径全绿）
 
-单项验收：
+单项验收（只列本切片新增或改动的项；**不是全部 53 项**）：
 
 | 检查 | 断言 | 结果 |
 |---|---|---|
 | `tools/test_anchor_review_gate.py` | 16 | 16 pass / 0 fail |
 | `tools/test_anchor_assets.py` | 13 | 13 pass / 0 fail |
-| `tools/test_anchor_ui_browser.py` | 12 | 12 pass / 0 fail |
-| `tools/anchor_ui.cjs` | 12 | 12 pass / 0 fail |
+| `tools/anchor_ui.cjs` | 12 | 12 pass / 0 fail（**由 `tools/test_anchor_ui_browser.py` 用 node 调起**，不是两项：那一项报的 12 条就是这份脚本的） |
 | `tools/test_runner_guards.py` | 20 | 20 pass / 0 fail |
 
 全量回归（**53 项**，51 → 53）：
