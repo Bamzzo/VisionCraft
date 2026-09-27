@@ -14,7 +14,7 @@ from ..config import PROJECTS_DIR
 from ..database import connect, utc_now
 from ..services.asset_service import public_asset_path
 from ..services.media_transfer_service import MediaTransferError, prepare_image_reference
-from .live_budget import assert_live_video_allowed
+from .live_budget import VIDEO_DEFAULT_RESOLUTION, BudgetBlockedError, assert_live_video_allowed
 
 
 @dataclass
@@ -91,6 +91,29 @@ def reset_video_json_transport() -> None:
     set_video_json_transport(None)
 
 
+def _video_gate_kwargs(candidate: str, request: VideoAssetRequest) -> dict:
+    """闸门的计价参数。分辨率按各 provider 自己的读取来取，否则报出来的是个假数。"""
+    priced = "ark" if candidate == "volc" else candidate
+    return {
+        "seconds": request.duration_seconds,
+        "provider": priced,
+        "resolution": VIDEO_DEFAULT_RESOLUTION.get(priced, lambda: None)(),
+        "has_input_video": bool(request.first_frame_path or request.last_frame_path or request.reference_images),
+    }
+
+
+def _provider_key_present(candidate: str) -> bool:
+    if candidate == "siliconflow":
+        return bool(os.getenv("SILICONFLOW_API_KEY"))
+    if candidate in {"ark", "volc"}:
+        return bool(_ark_api_key())
+    if candidate == "dashscope":
+        return bool(_dashscope_api_key())
+    if candidate == "minimax":
+        return bool(_minimax_api_key())
+    return False
+
+
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
     from .capabilities import normalize_video_provider
 
@@ -106,19 +129,29 @@ def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
 
     attempted = False
     for candidate in dict.fromkeys(providers):
+        # 没有密钥的候选直接跳过：闸门只对**真要发出去的那一家**计数，
+        # 否则会为一个根本不会调用的 provider 白扣一次名额。
+        if not _provider_key_present(candidate):
+            continue
         try:
-            if candidate == "siliconflow" and os.getenv("SILICONFLOW_API_KEY"):
-                attempted = True
+            # 授权开关 / 每项目次数上限 / 预算——全部视频 provider 共用这一道。
+            # 它原先只挂在 `_generate_minimax_video` 里，ark 与 dashscope 直接分发，
+            # 而那两家恰恰是切片 3 要花钱的地方：最该拦的两家反而没拦。
+            assert_live_video_allowed(request.project_id, **_video_gate_kwargs(candidate, request))
+        except BudgetBlockedError:
+            # 闸门拦截是针对这个项目的授权/预算判定，不是 provider 故障，必须原样上抛：
+            # 兜底成「所有 provider 都失败」会让人以为换个 provider 就能绕过去，而真的
+            # 换一家继续试，就是在越过预算花钱。
+            raise
+        attempted = True
+        try:
+            if candidate == "siliconflow":
                 return _generate_siliconflow_video(request)
-            if candidate in {"ark", "volc"} and _ark_api_key():
-                attempted = True
+            if candidate in {"ark", "volc"}:
                 return _generate_ark_video(request)
-            if candidate == "dashscope" and _dashscope_api_key():
-                attempted = True
+            if candidate == "dashscope":
                 return _generate_dashscope_video(request)
-            if candidate == "minimax" and _minimax_api_key():
-                attempted = True
-                return _generate_minimax_video(request)
+            return _generate_minimax_video(request)
         except Exception as exc:
             failure_reasons.append(f"{candidate}: {_compact_error(exc)}")
     if not attempted:
@@ -361,7 +394,8 @@ def _dashscope_media_items(request: VideoAssetRequest, model: str) -> list[dict]
 
 
 def _generate_minimax_video(request: VideoAssetRequest) -> VideoGenerationResult:
-    assert_live_video_allowed(request.project_id, seconds=request.duration_seconds)
+    # 闸门不在这里了：已上移到 generate_video_asset 的分发环，覆盖全部 provider。
+    # 留在这里会让 miniMax 被扣两次名额，同时让另外两家继续不受管。
     base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
     model = request.model_override or os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     prompt = _build_video_prompt(request)
