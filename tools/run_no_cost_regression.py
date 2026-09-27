@@ -141,6 +141,7 @@ def build_checks() -> list[Check]:
         "test_p6_demo_samples.py",
         "test_anchor_assets.py",
         "test_anchor_review_gate.py",
+        "test_reference_generation.py",
         # 驱动器自检：单实例锁 + 绝不把陌生后端当成自己的。两个全量回归并行会把结果
         # 搅成不可归因的"偶发失败"，端口被残留 uvicorn 占着则会把用例跑在别人的数据
         # 目录上——这两条都是"连续两次全绿"这句话能不能站住的前提。

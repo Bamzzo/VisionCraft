@@ -568,7 +568,7 @@ function renderGateBanner(project, workflow) {
         <span>分镜已确认。批量生成关键帧或视频前，先给主要角色/场景挂上参考图，把他们在本片里的形象定下来。</span>
         <span>${escapeHtml(progress)}</span>
         ${missingLine}
-        <span>边界：当前生成链路只吃角色/场景的视觉提示词，挂上的参考图尚未参与生成——接入生成是下一步。</span>
+        <span>边界：挂上的参考图会在「参考图约束」模式下随请求发出（火山 Seedance、阿里 Wan 2.7 R2V 支持；MiniMax 没有这项能力）；其余模式仍然只吃视觉提示词。</span>
         <span>单镜头局部生成不受这道门限制，可以先生成一张样片看效果。</span>
         ${skipHint}
         <div class="button-row compact-row">
@@ -1534,6 +1534,7 @@ function shotEditorHtml(project, shot, stage) {
             <option value="t2v" ${draft.video_mode === "t2v" ? "selected" : ""}>T2V 文本生成</option>
             <option value="i2v" ${draft.video_mode === "i2v" ? "selected" : ""}>I2V 首帧驱动</option>
             <option value="keyframes" ${draft.video_mode === "keyframes" ? "selected" : ""}>首尾帧约束</option>
+            <option value="reference" ${draft.video_mode === "reference" ? "selected" : ""}>参考图约束</option>
           </select>
         </label>
         <label>Provider
@@ -2111,6 +2112,11 @@ function evaluateVideoDraft(shot, version, draft) {
   const projectRatio = state.project?.aspect_ratio;
   const firstReady = isI2VFramePath(draft.first_frame_path || version?.first_frame_path);
   const lastReady = Boolean(draft.last_frame_path || version?.last_frame_path);
+  // 参考图有两个来源：镜头自己的参考图，或角色/场景挂上的锚点。后者已由后端
+  // 算好放在 anchor_review.attached 里，前端不再重复一遍这套判定。
+  const attachedAnchors = (state.project?.anchor_review?.attached || []).length;
+  const hasShotReference = Boolean(draft.reference_frame_path || version?.reference_frame_path);
+  const referenceReady = attachedAnchors > 0 || hasShotReference;
   const resolution = models.find((item) => item.id === draft.model)?.default_resolution || provider?.default_resolution || "未声明";
   const hint = [
     provider ? `${provider.label}` : "未选择 Provider",
@@ -2119,7 +2125,11 @@ function evaluateVideoDraft(shot, version, draft) {
     `支持时长 ${(durations || []).join("/") || "?"}s`,
     `比例 ${(ratios || []).join("/") || "?"}`,
     frameStatusLabel(draft),
-  ].join(" · ");
+    // 该 Provider 的参考图与首帧互斥时得说出来，否则用户会以为首帧还在起作用。
+    draft.video_mode === "reference" && provider && provider.reference_includes_first_frame === false
+      ? "本模式下该 Provider 不接收首帧，画面由参考图决定"
+      : "",
+  ].filter(Boolean).join(" · ");
   if (!provider) return { ok: false, reason: "请选择视频 Provider", hint, durations };
   if (!(provider.supported_modes || []).includes(draft.video_mode)) return { ok: false, reason: "该 Provider 不支持当前生成模式", hint, durations };
   if (!draft.model || !models.some((item) => item.id === draft.model)) return { ok: false, reason: "该模型不支持当前生成模式", hint, durations };
@@ -2127,5 +2137,6 @@ function evaluateVideoDraft(shot, version, draft) {
   if (durations.length && !durations.map(Number).includes(Number(draft.duration_seconds))) return { ok: false, reason: `该 Provider 不支持 ${draft.duration_seconds}s`, hint, durations };
   if (requirements.requires_first_frame && !firstReady) return { ok: false, reason: "缺少首帧，无法提交 I2V", hint, durations };
   if (requirements.requires_last_frame && !lastReady) return { ok: false, reason: "缺少尾帧，无法提交首尾帧模式", hint, durations };
+  if (requirements.requires_reference && !referenceReady) return { ok: false, reason: "参考图模式需要先挂上角色/场景参考图，或在镜头里选一张参考图", hint, durations };
   return { ok: true, reason: "", hint, durations };
 }

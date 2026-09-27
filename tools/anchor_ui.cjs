@@ -13,7 +13,7 @@
  *     锚点属于角色/场景，若把分支写在守卫之后，点击会被静默吞掉；
  *  5. 解除后素材文件仍留在项目里（只清外键）；
  *  6. 确认分镜后停在视觉锚点审核门：未挂锚点时放行按钮不可用、给出跳过入口，
- *     且横幅写明「参考图尚未参与生成」的边界（不暗示已有一致性机制）；
+ *     且横幅写明参考图的生效范围（只在「参考图约束」模式下随请求发出）；
  *  7. 跳过一致性机制需要二次点击，只点一次仍停在门口；
  *  8. 就绪后跳过入口与提示一并撤掉（不留「让你点一个不存在的按钮」的悬空指令）；
  *  9. 锚点集合变化后此前那次武装失效，不会被 0→1→0 的就绪度回摆绕过；
@@ -102,6 +102,29 @@ async function waitFor(page, fn, label, timeout = 20000, arg = undefined) {
     if (await page.evaluate(fn, arg).catch(() => false)) return;
     if (Date.now() - start > timeout) throw new Error(`超时等待：${label}`);
     await page.waitForTimeout(200);
+  }
+}
+
+/**
+ * 上传锚点图，必要时重试。
+ *
+ * 这一步偶发超时过，取证结果是那次上传在后端 access log 里连 POST 都没有——
+ * 说明 change 事件根本没到处理器。原因是 Bible 区整块 innerHTML 重渲染：
+ * 解除锚点后的 refreshProject 与 events 轮询的刷新，都可能恰好在 setInputFiles
+ * 与 change 之间把 input 换掉，事件于是落在一个已 detach 的元素上。
+ * 真人在这个窗口里点到的概率极低（手指没那么快），但脚本跑得快会撞上。
+ * 所以这里容错：横幅没变成「已挂 1」就再传一次，并保留最终失败可见性。
+ */
+async function uploadAnchorWithRetry(page, role, buffer) {
+  const attached = () =>
+    page.evaluate(() => /已挂 1 \/ 共 \d+/.test(document.querySelector("#stageGateBanner")?.innerText || ""));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page
+      .locator(`#stageWorkspace .anchor-block [data-asset-upload="${role}"]`)
+      .first()
+      .setInputFiles({ name: "anchor.png", mimeType: "image/png", buffer });
+    await page.waitForTimeout(400);
+    if (await attached().catch(() => false)) return;
   }
 }
 
@@ -272,14 +295,13 @@ async function main() {
     );
     let banner = await page.locator("#stageGateBanner").innerText();
     if (!/已挂 0 \/ 共 \d+/.test(banner)) throw new Error(`门横幅未显示锚点进度：${banner}`);
-    // 文案必须写明「参考图尚未参与生成」这条边界。挂锚点的入口现在是真的，但生成
-    // 链路只吃视觉提示词、并不读 characters/scenes.asset_id；横幅若暗示挂了就一致，
-    // 那是在承诺一个不存在的机制。这条断言把边界钉在界面上：将来真接进生成时，
-    // 必须先改这句、也就必须同时改这条断言。
-    if (!/尚未参与生成/.test(banner)) {
-      throw new Error(`门横幅必须写明「参考图尚未参与生成」的边界，实际：${banner}`);
+    // 边界必须写在横幅上：挂上的参考图只在「参考图约束」模式下真的随请求发出，
+    // 其余模式仍旧只吃视觉提示词（MiniMax 则任何模式都不支持）。这条断言与
+    // render.js 的文案成对：文案改了就等于接通方式变了，必须同时改这里。
+    if (!/参考图约束/.test(banner) || !/只吃视觉提示词/.test(banner)) {
+      throw new Error(`门横幅必须写明参考图的生效范围，实际：${banner}`);
     }
-    pass("门横幅写明「参考图尚未参与生成」的边界，不暗示已有一致性机制");
+    pass("门横幅写明参考图只在「参考图约束」模式下参与生成");
     const passBtn = page.locator('#stageGateBanner [data-flow="anchor-confirm"]');
     const skipBtn = page.locator('#stageGateBanner [data-flow="anchor-confirm-skip"]');
     if (await passBtn.isEnabled()) throw new Error("未挂锚点时「确认锚点并开始制作」不应可用");
@@ -337,10 +359,7 @@ async function main() {
     pass("就绪度变化后武装自动失效，二次确认不会被跨状态绕过");
 
     // 重新挂回去，让这道门能正常放行。
-    await page
-      .locator('#stageWorkspace .anchor-block [data-asset-upload="character_anchor"]')
-      .first()
-      .setInputFiles({ name: "anchor.png", mimeType: "image/png", buffer: pngBytes() });
+    await uploadAnchorWithRetry(page, "character_anchor", pngBytes());
     await waitFor(
       page,
       () => /已挂 1 \/ 共 \d+/.test(document.querySelector("#stageGateBanner")?.innerText || ""),
