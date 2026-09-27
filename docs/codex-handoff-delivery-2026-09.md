@@ -1,10 +1,10 @@
 # VisionCraft 全盘交付与跨窗口接续说明
 
-更新时间：2026-09-11  
+首次成文：2026-09-11。此后按切片持续追加（见 §14.x），**每节记录该切片落地时的 HEAD**。  
 适用分支：`feat/v1-media-pipeline`  
-当前提交：`420b6af51526cc9e4655bc7d746228a9144b07cb`  
+当前提交：**以 `git log -1 --oneline` 为准**，本文不再写死哈希——此处原写 `420b6af5`，在后续提交后即过期，留着只会误导。  
 远程：`origin/feat/v1-media-pipeline`  
-基线状态：本地与远程同步，无 VisionCraft 后端或测试进程运行。本文创建后成为唯一未跟踪文件，尚未提交。
+基线状态：本地与 origin 同步；阶段 A/B/C、工程账与切片 1～4 均已推送。
 
 > 本文是交给下一个开发智能体的交付资料。所有“真实调用”与“本地 Mock”必须严格区分；不能把估算费用当成平台账单，也不能把审计占位字段当成真实完成证据。
 
@@ -482,7 +482,7 @@ node tools\test_live_2shot_wait.js
   `73332da`（驱动器守卫），随后两个文档提交是 `bc8b5f8`、`2825d14`。此前 2026-09-20 的两个
   提交是 `3368a60`（锚点数据通路）与 `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——
   它一天里变了六次，写死了必然过期。
-- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16/14.17/14.18 后今为 **54 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16～14.19 后今为 **55 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
 - **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
 - **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
@@ -1108,7 +1108,9 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 
 **两轮口径完全一致（同为 51 项 / 460 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：上一轮基线 442 + 13（后端）+ 5（界面）= 460，与实测吻合——说明新增检查一条都没被静默跳过。2 条 skip 与 14.14 / 14.15 同口径，不是新增。
 
-> 以上是 2026-09-20 当时的测量，**已过期**：现行基线是 **54 项 / 516 断言**（见 14.18）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
+> 以上是 2026-09-20 当时的测量，**已过期**：**最近一次拿到两轮同口径全绿**的基线是
+> **54 项 / 516 断言**（见 14.18.1）。切片 4 之后**预期**是 55 项 / 526 断言，但两轮全绿尚未达成
+> （见 14.19.1）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
 
 `tools/run_no_cost_regression.py` 的接入点是三处：python 组在 `test_p6_demo_samples.py` 后插入 `test_anchor_assets.py`；browser 组在 `test_local_keyframe_browser.py` 后插入 `test_anchor_ui_browser.py`；`SERVER_DEPENDENT` 加入后者（**6 项 → 7 项**）。前者用 `fastapi.testclient.TestClient` 在进程内自起服务，因此**不进** `SERVER_DEPENDENT`。
 
@@ -1287,7 +1289,8 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
   该子步骤没有可切换对象。
 
 > **本节数字（53 项 / 506 断言）已被 14.18.1 取代**：切片 3 加入 `test_reference_generation.py` 后
-> 为 **54 项 / 516 断言**。本节保留原样，因为它是当时的取证记录，不是表述错误。
+> 为 **54 项 / 516 断言**（这是最近一次两轮同口径全绿的基线）。切片 4 之后**预期** 55 项 / 526 断言，
+> 但两轮全绿尚未达成，见 14.19.1。本节保留原样，因为它是当时的取证记录，不是表述错误。
 
 ### 14.18 切片 3：参考图接进生成链路（2026-09-27）
 
@@ -1349,5 +1352,108 @@ ark payload 只有 `reference_image` 不带首帧 / dashscope payload 两者并�
 
 **尚未验证（必须如实说）**：以上全是 payload 层的事实。三家**真实调用的画面效果尚未付费验收**——
 "参考图是否真的在维持一致性"只有真调一次才知道，交付文档与讲稿都不得把它讲成已验证。
+
+### 14.19 切片 4：付费闸门覆盖全部视频 provider（2026-09-27）
+
+**问题**（核查出来的，不是猜的）：闸门 `assert_live_video_allowed` **只**在 `_generate_minimax_video`
+里被调用，而 `generate_video_asset` 对 `ark` 与 `dashscope` 是**直接分发**——没有授权开关、没有每项目
+次数上限、没有预算校验。切片 3 恰好要在那两家的参考图模式上花钱，等于**最该拦的两家反而没拦**。
+成本估算也同样只按 MiniMax 定价（0.50 元/秒），而 ark 的 Seedance 2.0 在 720p 且有输入视频时是
+**1.208 元/秒**——差 2.4 倍，一个全局单价必然低估其中一家。
+
+`docs/real-live-test-preflight.md` 通篇只写 MiniMax，正是这个缺口的证据。该文档已同步更正：
+第 1 节加更正说明，新增第 8 节写清覆盖范围与单价出处。
+
+**做法**：
+
+1. 闸门上移到 `generate_video_asset` 的分发环：对每个**有密钥**的候选 provider，在打开 HTTP 之前
+   依次检查「授权开关 → 每项目次数上限 → 预算」。**没有密钥的候选不计数、不拦**，直接跳过——
+   否则会为一个根本不会调用的 provider 白扣一次名额。
+2. `BudgetBlockedError` **原样上抛**：它是对这个项目的授权/预算判定，不是 provider 故障。被兜底成
+   「所有 live video providers failed」会让人以为换个 provider 就能绕过去，而真的换一家继续试，
+   就是在越过预算花钱。
+3. `_generate_minimax_video` 里那道**移除**：留着会让 MiniMax 被扣两次名额，同时另外两家继续不受管。
+4. 价目表 `VIDEO_PRICE_CNY_PER_SECOND` 按 provider 与分辨率取价，未登记项取最贵档（高估是安全方向）；
+   `estimate_closed_loop_cny` 与 `check_live_video_budget` 都接受 `provider`，并带出
+   `video_unit_cny` / `price_basis`，报清单不必再手工核算。
+5. **默认口径刻意不动**：不传 provider 时仍按 MiniMax 计价，既有 25 条断言钉在 0.5 元/秒 上，一条未改。
+   「支持多家」不能变成「悄悄换了默认那一家的数」。
+6. 回查（refresh）不过闸：它不提交、不产生新费用。
+
+**单价出处**（官方文档，核对日期 2026-09-27）：
+
+| Provider | 分辨率 | 有输入 / 无输入（元/秒） | 出处 |
+|---|---|---|---|
+| `minimax` H3 | 768P | 0.50 / 0.50 | MiniMax 官方价（本项目既有口径） |
+| `ark` Seedance 2.0 | 720p | 1.208 / 1.988 | 火山引擎「视频生成增强版」算子价目 |
+| `dashscope` Wan 2.7 R2V | 720P | 0.60 / 0.60 | 阿里云百炼 wan2.7-r2v 价目 |
+| `siliconflow` | 任意 | 0.50 / 0.50 | **未取到公开价**，按 MiniMax 档保守取值（待核实） |
+
+ark 另一张按 token 的方舟价目（输出 480p/720p、输入含视频 28 元/百万 token）折算约 1 元/秒，
+**量级一致**，可作交叉印证。`siliconflow` 那行是**假设不是报价**，且本项目未配置其密钥、该通道不会被选中。
+
+**顺带核实**：`wan2.7-r2v` 在阿里云百炼官方文档里**就是原名**（快照 `wan2.7-r2v-2026-06-12`，
+支持最多 5 个图/视频混合参考）→ 切片 3 用的 id 是对的。但本项目的 `DASHSCOPE_API_HOST` 是专属
+MaaS 域名，该模型**是否已在该端点开通仍需实调确认**：id 正确不等于账号可用。
+
+**无费用验收**：`tools/test_video_provider_guard.py`（10 项断言，进程内、不联网）。仍按「先写测试」的
+纪律：首跑 `ImportError` 为红（`VIDEO_PRICE_CNY_PER_SECOND` 尚不存在），实现后转绿。其中两条是
+**正面控制**，用来排除"拦下来的其实是别的东西"：
+
+- 授权后 ark 提交确实打到 transport（`posts == 1`）；
+- 每项目上限为 1 时，同项目第二次提交被拦且 `posts` 仍为 1、零新增 `video_tasks`。
+
+**受影响面回归**（各自独立数据目录）：`test_live_safeguards`（25 断言）、`test_reference_generation`
+（10）、`test_stage_models`、`test_media_transfer`、`test_provider_capabilities`、`test_job_center`、
+`test_shot_versions`、`test_v1_usability`、`test_anchor_review_gate` 全部保持绿。
+
+#### 14.19.1 无费用全量复核（**未达成两轮全绿**，原因与证据）
+
+第一次全量复核（`run-20260927-151205`）**没跑绿**，如实记下来：
+
+| 项 | 值 |
+|---|---|
+| 选中 | 55 项（驱动器头部 `Checks selected : 55`；42 项各自数据目录） |
+| 通过 | 54 / 55 |
+| 断言 | **520 pass / 0 fail / 2 skip** |
+| 耗时 | 3018.3s（逐项 `seconds` 合计 2948.8s） |
+| 失败 | `test_p6d_assembly_browser.py`（exit 1，65.4s，自身只有 **3 pass / 0 fail**） |
+
+失败原文（`logs/test_p6d_assembly_browser.py.log`）：
+`page.waitForFunction: Timeout 10000ms exceeded. @ tools/p6d_assembly.cjs:105`。
+那一行等的是「保存成片配置后，前端自己重渲染出『已过期』」（`#assemblyFreshness` ←
+`render.js:1233` ← `project.assembly_stale`）。它是该检查的第 4 条断言，所以这一项只留下 3 条 PASS。
+后端 access log 显示 `PUT .../assembly-settings` 是 **200 OK**，之后只有一次
+`GET .../events?after_id=40`，再没有任何请求——请求发出去了，界面没跟上。
+
+**归因（逐项对比 `run-20260927-143107`）**：本轮 38 个可比项的中位耗时比是 **3.72×**，
+最高 9.1×（`test_live_safeguards.py` 11.0s → 99.7s）。也就是说**是整机级变慢，不是某一项爆炸**，
+而这条断言用的是写死的 10s 等待。同一个检查在前三轮分别是 22.8s / 21.0s / 20.4s，均 9 pass 全绿。
+
+**结论**：这一 FAIL 与切片 4 **无关**——切片 4 没有触碰前端与成片链路（见本节改动面），
+且受影响面 9 个套件在本轮全部保持绿。它是**机器负载把固定 10s 的 UI 等待顶破**。
+
+**但因此 55 项 / 526 断言 目前只有"预期值"地位，没有实测**：那个 526 是推算出来的
+（520 + 该失败项被截断的 6 条断言 = 526，与 516 + 10 一致），不是任何一轮的全绿读数。
+在拿到两个同口径全绿轮次之前，不得把这个数当基线引用（本项目既有规矩：单次全绿不算证明）。
+
+**顺带记两条观测**（都不是本切片引入的）：
+
+- 驱动器 atexit 里的 `release_run_lock()`（`lock.unlink()`）会被宿主的批量删除护栏拦下
+  （`SAFE_DELETE_BULK_CONFIRM_REQUIRED` count 112 > 阈值 50），于是**每轮退出都会留下一个没清掉的锁文件**；
+  下一轮按"残留锁过期接管"继续。不影响结果，但排错时别把它误读成"有第二个实例在跑"。
+- 历史 48 份 `no_cost_regression_report.json` 里，「verdict 是 FAIL 但 counts 显示 N pass / 0 fail」
+  这个形状反复出现在界面类检查上（`test_anchor_ui_browser` 5 次、`test_local_keyframe_browser` 2 次、
+  还有 `test_v1_demo_browser`、`test_adaptation_start_refresh`）。这类形状＝最后一步卡在固定 UI 超时，
+  与本轮同源；**这条应当被当成测试基础设施的欠账，而不是"偶发、忽略即可"**。
+- **一条尚未证实的假设**（写下来备查，别当结论）：`refreshProject`（`app.js:1740`）只校验会话 token 与
+  `projectId`，**没有"请求序号单调"的守卫**；保存后的主动刷新与事件轮询的刷新是两个并发 GET，
+  可能后发先至、把 PUT 之前的快照覆盖回来——而项目空闲后轮询停止，界面就再也不会自我纠正。
+  若成立，根因就不是"10s 太短"，而是真实的前端竞态，加大超时只会让它变得**更罕见**。
+  本轮没有做复现实验，故仅作下一步的候选方向。
+
+**仍未做（勿读成已验证）**：三家真实调用依旧未付费验收（见 14.18 末）。本切片补的是**护栏**，
+护栏不等于验证——它只保证"万一要花，先拦得住"，不保证"参考图真的维持了一致性"。
+另外，上述两轮同口径全绿的复核**也还没完成**，需在机器空闲窗口重跑。
 
 

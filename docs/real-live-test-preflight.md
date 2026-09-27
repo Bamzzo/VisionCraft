@@ -16,6 +16,8 @@
 
 未设置环境变量时，闭合估算按 **1 次** MiniMax 计费。超过任一限制返回 `BLOCKED_BEFORE_CALL`，且不会打开 HTTP。
 
+> **2026-09-27 更正**：上面的默认值一直是对的，但**闸门此前只在 MiniMax 一条链路上执行**——`ark` 与 `dashscope` 是直接分发的，既没有授权开关、也没有每项目次数上限、也没有预算校验（本页通篇只写 MiniMax 就是证据）。切片 3 恰好要在那两家的参考图模式上花钱，所以这条已经修掉：闸门现在挂在 `generate_video_asset` 的分发环，**全部视频 provider 共用**；单价也改成按 provider 取。见第 8 节。
+
 ## 2. 受控环境变量覆盖（仅当前进程）
 
 5 镜头真实测试启动前可在 PowerShell 中设置（**不写入 `.env`，不提交 Git**）：
@@ -82,3 +84,36 @@ $env:VISIONCRAFT_ALLOW_LIVE_LLM="1"
 - 第二次 5 镜真实测试在启动前被默认 `MAX_VIDEO_CALLS=1` 与 5 元预算阻断，**未发请求、0 元**
 - 第三次 5 镜头真实前端成片测试**已完成**：中断后只回查镜头 1 的原远程任务；**新提交 4 次，复用 1 个，唯一远程任务 5 个**；FFmpeg 成片已通过 ffprobe。临时项目已清理，数据库不能事后复核。
 - P7-B 起，真实测试结束必须在清理前写入脱敏 `live_run_audit.json` / `live_run_lineage.json` / `live_run_ffprobe.json`。本切片不重跑真实 API。
+
+## 8. provider 覆盖与单价（2026-09-27 补）
+
+**闸门位置**：`backend/providers/video_provider.py` 的 `generate_video_asset` 分发环。对每个**有密钥**的候选 provider，在打开 HTTP 之前依次检查：
+
+1. 授权开关——`VISIONCRAFT_ALLOW_LIVE_VIDEO=1` 或 `VISIONCRAFT_ALLOW_LIVE_LLM=1`；
+2. 每项目视频次数上限——`VISIONCRAFT_LIVE_MAX_VIDEO_CALLS`，默认 1、硬顶 5；
+3. 预算——`VISIONCRAFT_LIVE_BUDGET_CNY`，默认 5.0。
+
+- **没有密钥的候选不计数、不拦**，直接跳过：否则会为一个根本不会调用的 provider 白扣一次名额。
+- 被拦下时抛 `BudgetBlockedError`（`BLOCKED_BEFORE_CALL`）并**原样上抛**，不会被兜底成「所有 live video providers failed」——那样会让人以为换个 provider 就能绕过去，而真的换一家继续试，就是在越过预算花钱。
+- **回查（refresh）不提交、不产生新费用**，因此不过这道闸；这一点与「断点恢复只回查原任务」的既有约定一致。
+- 计数是**按提交尝试**扣的，与既有 MiniMax 口径一致：闸门在 HTTP 之前扣，提交失败也不退还。保守方向。
+
+**单价（元/秒）**：`backend/providers/live_budget.py` 的 `VIDEO_PRICE_CNY_PER_SECOND`。未登记的分辨率按该 provider 最贵档取，未登记的 provider 按全表最贵档取——高估是安全方向，低估才是事故。
+
+| Provider | 分辨率 | 有输入视频 | 无输入视频 | 出处 |
+|---|---|---|---|---|
+| `minimax`（H3） | 768P | 0.50 | 0.50 | MiniMax 官方价；本项目既有口径，测试钉着 |
+| `ark`（Seedance 2.0） | 720p | **1.208** | **1.988** | 火山引擎「视频生成增强版」seedance_2.0 算子价目 |
+| `ark`（Seedance 2.0） | 480p / 1080p / 4k | 0.562 / 3.014 / 6.22 | 0.924 / 4.958 / 10.108 | 同上 |
+| `dashscope`（Wan 2.7 R2V） | 720P / 1080P | 0.60 / 1.00 | 0.60 / 1.00 | 阿里云百炼 wan2.7-r2v 价目（参考输入不额外计费） |
+| `siliconflow` | 任意 | 0.50 | 0.50 | **未取到公开价**，按 MiniMax 档保守取值（待核实） |
+
+- **为什么不能只有一个单价**：MiniMax 0.50 与 ark 1.208 相差 2.4 倍。一个全局数字必然低估其中一家，而低估的后果是"以为还够、其实已经超"。
+- `ark` 那一行取自 LAS 视频生成算子价目；火山方舟另一张按 token 的价目（输出 480p/720p、输入含视频 28 元/百万 token）折算下来约 1 元/秒，**量级一致**，可作为交叉印证。
+- **`siliconflow` 那两行是假设，不是报价**：本项目实际未配置 `SILICONFLOW_API_KEY`，该通道不会被选中；真要启用前必须先把单价核实掉。
+- **默认口径刻意不变**：不指定 provider 时闭合估算仍按 MiniMax 计价（`estimate_closed_loop_cny` 的 `video_provider == "minimax"`）。「支持多家」不能变成「悄悄换了默认那一家的数」。
+- **清单能力**：`estimate_closed_loop_cny(..., provider="ark", resolution="720p", video_seconds=5)` 会带出 `video_unit_cny` / `video_cny` / `video_price_basis`；`check_live_video_budget` 的 plan 同样带 `unit_cny` 与 `price_basis`。报「Provider / 模型 / 镜头数 / 时长 / 分辨率 / 预计费用」时不必再手工核算。
+
+**顺带核实的一件事**：`wan2.7-r2v` 这个模型 id 在阿里云百炼官方文档里**就是原名**（快照 `wan2.7-r2v-2026-06-12`，支持最多 5 个图/视频混合参考），所以切片 3 用的 id 是对的。但本项目的 `DASHSCOPE_API_HOST` 是专属 MaaS 域名，该模型**是否已在该端点上开通仍需实调确认**——id 正确不等于账号可用。
+
+**核对日期 2026-09-27，单价会变**：真实调用前应重新核对官方价目，不要把本页数字当长期有效。
