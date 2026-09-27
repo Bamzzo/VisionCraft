@@ -478,9 +478,12 @@ node tools\test_live_2shot_wait.js
 ## 12. 当前交付文件状态
 
 - 本文：`docs/codex-handoff-delivery-2026-09.md`，本次新建，**已于 2026-09-20 纳入版本控制并推送**（此前"保持未跟踪"的约定作废，见 14.8）。
-- 业务代码：当前 HEAD `5a2495b` 已提交并推送，与 origin 同步。
-- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，今为 **51 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
-- **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（5 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。**审核门仍未兑现**（`REVIEW_NODES` 里没有锚点门），留在切片 2。
+- 业务代码：截至切片 2 收口，三个代码提交为 `518d63e`（门本体）、`9f4d521`（验收与调用点）、
+  `73332da`（驱动器守卫）。此前 2026-09-20 的两个提交是 `3368a60`（锚点数据通路）与
+  `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——它一天里变了四次，写死了必然过期。
+- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16/14.17 后今为 **53 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
+- **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
 - `.env`、密钥、`backend/data/`、`output/` 和临时媒体不属于交付提交范围。`tmp/` 已加入 `.gitignore`——其中**只有诊断驱动器脚本**（`_*.py` / `_*.cjs`）需要保留，因为下次可能要重跑；数据目录副本、播种副本、运行日志与截图都是派生物，可随时清理。2026-09-20 已按此规则清掉 44 项派生物（26.6 MB → 74.6 KB），驱动器脚本一个未动。
 
@@ -1111,5 +1114,174 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 - **锚点试生成审核门还没有。** 本切片只让锚点"能挂上去"，**没有让它成为花钱前的关卡**：现在确认分镜后依然可以直接批量生成。
 - 切片 2 的爆炸半径已探明：`production_ready` 被 `workflow_control_service.py:192`、`workflowViewModel.js:173`、`render.js` 及 `test_adaptation_workflow.py` / `test_medium_text_adaptation.py` / `local_keyframe_ui.cjs` / `test_p6d_assembly.py` / `test_p6c_real_assembly_browser.py` 等多处断言，**必须先改测试再改实现**。
 - 锚点与镜头参考图是两个作用域，切片 2 需要决定"镜头缺参考图时是否自动取用锚点"，本切片只提供数据，未接自动取用。
+
+---
+
+### 14.17 视觉锚点审核门（功能切片 2，2026-09-27）
+
+**性质：** 补欠账。Phase 2 冻结的「三道人工确认关卡」此前只兑现了两道（确认改编范围、
+确认 Story Bible、确认代表镜头）——`checkpoint_service.REVIEW_NODES` 里没有锚点门，
+`assert_batch_generation_allowed` 只拦到「分镜未确认」，所以**确认分镜之后可以直接批量
+生成**，"先看一张样片再花钱"这一关并不存在。本切片把它补上。
+
+#### 14.17.1 落地的语义（甲方案：完整下沉状态机）
+
+- 新增一等审核节点：`anchor_review`，新状态 `awaiting_anchor_review`，进
+  `REVIEW_NODES` / `REVIEW_STATUSES` / `NODE_FOR_STATUS` / `PAUSE_REASON` 四张表。
+- **确认分镜不再直接落 `production_ready`**，而是停在门口；`assert_batch_generation_allowed`
+  在该状态抛 `ANCHOR_REVIEW_PENDING`（与「分镜未确认」用**不同**错误码，排错时能区分）。
+- 放行走 `POST /api/projects/{id}/anchors/confirm`；就绪度走 `GET .../anchors/review`，
+  并随项目 payload 的 `anchor_review` 字段下发。
+- **放行口径（竹木选定「锚点就绪 + 显式确认」）：** 项目里有角色/场景时，**至少挂上一个**
+  锚点才能点「确认锚点并开始制作」；`allow_without_anchors: true` 是显式跳过；没有角色也
+  没有场景的空镜项目直接放行，不硬卡。刻意**不要求挂齐**——Bible 可能产出不重要的配角或
+  抽象场景，要求全部出图会把流程锁死；`missing` 只用于界面提示还差谁。要收紧为「必须挂齐」，
+  把 `anchor_review_readiness` 的 `ready` 从 `bool(attached)` 改成 `not missing` 即可。
+- **重做分镜会重新过门**：这是「每一次批量生成前」的关卡，不是一次性标签。
+- `confirmed_readonly` 刻意不动（`workflow_control_service` 那份 `PAST_STORYBOARD` 不含门内
+  状态），否则门内阶段会变只读，反而挂不了锚点。
+
+#### 14.17.2 测试先行与爆炸半径
+
+先写 `tools/test_anchor_review_gate.py`（16 项断言，同时充当这道门的规格），先红后绿。它覆盖：
+分镜确认后进门（非 `production_ready`）、批量生成被拦、有角色未挂锚点时确认被拒、挂锚点后
+放行、无目标项目直接通过、`anchor_review` 检查点可暂停恢复、双端幂等、重生成分镜后重新进门、
+全程零真实调用。
+
+改实现本身只是几十行，**真正的成本在爆炸半径**：`production_ready` 被 17 处调用点（13 个文件）
+和 30+ 处断言引用。按「先改测试再改实现」的原则同步了 `test_adaptation_workflow.py`、
+`test_workflow_pause_resume.py`、`test_anchor_assets.py`，以及 5 个浏览器脚本、
+3 个准备脚本（`prepare_p6_demo_samples.py` / `prepare_v1_demo.py` / `seed_regression_fixtures.py`
+——它们的语义是"就绪项目"，必须显式过门，否则含义会悄悄变成"停在门口"）。
+
+为避免 5 个浏览器脚本各写一份过门逻辑，新增共享模块 `tools/anchor_gate_ui.cjs`（照
+`tools/ui_project_form.cjs` 的先例）。
+
+#### 14.17.3 回归逼出的三个真缺陷（都不是测试问题）
+
+1. **幂等分支把门口的 paused 检查点顺手 `complete` 了。** 门内重复点确认分镜时，幂等分支
+   会把 `anchor_review` 那个 paused 检查点一起结掉，项目仍在门口，恢复却报 `NO_CHECKPOINT`。
+   修法：幂等分支只完成**非锚点门**的 paused 检查点。
+2. **就绪后仍显示"悬空跳过指令"。** 点过一次「跳过」武装后若又挂上锚点，横幅还在写
+   「再点一次『确认跳过』即会放行」，而那个按钮已经不在横幅里——界面上不存在可执行该指令
+   的对象。**这条是从验收截图里看出来的**（`anchor-05-gate-ready-banner.png`），不是靠断言。
+3. **二次确认可被就绪度回摆绕过。** 武装状态原本跨动作留存，`0 → 1 → 0` 的就绪度回摆会让
+   失效的武装重新算成有效："先武装、去挂锚点、再摘掉、回来一次点击"就能绕过二次确认——
+   等于把刚建好的守卫自己拆了。
+
+修法（2、3 一起）：就绪（或无需锚点）时把跳过入口与提示一并撤掉；武装连同当时的就绪度
+快照一起记（`anchorSkipSignature` 公式只写一份，渲染层与处理层同源）；挂载/解除锚点、
+离开这道门三个动作显式撤销武装（`disarmAnchorSkip`）。**只靠指纹不够**——0→1→0 会回到
+同一个指纹，所以两处都要有。
+
+两条都有断言守着：`anchor_ui.cjs` 的「就绪后不留悬空指令」「就绪度变化后武装失效」。
+
+#### 14.17.4 顺手修掉的过度承诺（诚实性）
+
+门的文案原本写着「挂上参考图，用于跨镜头保持一致」「跳过之后，批量生成不会参考任何角色/
+场景参考图」——**后半句在暗示不跳过就会参考，而这是假的**。实测确认：全仓只有就绪度查询
+在读 `characters.asset_id` / `scenes.asset_id`（`adaptation_service.py:523/526`），
+**生成链路一次都没读**（`video_provider.py` 只用 `version["first_frame_path"]`）。
+
+所以这道门现在保证的是「**用户在花钱前做过锚点决策**」，**不是**「参考图已经在维持一致性」。
+横幅改为写明边界，并加断言钉住这句话（`尚未参与生成`）——将来真接进生成时，必须同时改
+文案和那条断言。同类过度承诺还有一处：Bible 卡片里「镜头缺参考图时可取用锚点，不必逐镜头
+上传」，一并改掉。
+
+**这就是切片 3 的正题：把参考图接进生成链路**（图生图 / 参考图条件）。不同 Provider 对
+参考图的支持不同，且需要付费三家验收才能声称"有效"，所以不在本切片硬做。
+
+#### 14.17.5 驱动器（无费用回归）暴露的三个自身缺陷
+
+这三个是**自己踩自己**，但它们的症状伪装得极像产品缺陷，必须记下来。
+
+**（1）把「端口上有人应答」当成「后端是我们的」。** 端口被上一轮残留的 uvicorn 占着时，
+我们自己的子进程因 `EADDRINUSE` 退出，而 `/api/health` 照样由残留进程回 200 → 用例跑在
+**别人的数据目录**上，跑到一半对方消失，表现为"后端中途没了"的 `ECONNREFUSED`。
+判据必须改成**子进程自己宣布开始服务**（日志里的 `Uvicorn running on http://127.0.0.1:<port>`），
+且端口要比对。
+
+实测取证（成功/失败两份日志对照）：`Application startup complete` **端口被占时照样会打印**
+（uvicorn 先跑 lifespan 启动、之后才 bind 端口），所以**不能用它**；只有 `Uvicorn running on`
+那一行是成功独有的。另外加了端口冲突时换端口重试（最多 3 次）与 `atexit` 收尸。
+
+**（2）两个回归实例并行。** `TaskStop` 只结束了外层 shell，`run_no_cost_regression.py`
+作为**孤儿继续跑**，而且 `a; b` 链式命令还会在第一个死掉后自动进入下一步——实测一度有
+**两个实例并行十几分钟**，把一项失败伪装成产品缺陷（我先按"用例竞态"查了一段，靠进程表
+才定位到真因）。现在加单实例锁：锁里记 pid，持有者存活则拒绝启动并指明 pid，残留/损坏的
+锁按过期接管，正常退出与异常退出都释放。
+
+两者都由 `tools/test_runner_guards.py`（20 项断言）钉住。**为什么值得单独立一个用例：**
+「连续两次全绿」这句话的成立前提就是"两次都是干净的单实例运行"——锁不牢，那两个数字本身
+就不可引用。
+
+**（3）断言计数被自报汇总行抬高一条。** 驱动器的 `summarise()` 是**按 token 粗计**：一行里
+出现独立的 `pass`/`fail`/`skip` 就记一笔（这是为了能把工具自己的拒绝文案也照实记下来，代价是
+"计数 ≠ 有检查被跑"）。而我新写的 `test_runner_guards.py` 收尾打印了
+`runner guards: 20 pass / 0 fail` ——它被当成第 21 条断言。
+
+实测量化（逐份日志比对 `counts['pass']` 与真正的 `PASS:` 行数）：**53 项里只有这一项有偏差，
+其余 52 项 counted == real**。修法是让收尾行避开独立 token（`runner guards: 20 ok / 0 failing`），
+顺便把"脚本只打印 `PASS:`/`FAIL:` 行、不打印自报汇总行"这条仓库约定写进 `summarise()` 的文档串。
+
+**代价是一轮已经全绿的运行作废**：口径从 507 变成 506，按本项目"断言数不同的两轮不能配对"
+的规矩，那一轮的 507 只能弃用、重跑两轮。这条规矩不只在防别人，也在防自己——修掉一个显示行
+也必须重新取证，否则可引用的数字就带着一个说不清的 +1。
+
+#### 14.17.6 仍未做（切片 3，勿读成已闭环）
+
+- **参考图没接进生成链路**（见 14.17.4）。门目前只保证"决策发生过"。
+- **镜头缺参考图时是否自动取用锚点**：仍未决定、未实现。
+- mock 规划的实体抽取有噪声：演示样本里会出现 `他想`、`转折空间` 这类名字（
+  `adaptation_planner.plan_story_bible` 的启发式 + 兜底占位词）。真实 LLM 规划不会这样，
+  但**基于 mock 的截图/界面文案会带上它们**，讲的时候要如实说是 mock 数据。
+  这也正好说明"至少挂上一个"的口径是对的：噪声实体不会把流程锁死。
+
+#### 14.17.7 一并修正的旧口径
+
+- `README.md` 的回归项数 `51 → 53`（两次都在同一天：先随锚点界面新增的
+  `test_anchor_ui_browser.py` 断言变成 52，再随驱动器自检 `test_runner_guards.py` 变成 53）。
+  README 同时补写了驱动器的两条硬约束（只认自己启动的后端、带单实例锁），
+  这两条现在是对使用者的承诺，不只是内部实现细节。
+- `docs/v1-demo-script.md`：「48+1 项无费用回归」→ 实测 **53 项**；`test_p6_demo_samples.py`
+  的「39 项断言」→ 实测 **41 项**；并新增第 3 段「视觉锚点审核门（现场新建一次性项目）」，
+  同时把"参考图尚未参与生成"写进诚实性附注。
+- `docs/v1-delivery-roadmap.md`：切片 2 的验收项数 `test_anchor_review_gate.py` 写的是 15，
+  实测 **16**；并补上 `tools/anchor_ui.cjs`（12 项断言）这个此前没记的界面验收入口。
+
+#### 14.17.8 实测（连续两轮，同口径全绿）
+
+单项验收：
+
+| 检查 | 断言 | 结果 |
+|---|---|---|
+| `tools/test_anchor_review_gate.py` | 16 | 16 pass / 0 fail |
+| `tools/test_anchor_assets.py` | 13 | 13 pass / 0 fail |
+| `tools/test_anchor_ui_browser.py` | 12 | 12 pass / 0 fail |
+| `tools/anchor_ui.cjs` | 12 | 12 pass / 0 fail |
+| `tools/test_runner_guards.py` | 20 | 20 pass / 0 fail |
+
+全量回归（**53 项**，51 → 53）：
+
+| 运行 | 结果 | 断言 | 耗时 |
+|---|---|---|---|
+| `run-20260927-130103` | 53/53 | 506 pass / 0 fail / 2 skip | 795.8s |
+| `run-20260927-131511` | 53/53 | 506 pass / 0 fail / 2 skip | 730.7s |
+
+**两轮口径完全一致（同为 53 项 / 506 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：
+上一轮基线 483 + 3（锚点门界面的新增断言）+ 20（驱动器自检）= **506**，与实测吻合——说明新增检查
+一条都没被静默跳过。
+
+**另有一轮已全绿但被弃用**：`run-20260927-124548`（53/53、**507** 断言、727.8s）。它跑在
+14.17.5(3) 那个"自报汇总行抬高计数"修好**之前**，按本项目「断言数不同的两轮不能配对」的规矩
+只能弃用。同一天里出现 507 与 506 两个数，将来若有人对不上，看这一条即可。
+
+2 条 skip 复核（都是**在档的日志级计数**，不是覆盖缩水）：
+
+- `test_live_safeguards.py`：`SKIP: inflight_remote_tasks db_tasks=1 db_shots=1` 是
+  `run_live_2shot.py` 守卫**自己的拒绝文案**，紧邻下一行就是该守卫的 PASS
+  （"脚本异常且 lineage 过期时，DB inflight 仍阻止清理"）。
+- `test_mock_web_smoke.py`：`视频阶段只有一个模型，无法切换`——mock 下只有一个视频模型，
+  该子步骤没有可切换对象。
 
 
