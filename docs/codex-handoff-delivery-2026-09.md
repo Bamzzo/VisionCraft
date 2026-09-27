@@ -482,7 +482,7 @@ node tools\test_live_2shot_wait.js
   `73332da`（驱动器守卫），随后两个文档提交是 `bc8b5f8`、`2825d14`。此前 2026-09-20 的两个
   提交是 `3368a60`（锚点数据通路）与 `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——
   它一天里变了六次，写死了必然过期。
-- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16/14.17 后今为 **53 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16/14.17/14.18 后今为 **54 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
 - **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
 - **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
@@ -1108,7 +1108,7 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 
 **两轮口径完全一致（同为 51 项 / 460 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：上一轮基线 442 + 13（后端）+ 5（界面）= 460，与实测吻合——说明新增检查一条都没被静默跳过。2 条 skip 与 14.14 / 14.15 同口径，不是新增。
 
-> 以上是 2026-09-20 当时的测量，**已过期**：现行基线是 **53 项 / 506 断言**（见 14.17.8）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
+> 以上是 2026-09-20 当时的测量，**已过期**：现行基线是 **54 项 / 516 断言**（见 14.18）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
 
 `tools/run_no_cost_regression.py` 的接入点是三处：python 组在 `test_p6_demo_samples.py` 后插入 `test_anchor_assets.py`；browser 组在 `test_local_keyframe_browser.py` 后插入 `test_anchor_ui_browser.py`；`SERVER_DEPENDENT` 加入后者（**6 项 → 7 项**）。前者用 `fastapi.testclient.TestClient` 在进程内自起服务，因此**不进** `SERVER_DEPENDENT`。
 
@@ -1285,5 +1285,69 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
   （"脚本异常且 lineage 过期时，DB inflight 仍阻止清理"）。
 - `test_mock_web_smoke.py`：`视频阶段只有一个模型，无法切换`——mock 下只有一个视频模型，
   该子步骤没有可切换对象。
+
+> **本节数字（53 项 / 506 断言）已被 14.18.1 取代**：切片 3 加入 `test_reference_generation.py` 后
+> 为 **54 项 / 516 断言**。本节保留原样，因为它是当时的取证记录，不是表述错误。
+
+### 14.18 切片 3：参考图接进生成链路（2026-09-27）
+
+**问题**：切片 2 的门只保证"决策发生过"。实测全仓只有就绪度查询读 `characters.asset_id` /
+`scenes.asset_id`；更要紧的是 `shot_versions.reference_frame_path`（镜头参考图）**前端能选、
+上传能写、生成链路从来没读过**——`VideoAssetRequest` 只有 `first_frame_path` / `last_frame_path`，
+三家的 content 构造里都没有参考图的位置。
+
+**做法**：新增 `reference` 视频模式（登记进 `MODE_REQUIREMENTS`，`requires_reference: true`）。
+选它时按「镜头参考图 → 角色 → 场景」收集（新增 `anchor_service.collect_reference_images`；
+顺序即语义——DashScope 用「图1、图2」按 media 数组顺序指代参考素材），经既有的
+`prepare_image_reference(role="reference_image")` 发出。传输层本来就是 role 自由的，没有新增通道，
+只是终于有人调用它了。
+
+**三家规则不同，按 provider 分流**（本节事实全部来自官方文档，不是推测）：
+
+| Provider | 参考图参数 | 与首帧能否并存 |
+|---|---|---|
+| 火山 Seedance 2.0 | `role=reference_image` | **互斥**——官方原文：首帧 / 首尾帧 / 全模态参考是「3 种互斥场景，不可混用」 |
+| 阿里 Wan 2.7 R2V（本次新增的模型） | `type=reference_image` | **可并存**——官方："When used with subject references, two modes apply" |
+| MiniMax H3 | 无此参数 | **明确拒绝**（`REFERENCE_NOT_SUPPORTED`） |
+
+互斥/并存被做成能力声明 `reference_includes_first_frame`，界面据此提示「本模式下该 Provider
+不接收首帧」，免得用户以为首帧还在起作用。
+
+**为什么必须分流而不是"都发参考图"**：往 payload 里多塞一个字段很容易，但两个坑都是真的——
+① Seedance 混用会被云端拒单；② MiniMax 根本没有这个参数，静默丢掉挂好的图等于骗用户。
+
+**无费用验收**：`tools/test_reference_generation.py`（10 项断言，进程内、不联网）——模式已登记 /
+ark 声明支持而 minimax 诚实声明不支持 / 不支持时明确拒绝 / 缺图报 `MISSING_REFERENCE_IMAGE` /
+ark payload 只有 `reference_image` 不带首帧 / dashscope payload 两者并存 / minimax 抛错 /
+收集顺序为镜头参考图 → 角色 → 场景。
+
+**界面同步（成对改动）**：门横幅原写「参考图尚未参与生成」，接通后不再成立，已改为写明生效范围；
+`tools/anchor_ui.cjs` 里钉着那句话的断言同步改写。**这两处必须一起改**——只改一边就是在制造假绿。
+
+**顺带修掉一个既有偶发**：`anchor_ui.cjs` 最后一步「重新挂上锚点」偶发超时。取证路径值得记：
+后端 access log 里那次上传**连 POST 都没有**（说明 change 事件根本没到处理器），而不是请求失败。
+根因是 Bible 区整块 `innerHTML` 重渲染，解除锚点后的刷新与 `events` 轮询都可能恰好在
+`setInputFiles` 与 change 之间把 input 换掉。修法是测试侧重试并保留最终失败可见性。
+
+#### 14.18.1 实测（连续两轮，同口径全绿）
+
+全量回归 **54 项 / 516 断言 / 0 fail / 2 skip**（53 → 54，本切片 +1 项 / +10 断言）：
+
+| 运行 | 结果 | 断言 | 耗时 |
+|---|---|---|---|
+| `run-20260927-141740` | 54/54 | 516 pass / 0 fail / 2 skip | 794.1s |
+| `run-20260927-143107` | 54/54 | 516 pass / 0 fail / 2 skip | 820.4s |
+
+新项排在 `[37/54] test_reference_generation.py`，10 pass / 0 fail（0.6s），10 条 PASS 与 14.18 正文
+列的契约一一对应。断言数可交叉验证：上一轮基线 506 + 10（本切片新增）= **516**，与实测吻合——
+说明新增检查一条都没被静默跳过。（驱动器自身的 20 条自检排在 `[38/54]`，已含在 506 里，不重复计。）
+
+2 条 skip 与 14.17.8 **同口径、同出处**（逐项日志复核）：`test_live_safeguards.py` 的
+`SKIP: inflight_remote_tasks db_tasks=1 db_shots=1` 是 `run_live_2shot.py` 守卫自己的拒绝文案
+（紧邻下一行才是该守卫的 PASS），`test_mock_web_smoke.py` 的 `SKIP: 视频阶段只有一个模型，无法切换`
+是 mock 下唯一的视频模型没有可切换对象。都不是覆盖缩水。
+
+**尚未验证（必须如实说）**：以上全是 payload 层的事实。三家**真实调用的画面效果尚未付费验收**——
+"参考图是否真的在维持一致性"只有真调一次才知道，交付文档与讲稿都不得把它讲成已验证。
 
 
