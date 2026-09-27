@@ -122,6 +122,35 @@ def detach_anchor(project_id: str, *, kind: str, target: str) -> dict:
             "previous_asset_id": row["asset_id"]}
 
 
+def collect_reference_images(project_id: str, *, shot_reference_path: str | None = None) -> list[dict]:
+    """按优先级收集要作为参考图传给 provider 的图片。
+
+    顺序就是语义：DashScope 用「图1、图2」按 media 数组顺序指代参考素材，
+    所以镜头参考图排在最前，然后是角色锚点，最后是场景锚点。
+
+    只收集真正挂了图的条目——没挂锚点的角色不该在请求里占位。
+    """
+    _require_project(project_id)
+    items: list[dict] = []
+    if shot_reference_path:
+        items.append({"kind": "shot_reference", "label": "镜头参考图", "file_path": shot_reference_path})
+    with connect() as conn:
+        paths = {
+            row["id"]: row["file_path"]
+            for row in conn.execute("SELECT id, file_path FROM assets WHERE project_id = ?", (project_id,)).fetchall()
+        }
+        for kind in ("character", "scene"):
+            rows = conn.execute(
+                f"SELECT name, asset_id FROM {_TABLE[kind]} WHERE project_id = ? AND asset_id IS NOT NULL ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+            for row in rows:
+                path = paths.get(row["asset_id"])
+                if path:
+                    items.append({"kind": kind, "label": row["name"], "file_path": path})
+    return items
+
+
 def list_anchors(project_id: str) -> list[dict]:
     _require_project(project_id)
     items: list[dict] = []

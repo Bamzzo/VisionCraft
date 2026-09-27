@@ -15,6 +15,8 @@ MODE_REQUIREMENTS = {
     "t2v": {"requires_first_frame": False, "requires_last_frame": False},
     "i2v": {"requires_first_frame": True, "requires_last_frame": False},
     "keyframes": {"requires_first_frame": True, "requires_last_frame": True},
+    # 参考图模式：不吃首尾帧，但必须至少有一张参考图，否则等于退化成 t2v。
+    "reference": {"requires_first_frame": False, "requires_last_frame": False, "requires_reference": True},
 }
 
 
@@ -112,6 +114,7 @@ def validate_video_generation(
     aspect_ratio: str,
     first_frame_path: str | None,
     last_frame_path: str | None,
+    reference_paths: list[str] | None = None,
 ) -> dict:
     mode = (video_mode or "t2v").lower()
     if mode not in MODE_REQUIREMENTS:
@@ -143,6 +146,11 @@ def validate_video_generation(
         raise CapabilityError("MISSING_FIRST_FRAME", "缺少首帧，无法提交图生视频。请先选择或生成首帧。")
     if requirements["requires_last_frame"] and not last_frame_path:
         raise CapabilityError("MISSING_LAST_FRAME", "缺少尾帧，无法提交首尾帧模式。请先选择或生成尾帧。")
+    if requirements.get("requires_reference") and not reference_paths:
+        raise CapabilityError(
+            "MISSING_REFERENCE_IMAGE",
+            "参考图模式需要至少一张参考图。请先在角色/场景卡片上挂参考图，或在镜头里选一张参考图。",
+        )
 
     return {
         "provider": capability["id"],
@@ -153,6 +161,10 @@ def validate_video_generation(
         "resolution": model_capability.get("default_resolution") or capability.get("default_resolution"),
         "provider_label": capability["label"],
         "model_label": model_capability.get("label") or model_capability["id"],
+        "reference_count": len(reference_paths or []),
+        # 各家的规则不一样：Seedance 的参考图与首尾帧互斥，wan2.7-r2v 允许并存。
+        # 这里把它变成能力声明，provider 层据此决定要不要带上首帧。
+        "reference_includes_first_frame": bool(capability.get("reference_includes_first_frame")),
     }
 
 
@@ -216,6 +228,8 @@ def _video_provider_catalog(**live_flags: bool) -> list[dict]:
     ark_model = os.getenv("VOLC_VIDEO_MODEL") or os.getenv("DOUBAO_VIDEO_ENDPOINT") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128")
     dashscope_t2v = os.getenv("DASHSCOPE_T2V_MODEL", "wan2.7-t2v")
     dashscope_i2v = os.getenv("DASHSCOPE_I2V_MODEL", "wan2.7-i2v")
+    # 参考生视频是单独的模型：wan2.7-i2v 只吃首帧，参考图要 r2v 才收。
+    dashscope_r2v = os.getenv("DASHSCOPE_R2V_MODEL", "wan2.7-r2v")
     minimax_model = os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     siliconflow_model = os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
     return [
@@ -224,17 +238,20 @@ def _video_provider_catalog(**live_flags: bool) -> list[dict]:
             "label": "火山 Seedance",
             "aliases": ["seedance", "volc", "volcengine"],
             "mode": "live-ready" if live_flags["ark_video_live"] else "not-configured",
-            "supported_modes": ["t2v", "i2v", "keyframes"],
+            "supported_modes": ["t2v", "i2v", "keyframes", "reference"],
             "supported_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
             "supported_durations": [5, 10],
             "supported_resolutions": ["720p", "1080p"],
             "default_resolution": os.getenv("VOLC_VIDEO_RESOLUTION", "720p"),
             "default_model": ark_model,
+            # 官方：图生视频-首帧 / 首尾帧 / 全模态参考生视频是 3 种互斥场景。
+            # 参考图模式必须自己独占，带上首帧会被云端拒绝。
+            "reference_includes_first_frame": False,
             "models": [
                 {
                     "id": ark_model,
                     "label": "Seedance 2.0",
-                    "supported_modes": ["t2v", "i2v", "keyframes"],
+                    "supported_modes": ["t2v", "i2v", "keyframes", "reference"],
                     "default_resolution": os.getenv("VOLC_VIDEO_RESOLUTION", "720p"),
                 }
             ],
@@ -244,12 +261,15 @@ def _video_provider_catalog(**live_flags: bool) -> list[dict]:
             "label": "阿里百炼 Wan",
             "aliases": ["wan", "alibaba", "dashscope_wan"],
             "mode": "live-ready" if live_flags["dashscope_video_live"] else "not-configured",
-            "supported_modes": ["t2v", "i2v", "keyframes"],
+            "supported_modes": ["t2v", "i2v", "keyframes", "reference"],
             "supported_ratios": ["16:9", "9:16", "1:1"],
             "supported_durations": [2, 5, 10, 15],
             "supported_resolutions": ["720P", "1080P"],
             "default_resolution": os.getenv("DASHSCOPE_VIDEO_RESOLUTION", "720P"),
             "default_model": dashscope_i2v,
+            # wan2.7-r2v 的 media 里 first_frame 与 reference_image 可以同时出现，
+            # 这是三家主力里唯一"首帧 + 角色参考图"都能要的组合。
+            "reference_includes_first_frame": True,
             "models": [
                 {
                     "id": dashscope_t2v,
@@ -261,6 +281,12 @@ def _video_provider_catalog(**live_flags: bool) -> list[dict]:
                     "id": dashscope_i2v,
                     "label": "Wan 2.7 I2V",
                     "supported_modes": ["i2v", "keyframes"],
+                    "default_resolution": os.getenv("DASHSCOPE_VIDEO_RESOLUTION", "720P"),
+                },
+                {
+                    "id": dashscope_r2v,
+                    "label": "Wan 2.7 R2V",
+                    "supported_modes": ["reference"],
                     "default_resolution": os.getenv("DASHSCOPE_VIDEO_RESOLUTION", "720P"),
                 },
             ],

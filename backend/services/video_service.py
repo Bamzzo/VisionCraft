@@ -17,6 +17,7 @@ from ..providers.video_provider import (
 )
 from ..services.job_service import ACTIVE_JOB_STATUSES, create_job, list_active_jobs, update_job
 from ..services.asset_service import public_asset_path
+from ..services.anchor_service import collect_reference_images
 
 
 class AssemblyError(Exception):
@@ -70,14 +71,22 @@ def prepare_shot_video_generation(
         shot = dict(shot)
         inflight = dict(inflight) if inflight else None
 
+    requested_mode = _safe_video_mode(video_mode)
+    # 只有参考图模式才收集：别的模式即使传了，provider 也会忽略，白白多查两次库。
+    reference_images = (
+        collect_reference_images(project_id, shot_reference_path=version["reference_frame_path"])
+        if requested_mode == "reference"
+        else []
+    )
     plan = validate_video_generation(
         provider=provider,
         model=model,
-        video_mode=_safe_video_mode(video_mode),
+        video_mode=requested_mode,
         duration_seconds=duration_seconds or project["duration_seconds"],
         aspect_ratio=project["aspect_ratio"],
         first_frame_path=version["first_frame_path"],
         last_frame_path=version["last_frame_path"],
+        reference_paths=[item["file_path"] for item in reference_images],
     )
     same_spec = (
         (version["video_mode"] or "t2v") == plan["video_mode"]
@@ -109,6 +118,7 @@ def prepare_shot_video_generation(
         "shot": dict(shot),
         "version": version,
         "version_id": version["id"],
+        "reference_images": reference_images,
         "inflight_task": inflight if resume_inflight else None,
     }
 
@@ -176,6 +186,7 @@ def generate_shot_video(
                 prompt=version["visual_prompt"] or shot["visual_prompt"],
                 first_frame_path=version["first_frame_path"],
                 last_frame_path=version["last_frame_path"],
+                reference_images=prepared.get("reference_images") or [],
                 negative_prompt=version["negative_prompt"] or shot["negative_prompt"],
                 audio_prompt=version["audio_prompt"] or shot["audio_prompt"],
                 video_mode=prepared["video_mode"],
@@ -358,6 +369,17 @@ def _create_safe_retry_version(project_id: str, shot_id: str, rewrite: dict) -> 
     return version_id
 
 
+def _reference_images_for_row(project_id: str, row) -> list:
+    """批量生成时逐镜头取参考图。
+
+    锚点是项目级的，镜头参考图是版本级的，两种都由 collect_reference_images
+    合并成一条有序列表。非参考图模式直接返回空——省掉两次库查询。
+    """
+    if (row["video_mode"] or "t2v") != "reference":
+        return []
+    return collect_reference_images(project_id, shot_reference_path=row["reference_frame_path"])
+
+
 def generate_project_videos(project_id: str, job_id: str) -> None:
     update_job(job_id, "running", 5, "Preparing batch video generation")
     try:
@@ -378,6 +400,7 @@ def generate_project_videos(project_id: str, job_id: str) -> None:
                   sv.audio_prompt,
                   sv.first_frame_path,
                   sv.last_frame_path,
+                  sv.reference_frame_path,
                   sv.video_path,
                   sv.video_mode,
                   a.embedding_ref AS video_ref
@@ -426,6 +449,7 @@ def generate_project_videos(project_id: str, job_id: str) -> None:
                         prompt=row["visual_prompt"],
                         first_frame_path=row["first_frame_path"],
                         last_frame_path=row["last_frame_path"],
+                        reference_images=_reference_images_for_row(project_id, row),
                         negative_prompt=row["negative_prompt"],
                         audio_prompt=row["audio_prompt"],
                         video_mode=row["video_mode"] or "t2v",
@@ -1724,7 +1748,7 @@ def assemble_project_video(project_id: str, job_id: str) -> None:
 
 def _safe_video_mode(video_mode: str | None) -> str:
     mode = (video_mode or "t2v").lower()
-    return mode if mode in {"t2v", "i2v", "keyframes"} else "t2v"
+    return mode if mode in {"t2v", "i2v", "keyframes", "reference"} else "t2v"
 
 
 def _stamp_generation_version(version: dict, plan: dict) -> dict:

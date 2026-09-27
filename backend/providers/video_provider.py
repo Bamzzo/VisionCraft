@@ -29,6 +29,9 @@ class VideoAssetRequest:
     duration_seconds: int
     aspect_ratio: str = "16:9"
     last_frame_path: str | None = None
+    # 角色/场景锚点与镜头参考图。这两个数据早就存在（characters.asset_id /
+    # shot_versions.reference_frame_path），但在这一版之前没有任何生成流程读它们。
+    reference_images: list[dict] | None = None
     negative_prompt: str = ""
     audio_prompt: str = ""
     video_mode: str = "t2v"
@@ -245,10 +248,15 @@ def _generate_dashscope_video(request: VideoAssetRequest) -> VideoGenerationResu
     api_key = _dashscope_api_key()
     base_url = os.getenv("DASHSCOPE_API_HOST", "https://dashscope.aliyuncs.com").rstrip("/")
     mode = (request.video_mode or "t2v").lower()
-    default_model = os.getenv("DASHSCOPE_I2V_MODEL", "wan2.7-i2v") if mode in {"i2v", "keyframes"} else os.getenv("DASHSCOPE_T2V_MODEL", "wan2.7-t2v")
+    if mode in {"i2v", "keyframes"}:
+        default_model = os.getenv("DASHSCOPE_I2V_MODEL", "wan2.7-i2v")
+    elif mode == "reference":
+        default_model = os.getenv("DASHSCOPE_R2V_MODEL", "wan2.7-r2v")
+    else:
+        default_model = os.getenv("DASHSCOPE_T2V_MODEL", "wan2.7-t2v")
     model = request.model_override or default_model
     prompt = _build_video_prompt(request)
-    media = _dashscope_media_items(request, model) if mode in {"i2v", "keyframes"} else []
+    media = _dashscope_media_items(request, model) if mode in {"i2v", "keyframes", "reference"} else []
     payload = {"model": model, "input": {"prompt": prompt, **({"media": media} if media else {})}, "parameters": {"resolution": os.getenv("DASHSCOPE_VIDEO_RESOLUTION", "720P"), "duration": max(2, request.duration_seconds), "watermark": False}}
     submit = _post_json(base_url + "/api/v1/services/aigc/video-generation/video-synthesis", api_key, payload, {"X-DashScope-Async": "enable"})
     task_id = (submit.get("output") or {}).get("task_id") or submit.get("task_id")
@@ -303,7 +311,45 @@ def _refresh_dashscope_video(request: VideoAssetRequest, task: dict) -> VideoGen
     return _poll_dashscope_video(request, task["id"], task["remote_task_id"], task["model"], task["prompt"] or _build_video_prompt(request), base_url, _dashscope_api_key())
 
 
+def _reference_image_items(request: VideoAssetRequest, *, target_provider: str, target_model: str) -> list:
+    """把锚点与镜头参考图逐张交给传输层校验、登记、转成 provider 可读的 URL。
+
+    返回空列表只表示"这个镜头没有参考图"。是否有参考图、没有算不算错误，是调用方
+    必须自己判断的事：这里既不静默放行，也不替调用方报错。
+    """
+    prepared = []
+    for entry in request.reference_images or []:
+        reference = prepare_image_reference(
+            request.project_id,
+            (entry or {}).get("file_path"),
+            target_provider=target_provider,
+            target_model=target_model,
+            role="reference_image",
+        )
+        if reference:
+            prepared.append(reference)
+    return prepared
+
+
 def _dashscope_media_items(request: VideoAssetRequest, model: str) -> list[dict]:
+    if (request.video_mode or "").lower() == "reference":
+        # wan2.7-r2v 是唯一允许"首帧 + 参考图"并存的组合，prompt 用「图1、图2」
+        # 按 media 数组顺序指代参考素材。
+        items = [
+            {"type": ref.role, "url": ref.url}
+            for ref in _reference_image_items(request, target_provider="dashscope", target_model=model)
+        ]
+        if request.first_frame_path:
+            first = prepare_image_reference(
+                request.project_id,
+                request.first_frame_path,
+                target_provider="dashscope",
+                target_model=model,
+                role="first_frame",
+            )
+            if first:
+                items.append({"type": "first_frame", "url": first.url})
+        return items
     if not request.first_frame_path:
         raise MediaTransferError("MISSING_FIRST_FRAME", "I2V/keyframes mode requires a first-frame asset.")
     refs = [prepare_image_reference(request.project_id, request.first_frame_path, target_provider="dashscope", target_model=model, role="first_frame")]
@@ -377,6 +423,13 @@ def _refresh_minimax_video(request: VideoAssetRequest, task: dict) -> VideoGener
 def _minimax_content_items(request: VideoAssetRequest, model: str, prompt: str) -> list[dict]:
     content = [{"type": "text", "text": prompt}]
     mode = (request.video_mode or "t2v").lower()
+    if mode == "reference":
+        # MiniMax 的视频接口没有参考图参数（Hailuo 线只吃文生/图生）。
+        # 宁可明确拒绝，也不要收了钱却把挂上的参考图悄悄丢掉。
+        raise MediaTransferError(
+            "REFERENCE_NOT_SUPPORTED",
+            "MiniMax 的视频接口不支持参考图，请改用火山 Seedance 或阿里 Wan 2.7 R2V。",
+        )
     if mode not in {"i2v", "keyframes"}:
         return content
     if not request.first_frame_path:
@@ -1065,6 +1118,13 @@ def _ark_content_items(request: VideoAssetRequest, prompt: str) -> list[dict]:
     mode = (request.video_mode or "t2v").lower()
     if mode == "auto" and os.getenv("VOLC_VIDEO_USE_KEYFRAMES", "false").lower() in {"1", "true", "yes"}:
         mode = "keyframes"
+    if mode == "reference":
+        # 官方：首帧 / 首尾帧 / 全模态参考生视频是三种互斥场景，不能混用。
+        # 参考图模式里夹带首尾帧会让整单被云端拒绝，所以这里只发参考图。
+        model = request.model_override or os.getenv("VOLC_VIDEO_MODEL") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128")
+        for reference in _reference_image_items(request, target_provider="ark", target_model=model):
+            content.append({"type": "image_url", "image_url": {"url": reference.url}, "role": "reference_image"})
+        return content
     if mode not in {"i2v", "keyframes"}:
         return content
 
