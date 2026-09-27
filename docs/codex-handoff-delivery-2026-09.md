@@ -1407,35 +1407,53 @@ MaaS 域名，该模型**是否已在该端点开通仍需实调确认**：id �
 （10）、`test_stage_models`、`test_media_transfer`、`test_provider_capabilities`、`test_job_center`、
 `test_shot_versions`、`test_v1_usability`、`test_anchor_review_gate` 全部保持绿。
 
-#### 14.19.1 无费用全量复核（**未达成两轮全绿**，原因与证据）
+#### 14.19.1 无费用全量复核（**两轮都跑成 54/55，同一项复现**）
 
-第一次全量复核（`run-20260927-151205`）**没跑绿**，如实记下来：
+两轮独立全量复核**都没跑绿**，而且失败得一模一样——所以这不是"偶发"，也**不能**用"机器慢"解释掉：
 
-| 项 | 值 |
-|---|---|
-| 选中 | 55 项（驱动器头部 `Checks selected : 55`；42 项各自数据目录） |
-| 通过 | 54 / 55 |
-| 断言 | **520 pass / 0 fail / 2 skip** |
-| 耗时 | 3018.3s（逐项 `seconds` 合计 2948.8s） |
-| 失败 | `test_p6d_assembly_browser.py`（exit 1，65.4s，自身只有 **3 pass / 0 fail**） |
+| 轮次 | 结果 | 断言 | 耗时 | 失败项 |
+|---|---|---|---|---|
+| `run-20260927-151205` | 54 / 55 | 520 pass / 0 fail / 2 skip | 3018.3s | `test_p6d_assembly_browser.py`（exit 1，65.4s，3 pass / 0 fail） |
+| `run-20260927-160343` | 54 / 55 | 520 pass / 0 fail / 2 skip | 3225.2s | **同一项**（exit 1，67.6s，3 pass / 0 fail） |
 
-失败原文（`logs/test_p6d_assembly_browser.py.log`）：
+两轮的**选中项数、通过项数、断言数、skip 数、失败项、以及失败项自己留下的 PASS 条数（3）全部一致**；
+两轮里真正跑到过的断言**一条都没有失败**。
+
+失败原文两轮逐字相同（`logs/test_p6d_assembly_browser.py.log`）：
 `page.waitForFunction: Timeout 10000ms exceeded. @ tools/p6d_assembly.cjs:105`。
 那一行等的是「保存成片配置后，前端自己重渲染出『已过期』」（`#assemblyFreshness` ←
 `render.js:1233` ← `project.assembly_stale`）。它是该检查的第 4 条断言，所以这一项只留下 3 条 PASS。
-后端 access log 显示 `PUT .../assembly-settings` 是 **200 OK**，之后只有一次
-`GET .../events?after_id=40`，再没有任何请求——请求发出去了，界面没跟上。
 
-**归因（逐项对比 `run-20260927-143107`）**：本轮 38 个可比项的中位耗时比是 **3.72×**，
-最高 9.1×（`test_live_safeguards.py` 11.0s → 99.7s）。也就是说**是整机级变慢，不是某一项爆炸**，
-而这条断言用的是写死的 10s 等待。同一个检查在前三轮分别是 22.8s / 21.0s / 20.4s，均 9 pass 全绿。
+**关键证据（两轮一致）**：把后端 access log 按完成序读出来，两轮都是
+`PUT /assembly-settings 200 OK` → `GET .../events?after_id=40`（那是 `attachEvents()` →
+`startEventStream()` 建的 EventSource）→ **之后再没有任何请求，尤其没有 `GET /api/projects/{id}`**。
+uvicorn 按完成序记录，PUT 之后才发出的 GET 必然排在它后面，所以**这一条与"慢"无关：慢只会让请求
+晚到，不会让请求消失**。（也别把"日志没有更多行"当证据——检查一失败驱动器就关后端，后面的行本来
+就写不进来；有意义的只是**紧邻 PUT 之后那段窗口里没有 GET**。）
 
-**结论**：这一 FAIL 与切片 4 **无关**——切片 4 没有触碰前端与成片链路（见本节改动面），
-且受影响面 9 个套件在本轮全部保持绿。它是**机器负载把固定 10s 的 UI 等待顶破**。
+**结论（比第一版更窄、也更硬）**：这不是"机器负载把固定 10s 顶破"。是「保存成片配置」这条路径上，
+**前端没有在 PUT 之后重新读过项目**，于是 `#assemblyFreshness` 停在旧值上，等多久都不会变。
+它与切片 4 **无关**（切片 4 没碰前端与成片链路；受影响面 9 个套件两轮全绿），但它是**真缺陷**，
+而且**现在已经稳定可复现**。
 
-**但因此 55 项 / 526 断言 目前只有"预期值"地位，没有实测**：那个 526 是推算出来的
-（520 + 该失败项被截断的 6 条断言 = 526，与 516 + 10 一致），不是任何一轮的全绿读数。
-在拿到两个同口径全绿轮次之前，不得把这个数当基线引用（本项目既有规矩：单次全绿不算证明）。
+**根因候选（尚未区分，需一次带探针的定向复现）**：`onSaveAssemblySettings`（`app.js:1143`）在 PUT 之后依次是
+`attachEvents()`（1148，日志里能看到它建的 EventSource）→ 写 `#jobMessage`（1149–1151）→ `await refreshProject()`（1152）。
+EventSource 发出来了、紧随其后的 GET 没发，只剩两种解释：
+
+1. 1149–1151 抛异常、被 1163 行的 `catch` 吞成 `showError`，于是 1152 根本没执行
+   （这条链上唯一可能抛的是 `el("jobMessage")` 取不到元素）；
+2. `refreshProject()` 执行了但**静默返回**——它的第一道守卫是
+   `isLiveSession(state, state.observerToken, state.project.id)`，而 `isLiveSession`（`jobObserver.js:49`）
+   要求 `ctx.observedProjectId === projectId`；两者不一致时它就是一个**不发请求、不报错的空操作**。
+
+两条都属于这个项目反复踩的"静默失效"：**`catch` + `showError` 与 `isLiveSession` 空转都不会在 access log
+里留痕**——又一次印证"失败信息常藏着"。另记一条与本案无关但同类的通道：`refreshProject` **没有
+"请求序号单调"守卫**，而 `startEventPolling()`（`app.js:1605`）每 4s 还会调它，两个刷新并发时晚发先到
+就会把旧快照盖回去；本案的日志并不能证明这一条，写在这里是为了下次别漏掉这个可能。
+
+**推算值的地位不变**：55 项 / 526 断言仍只是**预期值**（520 + 被截断的 6 条 = 526，与 516 + 10 一致）。
+526 现在有了两轮**同口径**的旁证（两轮都恰好是 520 pass / 0 fail / 2 skip），但两轮缺的是同一项，
+**没有一轮全绿**，所以不得当基线引用。
 
 **顺带记两条观测**（都不是本切片引入的）：
 
@@ -1443,24 +1461,17 @@ MaaS 域名，该模型**是否已在该端点开通仍需实调确认**：id �
   （`SAFE_DELETE_BULK_CONFIRM_REQUIRED` count 112 > 阈值 50），于是**每轮退出都会留下一个没清掉的锁文件**；
   下一轮按"残留锁过期接管"继续。不影响结果，但排错时别把它误读成"有第二个实例在跑"。
 - 历史 48 份 `no_cost_regression_report.json` 里，「verdict 是 FAIL 但 counts 显示 N pass / 0 fail」
-  这个形状反复出现在界面类检查上（`test_anchor_ui_browser` 5 次、`test_local_keyframe_browser` 2 次、
-  还有 `test_v1_demo_browser`、`test_adaptation_start_refresh`）。这类形状＝最后一步卡在固定 UI 超时，
-  与本轮同源；**这条应当被当成测试基础设施的欠账，而不是"偶发、忽略即可"**。
-- **一条尚未证实的假设**（写下来备查，别当结论）：`refreshProject`（`app.js:1740`）只校验会话 token 与
-  `projectId`，**没有"请求序号单调"的守卫**；而 `startEventPolling()`（`app.js:1605`）每 4s 跑一次
-  `pollJobEvents`，命中条件时会调 `refreshProject`——也就是说"保存后的主动刷新"与"轮询的刷新"是两个
-  可能并发的 GET，晚发出的那个若先返回，就会把 PUT 之前的快照覆盖回来。
-  **但日志给出的线索比这更直接**：`PUT` 之后**没有再出现过任何 `GET /api/projects/{id}`**
-  （只有一次 `events?after_id=40`）。按 uvicorn 的完成序记录，PUT 之后才发出的 GET 必然排在它后面，
-  所以这有两种读法——① 那次 `refreshProject()` 在 `isLiveSession` 前置判断上被挡掉、压根没发请求；
-  ② `api.saveAssemblySettings` 的响应没有按预期回来，导致后面的语句根本没执行。两种都指向
-  「**前端在 PUT 之后没有重新读过项目**」，也都需要一次带探针的定向复现才能定案。
-  注意别把"日志没有更多行"当成证据：检查失败后驱动器会立刻关掉后端，后面的行本来就写不进来；
-  有意义的只是**紧邻 PUT 之后那段窗口里没有 GET**。
-  本轮没有做复现实验，故仅作下一步的候选方向。
+  这个形状在界面类检查上反复出现（`test_anchor_ui_browser` 5 次、`test_local_keyframe_browser` 2 次、
+  还有 `test_v1_demo_browser`、`test_adaptation_start_refresh`）。本次是它第一次被**复现**下来，
+  也就从"偶发"改判为"**同一条静默失效路径的多个受害者**"。
 
-**仍未做（勿读成已验证）**：三家真实调用依旧未付费验收（见 14.18 末）。本切片补的是**护栏**，
-护栏不等于验证——它只保证"万一要花，先拦得住"，不保证"参考图真的维持了一致性"。
-另外，上述两轮同口径全绿的复核**也还没完成**，需在机器空闲窗口重跑。
+**仍未做（勿读成已验证）**：
+
+1. **p6d 这条保存路径要先修**（或至少先做一次带探针的定向复现把根因钉死）——不修它，
+   55 项 / 526 断言这个基线就拿不到，后面任何改动都验收不了。修法方向：保存成功后就地用 PUT 响应更新
+   `state.project.assembly_stale` 并重渲染（不依赖一次可能被静默跳过的回读），且让跳过的分支可见。
+2. 三家真实调用依旧未付费验收（见 14.18 末）。本切片补的是**护栏**，护栏不等于验证——
+   它只保证"万一要花，先拦得住"，不保证"参考图真的维持了一致性"。
+3. 修好之后，两轮同口径全绿仍要在**当前 HEAD** 上重跑才算数。
 
 
