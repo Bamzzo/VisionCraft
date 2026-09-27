@@ -142,6 +142,15 @@ def build_checks() -> list[Check]:
         "test_anchor_assets.py",
         "test_anchor_review_gate.py",
         "test_reference_generation.py",
+        # 项目读取路径的 ffprobe 预算：本机单次 ffprobe 约 1 秒，而
+        # get_assembly_status 会逐镜调用它，于是「读一次项目」要付「镜头数」秒。
+        # 这条用预算（而不是墙钟）钉住缓存与廉价存在性检查，防止再退回去。
+        "test_project_read_budget.py",
+        # 并发写不能让读变成 500：POST /run 用 BackgroundTasks 在响应之后才开始
+        # 跑改编流程，而前端同时在轮询同一个项目。SQLite 标称 5s 的 busy 等待在
+        # 这台机器上真实只撑到 ~7.4s，拥挤时越界就抛 database is locked 变成 500。
+        # 这条用「独立连接持写锁 10s」的确定性手法钉住等待上限，不靠偶发复现。
+        "test_sqlite_lock_tolerance.py",
         # 付费闸门必须覆盖全部视频 provider：此前它只挂在 MiniMax 分支里，
         # ark / dashscope 直接分发，等于最该拦的两家没拦。
         "test_video_provider_guard.py",

@@ -12,11 +12,31 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# SQLite 默认的 busy 超时是 5 秒（来自 Python sqlite3.connect 的隐式 timeout）。
+# 本项目里读与写会真的并发：`POST /api/projects/{id}/run` 用 BackgroundTasks
+# 在响应之后立刻开始写，而前端与验收脚本同时轮询 `GET /api/projects/{id}`。
+# 实测正常竞争窗口约 1.5s（output/repro_lock.txt），机器拥挤时更久。
+# 还要注意标称值不等于真实上限：标称 5000ms 在这台机器上的**真实放弃时刻约
+# 7.4s**（SQLite 每轮重试都要做一次文件锁系统调用，实测被放大到 ~1.5 倍；
+# 可复核的两处：output/lock_control_ab5000.txt 的 7.447s、
+# tools/test_sqlite_lock_tolerance.py 红轮的 7.3s）。
+# 同口径 A/B：5000 → 持锁 9s 的读返 500（output/lock_control_ab5000.txt）；
+#            20000 → 同条件返 200（output/lock_control_after2.txt）。
+# 等不到就抛 `database is locked`，在 HTTP 层直接变成 500 ——
+# 这就是 test_ui_workbench.py 在整轮回归里偶发失败的原因。
+#
+# 没有改用 WAL：仓库里有若干 `shutil.copy2(DB_PATH, backup)` 的备份路径
+# （cleanup_temp_project / restore_project_from_backup / retire_remote_video_task），
+# WAL 下这样复制主库文件会丢掉 -wal 里尚未 checkpoint 的数据。
+BUSY_TIMEOUT_MS = 20000
+
+
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     init_environment()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn

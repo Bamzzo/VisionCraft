@@ -823,21 +823,21 @@ def refresh_video_tasks_endpoint(project_id: str, background_tasks: BackgroundTa
 
 @app.get("/api/projects/{project_id}/assembly")
 def assembly_status_endpoint(project_id: str) -> dict:
-    if not get_project(project_id):
+    if not _project_exists(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     return get_assembly_status(project_id)
 
 
 @app.get("/api/projects/{project_id}/assembly-settings")
 def get_assembly_settings_endpoint(project_id: str) -> dict:
-    if not get_project(project_id):
+    if not _project_exists(project_id):
         raise HTTPException(status_code=404, detail="项目不存在。")
     return get_assembly_settings_payload(project_id)
 
 
 @app.put("/api/projects/{project_id}/assembly-settings")
 def put_assembly_settings_endpoint(project_id: str, payload: AssemblySettingsUpdate) -> dict:
-    if not get_project(project_id):
+    if not _project_exists(project_id):
         raise HTTPException(status_code=404, detail="项目不存在。")
     try:
         return save_assembly_settings(project_id, payload.model_dump())
@@ -847,7 +847,7 @@ def put_assembly_settings_endpoint(project_id: str, payload: AssemblySettingsUpd
 
 @app.post("/api/projects/{project_id}/assemble")
 def assemble_video_endpoint(project_id: str, background_tasks: BackgroundTasks) -> dict:
-    if not get_project(project_id):
+    if not _project_exists(project_id):
         raise HTTPException(status_code=404, detail="Project not found")
     try:
         plan = enqueue_project_assembly(project_id)

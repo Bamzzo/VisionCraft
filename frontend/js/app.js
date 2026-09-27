@@ -1145,21 +1145,36 @@ async function onSaveAssemblySettings() {
   try {
     const saved = await api.saveAssemblySettings(state.project.id, collectAssemblySettings());
     state.assemblyDraft = { projectId: state.project.id, dirty: false, values: saved.settings || collectAssemblySettings() };
+    // 保存响应本身带权威的 stale 与 settings，就地应用并立即重渲染。
+    // 不要把「界面是否显示已过期 / 表单是否显示已保存的取值」压在回读上：
+    // 回读要重新装配整个项目（本机实测可达数秒），一旦变慢或没发出去，
+    // 界面就停在旧状态，而且没有任何提示。
+    if (typeof saved.stale === "boolean") {
+      state.project.assembly_stale = saved.stale;
+      state.project.assembly = {
+        ...(state.project.assembly || {}),
+        stale: saved.stale,
+        settings: saved.settings || state.project.assembly?.settings,
+        settings_errors: saved.errors || [],
+        ok: saved.ok,
+      };
+    }
     attachEvents();
-    el("jobMessage").textContent = saved.stale
-      ? "成片配置已保存。当前成片已过期，需要重新合成。"
-      : "成片配置已保存。";
-    await refreshProject();
     state.statusNotice = saved.stale
       ? "成片配置已保存。当前成片已过期，需要重新合成。"
       : "成片配置已保存。";
     el("jobMessage").textContent = state.statusNotice;
+    renderAll();
     showSuccess("成片配置已保存");
     window.setTimeout(() => {
       if (state.statusNotice && state.statusNotice.includes("成片配置已保存")) {
         state.statusNotice = null;
       }
     }, 6000);
+    // 回读仍然做，但只作为后台校准：其余字段与素材列表靠它补齐。
+    refreshProject({ preserveObservation: true }).catch((error) => {
+      console.warn("保存成片配置后的回读失败", error);
+    });
   } catch (error) {
     showError(`保存成片配置失败：${error.message}`);
   }

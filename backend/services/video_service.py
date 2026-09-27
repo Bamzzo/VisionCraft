@@ -1277,7 +1277,37 @@ def enqueue_project_assembly(project_id: str) -> dict:
     }
 
 
+_PROBE_CACHE: dict[tuple[str, int, int], dict] = {}
+_PROBE_CACHE_LIMIT = 512
+
+
+def _probe_cache_key(path: Path) -> tuple[str, int, int] | None:
+    """以 (绝对路径, mtime 纳秒, 字节数) 为键：文件被换掉或改写就自动失效。"""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (str(path.resolve()), info.st_mtime_ns, info.st_size)
+
+
+def invalidate_probe_cache() -> None:
+    """测试与维护用：清空探测缓存。"""
+    _PROBE_CACHE.clear()
+
+
 def _ffprobe_json(path: Path) -> dict:
+    """读取媒体元数据。
+
+    本机实测单次 ffprobe 约 0.9–1.1 秒（进程启动 + 杀软扫描），而
+    `get_assembly_status` 会为每个就绪镜头调用一次；没有缓存时 4 镜项目
+    每次 `GET /api/projects/{id}` 要付约 4 秒。故按文件指纹缓存成功结果
+    （失败不缓存，保持"每次都会重试"的既有语义）。
+    """
+    key = _probe_cache_key(path)
+    if key is not None:
+        cached = _PROBE_CACHE.get(key)
+        if cached is not None:
+            return cached
     exe = _ffprobe_executable()
     if not exe:
         return {}
@@ -1290,9 +1320,14 @@ def _ffprobe_json(path: Path) -> dict:
     if completed.returncode != 0:
         return {}
     try:
-        return json.loads(completed.stdout or "{}")
+        payload = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError:
         return {}
+    if key is not None and payload:
+        if len(_PROBE_CACHE) >= _PROBE_CACHE_LIMIT:
+            _PROBE_CACHE.clear()
+        _PROBE_CACHE[key] = payload
+    return payload
 
 
 def _media_duration(path: Path) -> float:
