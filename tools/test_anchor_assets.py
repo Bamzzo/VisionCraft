@@ -285,6 +285,9 @@ def test_shot_reference_image_does_not_touch_anchor() -> None:
         confirm_storyboard(project_id)
         shots = get_project(project_id).get("shots") or []
         assert shots, "确认分镜后应有制作镜头"
+        # 分镜确认后停在视觉锚点门；锚点操作既不能推进、也不能倒退状态机。
+        gated_status = get_project(project_id)["status"]
+        assert gated_status == "awaiting_anchor_review", gated_status
 
         upload_project_asset(
             project_id, asset_role="reference_image", content=_png(), filename="ref.png", shot_id=shots[0]["id"]
@@ -301,8 +304,8 @@ def test_shot_reference_image_does_not_touch_anchor() -> None:
         assert draft is None or not (draft["reference_frame_path"] or "").endswith("anchor.png"), (
             "挂角色锚点不得改写镜头参考图"
         )
-        assert get_project(project_id)["status"] == "production_ready", "锚点操作不应改变项目状态机"
-        print("PASS: 镜头参考图与角色锚点互不串写，且锚点操作不推进状态机")
+        assert get_project(project_id)["status"] == gated_status, "锚点操作不应改变项目状态机"
+        print("PASS: 镜头参考图与角色锚点互不串写，且锚点操作不改变状态机")
     finally:
         _cleanup(project_id)
 

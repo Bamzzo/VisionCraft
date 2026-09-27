@@ -21,6 +21,7 @@ const {
 // 新建表单的进入与填写统一走共享模块：本地那一份用的是「点一次 + 一次性等待」，
 // 撞上 app.js 异步 init 的收尾就会静默失败（详见 ui_project_form.cjs 的说明）。
 const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
+const { passAnchorGate } = require("./anchor_gate_ui.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8040";
 const OUT = path.join(__dirname, "..", "output", "playwright", "live-2shot");
@@ -481,11 +482,13 @@ async function main() {
     await page.waitForSelector("[data-adapt='confirm-storyboard']", { timeout: 20000 });
     await screenshot(page, "04-storyboard-1440.png");
     await page.click("[data-adapt='confirm-storyboard']");
-    await waitProject(page, createdId, (item) => item.status === "production_ready", TEXT_WAIT_MS, "production");
+    // 分镜确认后停在视觉锚点门（第三道门）。本次走查不挂锚点，走两次点击的显式跳过——
+    // 跳过只点一次不会放行，这正是"重动作"的约定。
+    await passAnchorGate(page, createdId, { timeout: TEXT_WAIT_MS });
     proj = await apiGet(page, `/api/projects/${createdId}`);
     if ((proj.shots || []).length !== 2) fail(`镜头数不是 2：${(proj.shots || []).length}`);
     if ((proj.live_text_call_count || 0) > 3) fail(`文本调用超过 3：${proj.live_text_call_count}`);
-    pass("分镜确认后进入 production_ready，共 2 镜");
+    pass("分镜确认后过视觉锚点门进入 production_ready，共 2 镜");
     setStage("confirm_storyboard", "PASS", { shots: 2, live_text_call_count: proj.live_text_call_count });
 
     await prepareShotI2V(page, createdId, 0);

@@ -7,6 +7,7 @@ const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
 const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
+const { passAnchorGate } = require("./anchor_gate_ui.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright", "mock-smoke");
@@ -227,8 +228,10 @@ async function main() {
     await openStage(page, "storyboard");
     await page.waitForSelector("[data-adapt='confirm-storyboard']", { timeout: 20000 });
     await page.click("[data-adapt='confirm-storyboard']");
-    await waitProject(page, createdId, (item) => item.status === "production_ready", 40000);
-    pass("继续执行后进入 production_ready");
+    // 分镜确认不再直接落 production_ready：先停在视觉锚点门口。这个夹具没挂锚点，
+    // 走两次点击的显式跳过；门本身的行为由 test_anchor_review_gate.py 单独覆盖。
+    await passAnchorGate(page, createdId);
+    pass("过视觉锚点门后进入 production_ready");
 
     await openStage(page, "keyframes");
     const visionText = await page.locator('section[data-model-stage="vision_review"]').innerText().catch(() => "");

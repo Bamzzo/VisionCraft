@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 from backend.config import PROJECTS_DIR, init_environment  # noqa: E402
 from backend.database import connect, init_db, utc_now  # noqa: E402
 from backend.services.adaptation_service import (  # noqa: E402
+    confirm_anchors,
     confirm_bible,
     confirm_scope,
     confirm_storyboard,
@@ -228,6 +229,9 @@ def _run_adaptation(project_id: str) -> None:
     confirm_scope(project_id, options[0]["id"])
     confirm_bible(project_id)
     confirm_storyboard(project_id)
+    # 样本的语义是「闭环/可对比/可恢复」，必须落在可制作状态；分镜确认现在只把它带到
+    # 视觉锚点门口。演示时这道门本身是一个展示点，可以在录屏里现场走过。
+    confirm_anchors(project_id, allow_without_anchors=True)
 
 
 def _shots(project_id: str) -> list[dict]:

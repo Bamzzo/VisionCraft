@@ -240,7 +240,29 @@ async function main() {
     pass("确认 Bible 后继续，分镜审核暂停");
 
     await clickSyncedResume(page, projectA.id, "storyboard_review");
+    proj = await waitProject(page, projectA.id, (item) => item.status === "awaiting_anchor_review");
+    await page.waitForFunction(
+      () => /等待视觉锚点确认/.test(document.querySelector("#stageGateBanner")?.textContent || ""),
+      null,
+      { timeout: 15000 }
+    );
+    // 门内没有锚点时「继续执行」必须是禁用态：按钮可用态与守卫同源，
+    // 否则会出现「能点但必被拒」的静默失效窗口（本项目反复踩到的那一类）。
+    if (await page.locator("#resumeWorkflowBtn").isEnabled()) {
+      throw new Error("未挂锚点时「继续执行」不应可用");
+    }
+    pass("确认分镜后停在视觉锚点门，未挂锚点时继续执行不可用");
+
+    // 跳过一致性机制是重动作：一次点击只武装，两次才放行。
+    const anchorSkipBtn = page.locator('#stageGateBanner [data-flow="anchor-confirm-skip"]');
+    await anchorSkipBtn.click();
+    await page.waitForTimeout(600);
+    if ((await apiGet(page, `/api/projects/${projectA.id}`)).status !== "awaiting_anchor_review") {
+      throw new Error("跳过锚点门只点一次不应放行");
+    }
+    await anchorSkipBtn.click();
     proj = await waitProject(page, projectA.id, (item) => item.status === "production_ready");
+    pass("跳过锚点门需要二次确认，二次点击后进入 production_ready");
     // 同上：先等界面追上后端再读按钮状态。production_ready 时 can_resume 为假，
     // 但界面若还停在分镜审核上，这个按钮仍是可用的，断言会因陈旧状态而误报。
     await waitSummaryLabel(page, "执行状态", "可进入制作");

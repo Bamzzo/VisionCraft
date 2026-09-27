@@ -11,12 +11,19 @@
  *  3. 刷新页面后锚点仍在（证明落在库里，而不是只活在内存）；
  *  4. 解除锚点时未选中任何镜头也能生效——这条专门盯住"必须先选镜头"的守卫，
  *     锚点属于角色/场景，若把分支写在守卫之后，点击会被静默吞掉；
- *  5. 解除后素材文件仍留在项目里（只清外键）。
+ *  5. 解除后素材文件仍留在项目里（只清外键）；
+ *  6. 确认分镜后停在视觉锚点审核门：未挂锚点时放行按钮不可用、给出跳过入口，
+ *     且横幅写明「参考图尚未参与生成」的边界（不暗示已有一致性机制）；
+ *  7. 跳过一致性机制需要二次点击，只点一次仍停在门口；
+ *  8. 就绪后跳过入口与提示一并撤掉（不留「让你点一个不存在的按钮」的悬空指令）；
+ *  9. 锚点集合变化后此前那次武装失效，不会被 0→1→0 的就绪度回摆绕过；
+ * 10. 挂上锚点后门横幅进度更新、放行按钮变可用，点击后进入 production_ready。
  */
 const path = require("path");
 const zlib = require("zlib");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
+const { waitStatus } = require("./anchor_gate_ui.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -133,6 +140,14 @@ async function shot(page, name) {
   await block.screenshot({ path: path.join(OUT, `${name}-block.png`) }).catch(() => {});
 }
 
+/** 门横幅在固定外壳顶部，单独截一张即可（同样不能用 fullPage）。 */
+async function shotBanner(page, name) {
+  const banner = page.locator("#stageGateBanner");
+  await banner.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(150);
+  await banner.screenshot({ path: path.join(OUT, `${name}.png`) });
+}
+
 async function anchorState(page) {
   return page.evaluate(() => {
     const block = document.querySelector("#stageWorkspace .anchor-block");
@@ -246,6 +261,96 @@ async function main() {
     }
     await shot(page, "anchor-03-cleared");
     pass("未选中镜头也能解除锚点（守卫顺序正确），且素材记录未被删除");
+
+    /* ---------- 视觉锚点审核门（第三道门）：界面路径 + 真锚点放行 ---------- */
+    // 切片 2 的正题：确认分镜不再等于「可以花钱」，必须先过这道门。
+    await api(page, "post", `/api/projects/${project.id}/adaptation/storyboard/confirm`);
+    await waitFor(
+      page,
+      () => /等待视觉锚点确认/.test(document.querySelector("#stageGateBanner")?.innerText || ""),
+      "锚点门横幅出现",
+    );
+    let banner = await page.locator("#stageGateBanner").innerText();
+    if (!/已挂 0 \/ 共 \d+/.test(banner)) throw new Error(`门横幅未显示锚点进度：${banner}`);
+    // 文案必须写明「参考图尚未参与生成」这条边界。挂锚点的入口现在是真的，但生成
+    // 链路只吃视觉提示词、并不读 characters/scenes.asset_id；横幅若暗示挂了就一致，
+    // 那是在承诺一个不存在的机制。这条断言把边界钉在界面上：将来真接进生成时，
+    // 必须先改这句、也就必须同时改这条断言。
+    if (!/尚未参与生成/.test(banner)) {
+      throw new Error(`门横幅必须写明「参考图尚未参与生成」的边界，实际：${banner}`);
+    }
+    pass("门横幅写明「参考图尚未参与生成」的边界，不暗示已有一致性机制");
+    const passBtn = page.locator('#stageGateBanner [data-flow="anchor-confirm"]');
+    const skipBtn = page.locator('#stageGateBanner [data-flow="anchor-confirm-skip"]');
+    if (await passBtn.isEnabled()) throw new Error("未挂锚点时「确认锚点并开始制作」不应可用");
+    await shotBanner(page, "anchor-04-gate-blocked-banner");
+    pass("分镜确认后停在锚点门：未挂锚点时放行按钮不可用，并给出跳过入口");
+
+    // 跳过一致性机制是重动作：一次点击只武装，两次才放行。这里只验证「第一次不放行」。
+    await skipBtn.click();
+    await page.waitForTimeout(600);
+    const afterOneClick = await api(page, "get", `/api/projects/${project.id}`);
+    if (afterOneClick.status !== "awaiting_anchor_review") {
+      throw new Error(`跳过只点一次不应放行，实际：${afterOneClick.status}`);
+    }
+    banner = await page.locator("#stageGateBanner").innerText();
+    if (!/确认跳过/.test(banner)) throw new Error(`第一次点击后按钮应变为确认态：${banner}`);
+    pass("跳过一致性机制需要二次确认：只点一次仍停在门口");
+
+    // 挂上真锚点后放行按钮应当可用——就绪度与守卫同源。
+    await openBibleStage(page);
+    await page
+      .locator('#stageWorkspace .anchor-block [data-asset-upload="character_anchor"]')
+      .first()
+      .setInputFiles({ name: "anchor.png", mimeType: "image/png", buffer: pngBytes() });
+    await waitFor(
+      page,
+      () => /已挂 1 \/ 共 \d+/.test(document.querySelector("#stageGateBanner")?.innerText || ""),
+      "挂上锚点后门横幅显示已挂 1",
+    );
+    if (!(await passBtn.isEnabled())) throw new Error("已挂锚点后放行按钮仍不可用");
+    await shotBanner(page, "anchor-05-gate-ready-banner");
+    pass("挂上锚点后门横幅进度更新，放行按钮变为可用");
+
+    // 武装过的跳过入口在就绪后必须连同提示一起撤掉。否则横幅会写着「再点一次
+    // 『确认跳过』即会放行」，而那个按钮已经不在横幅里——界面上不存在可执行该指令
+    // 的对象，用户只能干瞪眼。这条断言就是为这个悬空指令立的。
+    banner = await page.locator("#stageGateBanner").innerText();
+    if (/再点一次「确认跳过」/.test(banner)) throw new Error(`已就绪后仍残留跳过提示：${banner}`);
+    if (await skipBtn.count()) throw new Error("已就绪后不应再出现跳过入口");
+    pass("就绪后跳过入口与提示一并撤掉，不再出现悬空指令");
+
+    // 就绪度变过，之前那次武装必须失效，重新从「一次点击不成事」开始。
+    // 只按就绪度指纹比对不够：0 → 1 → 0 会回到同一个指纹，失效的武装会被重新算成
+    // 有效，"先武装、去挂锚点、再摘掉、回来一次点击放行"就能绕过二次确认。
+    await openBibleStage(page);
+    await page.locator("#stageWorkspace .anchor-block [data-anchor-clear]").first().click();
+    await waitFor(
+      page,
+      () => /已挂 0 \/ 共 \d+/.test(document.querySelector("#stageGateBanner")?.innerText || ""),
+      "解除锚点后门横幅回到已挂 0",
+    );
+    const skipLabel = await page.locator('#stageGateBanner [data-flow="anchor-confirm-skip"]').innerText();
+    if (/确认跳过/.test(skipLabel)) {
+      throw new Error(`就绪度变化后武装应失效（按钮应回到未武装文案），实际：${skipLabel}`);
+    }
+    pass("就绪度变化后武装自动失效，二次确认不会被跨状态绕过");
+
+    // 重新挂回去，让这道门能正常放行。
+    await page
+      .locator('#stageWorkspace .anchor-block [data-asset-upload="character_anchor"]')
+      .first()
+      .setInputFiles({ name: "anchor.png", mimeType: "image/png", buffer: pngBytes() });
+    await waitFor(
+      page,
+      () => /已挂 1 \/ 共 \d+/.test(document.querySelector("#stageGateBanner")?.innerText || ""),
+      "重新挂上锚点后横幅显示已挂 1",
+    );
+    if (!(await passBtn.isEnabled())) throw new Error("重新挂上锚点后放行按钮仍不可用");
+
+    await passBtn.click();
+    await waitStatus(page, project.id, "production_ready");
+    pass("点「确认锚点并开始制作」后进入 production_ready，第三道门走通");
 
     console.log("ALL ANCHOR UI TESTS PASSED");
   } finally {

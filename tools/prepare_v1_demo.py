@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from backend.config import PROJECTS_DIR, init_environment
 from backend.database import connect, init_db, utc_now
 from backend.services.adaptation_service import (
+    confirm_anchors,
     confirm_bible,
     confirm_scope,
     confirm_storyboard,
@@ -133,6 +134,8 @@ def _run_adaptation() -> None:
     confirm_scope(DEMO_ID, options[0]["id"])
     confirm_bible(DEMO_ID)
     confirm_storyboard(DEMO_ID)
+    # 演示样本要落在可制作状态；分镜确认现在只到视觉锚点门口，这里显式过门。
+    confirm_anchors(DEMO_ID, allow_without_anchors=True)
 
 
 def _attach_media() -> dict:

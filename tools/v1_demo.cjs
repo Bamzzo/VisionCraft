@@ -7,6 +7,7 @@ const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
 const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
+const { passAnchorGate, waitStatus } = require("./anchor_gate_ui.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -139,6 +140,11 @@ async function main() {
     await page.screenshot({ path: path.join(OUT, "v1-storyboard-1440.png"), fullPage: true });
     pass("分镜草案可见");
     await page.click("[data-adapt='confirm-storyboard']");
+    // 分镜确认后停在视觉锚点审核门口——这是 Phase 2 承诺的第三道门，走查里必须有它。
+    await waitStatus(page, createdId, "awaiting_anchor_review");
+    await page.screenshot({ path: path.join(OUT, "v1-anchor-gate-1440.png"), fullPage: true });
+    pass("确认分镜后停在视觉锚点审核门");
+    await passAnchorGate(page, createdId);
     await page.waitForFunction(
       () => (document.querySelector("#summaryFields")?.innerText || "").includes("production_ready"),
       null,

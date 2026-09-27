@@ -22,6 +22,8 @@ from backend.database import connect, init_db, utc_now
 from backend.main import app
 from backend.services.adaptation_service import (
     AdaptationError,
+    anchor_review_readiness,
+    confirm_anchors,
     confirm_bible,
     confirm_scope,
     confirm_storyboard,
@@ -156,8 +158,21 @@ def test_confirm_and_resume_idempotent() -> None:
         confirm_bible(project_id)
         assert get_project(project_id)["status"] == "awaiting_storyboard_review"
         confirm_storyboard(project_id)
-        assert get_project(project_id)["status"] == "production_ready"
+        # 分镜确认后先停在视觉锚点门（第三道门），门内重复确认分镜同样幂等。
+        assert get_project(project_id)["status"] == "awaiting_anchor_review"
         confirm_storyboard(project_id)
+        assert get_project(project_id)["status"] == "awaiting_anchor_review"
+        # 有角色/场景却没挂锚点时，通用「继续执行」必须被守卫拒绝，而不是悄悄放行。
+        if anchor_review_readiness(project_id)["required"]:
+            try:
+                resume_project(project_id)
+                raise AssertionError("未挂锚点时不应能从视觉锚点门继续")
+            except CheckpointError as exc:
+                assert exc.code == "ANCHOR_NOT_ATTACHED", exc.code
+        # 显式跳过放行；过门后重复确认锚点必须幂等。
+        confirm_anchors(project_id, allow_without_anchors=True)
+        assert get_project(project_id)["status"] == "production_ready"
+        confirm_anchors(project_id, allow_without_anchors=True)
         assert get_project(project_id)["status"] == "production_ready"
         with connect() as conn:
             shots = conn.execute("SELECT COUNT(*) AS n FROM shots WHERE project_id = ?", (project_id,)).fetchone()["n"]

@@ -137,6 +137,7 @@ def insert_plain_fixture(data_dir: Path) -> dict:
     os.environ["VISIONCRAFT_DATA_DIR"] = str(data_dir)
     from backend.database import connect, init_db, utc_now
     from backend.services.adaptation_service import (
+        confirm_anchors,
         confirm_bible,
         confirm_scope,
         confirm_storyboard,
@@ -168,6 +169,9 @@ def insert_plain_fixture(data_dir: Path) -> dict:
     confirm_scope(PLAIN_ID, options[0]["id"])
     confirm_bible(PLAIN_ID)
     confirm_storyboard(PLAIN_ID)
+    # 这个夹具的语义是「就绪项目」：多个用例直接拿它做批量生成/成片。分镜确认现在
+    # 只把它带到视觉锚点门口，所以必须显式过门，否则它的含义会悄悄变成「停在门口」。
+    confirm_anchors(PLAIN_ID, allow_without_anchors=True)
     shots = len(get_project(PLAIN_ID).get("shots") or [])
     return {"created": True, "project_id": PLAIN_ID, "title": PLAIN_TITLE, "shots": shots}
 

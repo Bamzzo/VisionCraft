@@ -15,6 +15,7 @@ from backend.config import PROJECTS_DIR, init_environment
 from backend.database import connect, init_db, utc_now
 from backend.services.adaptation_service import (
     AdaptationError,
+    confirm_anchors,
     confirm_bible,
     confirm_scope,
     confirm_storyboard,
@@ -270,13 +271,22 @@ def test_confirm_storyboard_and_refresh_state() -> None:
         confirm_scope(project_id, option["id"])
         confirm_bible(project_id)
         confirm_storyboard(project_id)
+        # 确认分镜不再直接落 production_ready：先停在视觉锚点审核门（Phase 2 的第三道门）。
+        gated = get_project(project_id)
+        assert gated["status"] == "awaiting_anchor_review", gated["status"]
+        checkpoint = gated.get("checkpoint") or {}
+        assert checkpoint.get("node") == "anchor_review", checkpoint
+        assert checkpoint.get("status") == "paused", checkpoint
+        assert gated["shots"], "门的拦截对象是花钱而不是建镜头：制作镜头此时就应存在"
+        # 夹具没有挂锚点，用显式跳过放行（挂载路径由 test_anchor_assets.py 覆盖）。
+        confirm_anchors(project_id, allow_without_anchors=True)
         project = get_project(project_id)
         assert project["status"] == "production_ready"
         assert project["shots"]
         assert project["checkpoint"] is None or project["checkpoint"].get("status") != "paused"
         assert project["review_records"]
         assert project["selected_option_id"] == option["id"]
-        print("PASS: 确认分镜后进入制作，刷新读取仍保留审核状态/历史")
+        print("PASS: 确认分镜后停在锚点门，过门后进入制作，刷新读取仍保留审核状态/历史")
     finally:
         _cleanup(project_id)
 
@@ -326,13 +336,20 @@ def test_http_smoke() -> None:
         assert confirmed.status_code == 200, confirmed.text
         board = client.post(f"/api/projects/{project_id}/adaptation/storyboard/confirm")
         assert board.status_code == 200, board.text
+        gated = client.get(f"/api/projects/{project_id}")
+        assert gated.status_code == 200
+        assert gated.json()["status"] == "awaiting_anchor_review", gated.json()["status"]
+        passed = client.post(
+            f"/api/projects/{project_id}/anchors/confirm", json={"allow_without_anchors": True}
+        )
+        assert passed.status_code == 200, passed.text
         refreshed = client.get(f"/api/projects/{project_id}")
         assert refreshed.status_code == 200
         body = refreshed.json()
         assert body["status"] == "production_ready"
         assert body["story_bible"]["logline"] == "HTTP 保存的 logline"
         assert body["review_records"]
-        print("PASS: HTTP 冒烟 创建→方案→范围→Bible→分镜→刷新状态")
+        print("PASS: HTTP 冒烟 创建→方案→范围→Bible→分镜→锚点门→刷新状态")
     finally:
         _cleanup(project_id)
 

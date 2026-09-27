@@ -6,6 +6,7 @@ const path = require("path");
 const playwright = require(require.resolve("playwright", { paths: [path.join(__dirname, "..", ".playwright-cli", "node_modules")] }));
 const { chromium } = playwright;
 const { openCreateForm, fillProjectForm } = require("./ui_project_form.cjs");
+const { passAnchorGate } = require("./anchor_gate_ui.cjs");
 
 const BASE = process.env.VISIONCRAFT_BASE_URL || "http://127.0.0.1:8000";
 const OUT = path.join(__dirname, "..", "output", "playwright");
@@ -113,6 +114,9 @@ async function main() {
     await openStage(page, "storyboard");
     await waitAdapt(page, "confirm-storyboard", 30000);
     await page.click("[data-adapt='confirm-storyboard']");
+    // 分镜确认后先停在视觉锚点门。本用例只关心首帧登记，不关心锚点，
+    // 走两次点击的显式跳过（门本身的行为由 test_anchor_review_gate.py 覆盖）。
+    await passAnchorGate(page, createdId);
     await page.waitForFunction(
       () => (document.querySelector("#summaryFields")?.innerText || "").includes("production_ready"),
       null,
