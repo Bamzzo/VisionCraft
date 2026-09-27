@@ -479,8 +479,9 @@ node tools\test_live_2shot_wait.js
 
 - 本文：`docs/codex-handoff-delivery-2026-09.md`，本次新建，**已于 2026-09-20 纳入版本控制并推送**（此前"保持未跟踪"的约定作废，见 14.8）。
 - 业务代码：截至切片 2 收口，三个代码提交为 `518d63e`（门本体）、`9f4d521`（验收与调用点）、
-  `73332da`（驱动器守卫）。此前 2026-09-20 的两个提交是 `3368a60`（锚点数据通路）与
-  `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——它一天里变了四次，写死了必然过期。
+  `73332da`（驱动器守卫），随后两个文档提交是 `bc8b5f8`、`2825d14`。此前 2026-09-20 的两个
+  提交是 `3368a60`（锚点数据通路）与 `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——
+  它一天里变了六次，写死了必然过期。
 - **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16/14.17 后今为 **53 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
 - **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
 - **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
@@ -1106,6 +1107,8 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 | `run-20260920-200211` | 51/51 | 460 pass / 0 fail / 2 skip | 689.8s |
 
 **两轮口径完全一致（同为 51 项 / 460 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：上一轮基线 442 + 13（后端）+ 5（界面）= 460，与实测吻合——说明新增检查一条都没被静默跳过。2 条 skip 与 14.14 / 14.15 同口径，不是新增。
+
+> 以上是 2026-09-20 当时的测量，**已过期**：现行基线是 **53 项 / 506 断言**（见 14.17.8）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
 
 `tools/run_no_cost_regression.py` 的接入点是三处：python 组在 `test_p6_demo_samples.py` 后插入 `test_anchor_assets.py`；browser 组在 `test_local_keyframe_browser.py` 后插入 `test_anchor_ui_browser.py`；`SERVER_DEPENDENT` 加入后者（**6 项 → 7 项**）。前者用 `fastapi.testclient.TestClient` 在进程内自起服务，因此**不进** `SERVER_DEPENDENT`。
 
