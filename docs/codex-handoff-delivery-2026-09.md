@@ -484,7 +484,7 @@ node tools\test_live_2shot_wait.js
   它一天里变了六次，写死了必然过期。
 - **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16～14.19.3 后今为 **57 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
 - **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
-- **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
+- **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图当时仍未接进生成链路**，**已由切片 3 补上**（见 14.18）。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
 - `.env`、密钥、`backend/data/`、`output/` 和临时媒体不属于交付提交范围。`tmp/` 已加入 `.gitignore`——其中**只有诊断驱动器脚本**（`_*.py` / `_*.cjs`）需要保留，因为下次可能要重跑；数据目录副本、播种副本、运行日志与截图都是派生物，可随时清理。2026-09-20 已按此规则清掉 44 项派生物（26.6 MB → 74.6 KB），驱动器脚本一个未动。
 
@@ -1115,9 +1115,9 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 
 #### 14.16.6 仍未做（切片 2 范围，勿读成已闭环）
 
-- **锚点试生成审核门还没有。** 本切片只让锚点"能挂上去"，**没有让它成为花钱前的关卡**：现在确认分镜后依然可以直接批量生成。
+- **锚点试生成审核门还没有。** 本切片只让锚点"能挂上去"，**没有让它成为花钱前的关卡**：现在确认分镜后依然可以直接批量生成。（**已由切片 2 补上**，见 14.17——本条里的"现在"指 2026-09-20。）
 - 切片 2 的爆炸半径已探明：`production_ready` 被 `workflow_control_service.py:192`、`workflowViewModel.js:173`、`render.js` 及 `test_adaptation_workflow.py` / `test_medium_text_adaptation.py` / `local_keyframe_ui.cjs` / `test_p6d_assembly.py` / `test_p6c_real_assembly_browser.py` 等多处断言，**必须先改测试再改实现**。
-- 锚点与镜头参考图是两个作用域，切片 2 需要决定"镜头缺参考图时是否自动取用锚点"，本切片只提供数据，未接自动取用。
+- 锚点与镜头参考图是两个作用域，切片 2 需要决定"镜头缺参考图时是否自动取用锚点"，本切片只提供数据，未接自动取用。（**已由切片 3 回答**，见 14.18：不二选一——参考图模式下锚点图与镜头参考图按「镜头参考图 → 角色 → 场景」顺序并列发出；**首帧位置仍只认 `shot_versions.first_frame_path`**，"缺首帧时自动取用锚点"至今未实现。）
 
 ---
 
@@ -1234,8 +1234,8 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 
 #### 14.17.6 仍未做（切片 3，勿读成已闭环）
 
-- **参考图没接进生成链路**（见 14.17.4）。门目前只保证"决策发生过"。
-- **镜头缺参考图时是否自动取用锚点**：仍未决定、未实现。
+- **参考图没接进生成链路**（见 14.17.4）。门目前只保证"决策发生过"。（**已由切片 3 补上**，见 14.18。）
+- **镜头缺参考图时是否自动取用锚点**：仍未决定、未实现。（**已由切片 3 回答**：参考图模式下两者并列发出、不二选一；仍未实现的是**首帧**的自动兜底。）
 - mock 规划的实体抽取有噪声：演示样本里会出现 `他想`、`转折空间` 这类名字（
   `adaptation_planner.plan_story_bible` 的启发式 + 兜底占位词）。真实 LLM 规划不会这样，
   但**基于 mock 的截图/界面文案会带上它们**，讲的时候要如实说是 mock 数据。
