@@ -489,6 +489,6 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 .venv\Scripts\python.exe tools\run_no_cost_regression.py
 ```
 
-串行执行 **55 项**静态检查、Node 单测、服务契约测试与浏览器测试。**每一项用例都拿到自己的数据目录**——驱动器先把历史夹具种成一个模板，再为每条用例拷贝一份，因此用例之间不会观察到彼此的残留状态；三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
+串行执行 **57 项**静态检查、Node 单测、服务契约测试与浏览器测试。**每一项用例都拿到自己的数据目录**——驱动器先把历史夹具种成一个模板，再为每条用例拷贝一份，因此用例之间不会观察到彼此的残留状态；三个授权开关统一置 0。结果写入 `output/playwright/stageC/no_cost_regression_report.json`。可加 `--group static|node|python|browser` 或 `--only <关键字>` 只跑其中一部分。
 
 驱动器只认**它自己启动的后端**：以子进程日志里指向本轮端口的那行启动信息为准，端口被占用时换端口重试，绝不复用"本来就在那个端口上"的服务。同时它带一把单实例锁（`output/playwright/stageC/runner.lock`），已在跑时会拒绝再起一轮并打印持有者 pid——两个全量回归并行会把结论搅成无法归因的偶发失败，所以这一点是硬约束而不是建议。

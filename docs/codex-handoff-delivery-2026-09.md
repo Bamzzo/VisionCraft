@@ -482,7 +482,7 @@ node tools\test_live_2shot_wait.js
   `73332da`（驱动器守卫），随后两个文档提交是 `bc8b5f8`、`2825d14`。此前 2026-09-20 的两个
   提交是 `3368a60`（锚点数据通路）与 `a7b13c6`（该切片的验收）。不在这里写"当前 HEAD"——
   它一天里变了六次，写死了必然过期。
-- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16～14.19 后今为 **55 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
+- **阶段 C 收尾**：见 14.11～14.13。新增 `tools/run_no_cost_regression.py`（无费用回归驱动器，当时 48 项，经 14.16～14.19.3 后今为 **57 项**）、`tools/seed_regression_fixtures.py`（离线夹具）、`docs/stage-c-evidence-archive-2026-09-20.md`（成片证据与费用归档）；修改面覆盖后端诊断 payload、前端 `flowBusy` 与受阻原因渲染、8 个验收脚本的可观测性与缺陷修复。
 - **角色/场景视觉锚点数据通路**（2026-09-20，功能切片 1）：见 14.16。新增 `backend/services/anchor_service.py`、`tools/test_anchor_assets.py`（13 断言）、`tools/anchor_ui.cjs` + `tools/test_anchor_ui_browser.py`（12 断言）；`characters.asset_id` / `scenes.asset_id` 从"字段在、无人写"变为 Bible 阶段可挂载/替换/解除。审核门当时未兑现，**已由切片 2 补上**。
 - **视觉锚点审核门**（2026-09-27，功能切片 2）：见 14.17。三道人工确认关卡补齐。新增 `tools/test_anchor_review_gate.py`（16 断言）、`tools/anchor_gate_ui.cjs`（浏览器过门辅助）、`tools/test_runner_guards.py`（驱动器自检 20 断言）；`checkpoint_service` 增 `anchor_review` 节点、`adaptation_service` 增 `anchor_review_readiness` / `confirm_anchors` / `ANCHOR_REVIEW_PENDING` 拦截，`main.py` 增 `GET .../anchors/review` 与 `POST .../anchors/confirm`，前端门横幅含二次确认跳过。**参考图仍未接进生成链路**（切片 3）。
 - **P6 演示打包（零费用部分）**：见 14.15。新增 `tools/prepare_p6_demo_samples.py`、`tools/test_p6_demo_samples.py`、`tools/make_p6_compare_sheet.py` 与 `docs/v1-demo-script.md`；三个固定样本 `p6demo_story` / `p6demo_compare` / `p6demo_recovery` 已建在工作库中。
@@ -1109,8 +1109,7 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
 **两轮口径完全一致（同为 51 项 / 460 断言）且都全绿**，这才是可引用的事实。断言数可交叉验证：上一轮基线 442 + 13（后端）+ 5（界面）= 460，与实测吻合——说明新增检查一条都没被静默跳过。2 条 skip 与 14.14 / 14.15 同口径，不是新增。
 
 > 以上是 2026-09-20 当时的测量，**已过期**：**最近一次拿到两轮同口径全绿**的基线是
-> **54 项 / 516 断言**（见 14.18.1）。切片 4 之后**预期**是 55 项 / 526 断言，但两轮全绿尚未达成
-> （见 14.19.1）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
+> **57 项 / 541 断言**（见 14.19.4）。这里保留原数字，因为它们是被取代的取证记录，不是表述错误。
 
 `tools/run_no_cost_regression.py` 的接入点是三处：python 组在 `test_p6_demo_samples.py` 后插入 `test_anchor_assets.py`；browser 组在 `test_local_keyframe_browser.py` 后插入 `test_anchor_ui_browser.py`；`SERVER_DEPENDENT` 加入后者（**6 项 → 7 项**）。前者用 `fastapi.testclient.TestClient` 在进程内自起服务，因此**不进** `SERVER_DEPENDENT`。
 
@@ -1289,8 +1288,8 @@ run-20260920-155904/ : 48/48   401 pass / 0 fail / 2 skip   567.2s
   该子步骤没有可切换对象。
 
 > **本节数字（53 项 / 506 断言）已被 14.18.1 取代**：切片 3 加入 `test_reference_generation.py` 后
-> 为 **54 项 / 516 断言**（这是最近一次两轮同口径全绿的基线）。切片 4 之后**预期** 55 项 / 526 断言，
-> 但两轮全绿尚未达成，见 14.19.1。本节保留原样，因为它是当时的取证记录，不是表述错误。
+> 为 54 项 / 516 断言；再经切片 4 与本次两处修复后，**当前两轮同口径全绿的基线是 57 项 / 541 断言**
+> （见 14.19.4）。本节保留原样，因为它是当时的取证记录，不是表述错误。
 
 ### 14.18 切片 3：参考图接进生成链路（2026-09-27）
 
@@ -1424,36 +1423,85 @@ MaaS 域名，该模型**是否已在该端点开通仍需实调确认**：id �
 那一行等的是「保存成片配置后，前端自己重渲染出『已过期』」（`#assemblyFreshness` ←
 `render.js:1233` ← `project.assembly_stale`）。它是该检查的第 4 条断言，所以这一项只留下 3 条 PASS。
 
-**关键证据（两轮一致）**：把后端 access log 按完成序读出来，两轮都是
+> ⚠️ **本节的结论已被下面 14.19.2 推翻，此处保留仅作过程记录——它是这份文档里一个被自己的误读带偏的判例。**
+> 当时的关键证据（「access log 紧邻 PUT 之后没有 GET」）**不成立**：那个 GET 确实发出去了，
+> 只是在检查失败、驱动器关掉后端之前还没返回，所以一行日志都没落下（uvicorn 只在响应写完时记行）。
+> 「慢只会让请求晚到，不会让请求消失」这句话本身没错，但**这里的问题恰恰就是「晚到」**。
+
+**当时的证据（两轮一致，但被误读）**：把后端 access log 按完成序读出来，两轮都是
 `PUT /assembly-settings 200 OK` → `GET .../events?after_id=40`（那是 `attachEvents()` →
-`startEventStream()` 建的 EventSource）→ **之后再没有任何请求，尤其没有 `GET /api/projects/{id}`**。
-uvicorn 按完成序记录，PUT 之后才发出的 GET 必然排在它后面，所以**这一条与"慢"无关：慢只会让请求
-晚到，不会让请求消失**。（也别把"日志没有更多行"当证据——检查一失败驱动器就关后端，后面的行本来
-就写不进来；有意义的只是**紧邻 PUT 之后那段窗口里没有 GET**。）
+`startEventStream()` 建的 EventSource）→ 之后在那个窗口里再没有别的行，尤其没有
+`GET /api/projects/{id}`。
 
-**结论（比第一版更窄、也更硬）**：这不是"机器负载把固定 10s 顶破"。是「保存成片配置」这条路径上，
-**前端没有在 PUT 之后重新读过项目**，于是 `#assemblyFreshness` 停在旧值上，等多久都不会变。
-它与切片 4 **无关**（切片 4 没碰前端与成片链路；受影响面 9 个套件两轮全绿），但它是**真缺陷**，
-而且**现在已经稳定可复现**。
+**当时的结论（已作废）**：「前端没有在 PUT 之后重新读过项目，于是 `#assemblyFreshness` 停在旧值上，
+等多久都不会变。」——**错**。带探针的定向复现（见 14.19.2）显示前端**确实**回读了项目，
+`#assemblyFreshness` 也**确实**翻成了「已过期」，只是发生在保存后 **9.9–12.5 秒**，
+而用例写死等在 10 秒。
 
-**根因候选（尚未区分，需一次带探针的定向复现）**：`onSaveAssemblySettings`（`app.js:1143`）在 PUT 之后依次是
-`attachEvents()`（1148，日志里能看到它建的 EventSource）→ 写 `#jobMessage`（1149–1151）→ `await refreshProject()`（1152）。
-EventSource 发出来了、紧随其后的 GET 没发，只剩两种解释：
+**当时的根因候选（两条都被证伪，留作教训）**：
 
-1. 1149–1151 抛异常、被 1163 行的 `catch` 吞成 `showError`，于是 1152 根本没执行
-   （这条链上唯一可能抛的是 `el("jobMessage")` 取不到元素）；
-2. `refreshProject()` 执行了但**静默返回**——它的第一道守卫是
-   `isLiveSession(state, state.observerToken, state.project.id)`，而 `isLiveSession`（`jobObserver.js:49`）
-   要求 `ctx.observedProjectId === projectId`；两者不一致时它就是一个**不发请求、不报错的空操作**。
+1. ~~`el("jobMessage")` 取不到元素 → 抛异常被 `catch` 吞掉，于是 `refreshProject()` 没执行~~；
+2. ~~`refreshProject()` 静默返回——`isLiveSession`（`jobObserver.js:49`）要求
+   `ctx.observedProjectId === projectId`，不一致时不发请求也不报错~~。
 
-两条都属于这个项目反复踩的"静默失效"：**`catch` + `showError` 与 `isLiveSession` 空转都不会在 access log
-里留痕**——又一次印证"失败信息常藏着"。另记一条与本案无关但同类的通道：`refreshProject` **没有
-"请求序号单调"守卫**，而 `startEventPolling()`（`app.js:1605`）每 4s 还会调它，两个刷新并发时晚发先到
-就会把旧快照盖回去；本案的日志并不能证明这一条，写在这里是为了下次别漏掉这个可能。
+两条都没有发生：探针里页面内 `fetch` 日志记录到了那次 `GET /api/projects/{id}`，`PAGEERRORS` 为空，
+`#jobMessage` 也拿到了元素（文案被写进去了）。**教训**：当「日志里没有请求」和「请求很慢」都能解释同一个
+现象时，先做一次能直接看到请求的旁路取证，别在两种静默失效里挑一个写进文档。
+（另记一条与本案无关但同类的通道：`refreshProject` **没有「请求序号单调」守卫**，而
+`startEventPolling()`（`app.js:1605`）每 4s 还会调它，两个刷新并发时晚发先到会把旧快照盖回去；
+本案的日志并不能证明这一条，写在这里是为了下次别漏掉这个可能。）
 
-**推算值的地位不变**：55 项 / 526 断言仍只是**预期值**（520 + 被截断的 6 条 = 526，与 516 + 10 一致）。
-526 现在有了两轮**同口径**的旁证（两轮都恰好是 520 pass / 0 fail / 2 skip），但两轮缺的是同一项，
-**没有一轮全绿**，所以不得当基线引用。
+#### 14.19.2 真根因与修复：一次项目读取要付「镜头数 × 单次 ffprobe 价」（2026-09-27 当日完成）
+
+**根因（实测，非推断）**：本机单次 `ffprobe` 要 **0.9–1.1 秒**（进程启动 + 杀软扫描），而
+`get_assembly_status`（`video_service.py:1162-1168`）**为每个就绪镜头**调一次
+`_has_audio_stream` → `_ffprobe_json`。于是：
+
+| 端点 | 实测（4 镜项目） |
+|---|---|
+| `/api/health` | 3–27 ms |
+| `GET /api/projects/{id}` | **3.9–6.0 s** |
+| `GET /api/projects/{id}/assembly` | **7.9–9.1 s** |
+| `GET` / `PUT /api/projects/{id}/assembly-settings` | **4.1–5.3 s** |
+
+两个 settings 端点**只是做存在性检查，却调用完整的 `get_project()`**，于是各多付一次逐镜探测。
+`PUT`（4.4–6.8s）+ 前端回读（4–6s）= **9.9–12.5s**，跨在用例写死的 10s 上 → 两轮都在同一负载下失败，
+而同一探针在别的轮次又能过——**这就是它看起来「偶尔」的来历**。
+
+**排除过的三个候选**（都做过实验，别重走）：
+
+- **SSE 常开连接造成 SQLite 锁等待**：`journal_mode=delete`、`busy_timeout=5000` 很像是，但
+  「无 SSE / SSE 常开 / SSE 停掉」三种情况实测同为 151–196ms → 无关；把 ffmpeg 注入 PATH 也无关。
+- **代理 `HTTP_PROXY=127.0.0.1:58179`**：`urllib.proxy_bypass('127.0.0.1')` 为 False，确实会叠加延迟，
+  但用 node `http`（不理环境代理）复核同样是 4.2s → 不是根因（浏览器侧代理本来就是关的）。
+- **payload 体积**：`/api/projects/{id}` 首字节 1221ms / 仅 9011 字节，而 `/js/render.js` 首字节 96ms /
+  **116922 字节** → 与体积无关，是服务端首字节前的等待。
+
+**修复（三处，最小改动）**：
+
+1. `_ffprobe_json`（`video_service.py:1298`）按 **(绝对路径, mtime_ns, 字节数)** 缓存成功结果；
+   文件被换掉或改写自动失效，失败不缓存（保留「每次都会重试」的既有语义），上限 512 条。
+2. 四个成片端点（`main.py` 的 `assembly_status_endpoint` / `get_assembly_settings_endpoint` /
+   `put_assembly_settings_endpoint` / `assemble_video_endpoint`）的存在性检查
+   `get_project()` → 廉价的 `_project_exists()`。
+3. `onSaveAssemblySettings`（`app.js:1143`）**就地把 PUT 响应的 `stale`/`settings` 应用到
+   `state.project` 并立即 `renderAll()`**，回读降级为后台校准。即便回读被会话守卫静默跳过或变慢，
+   界面也已经是对的——`stale` 本来就是服务端在同一个响应里给出的权威值。
+
+**验收（先红后绿）**：新用例 `tools/test_project_read_budget.py`（9 条断言）用**预算**而不是墙钟，
+钉住「同一批文件只许起一次 ffprobe 进程」「存在性检查不得装配整个项目」。它第一次跑**是红的**
+（`FAIL: 同一批未改动文件二次读取应复用探测结果，实测又探测 4 次`）——但那次红是**测试自己的计量点错了**：
+它包了 `_ffprobe_json`，而缓存命中时那个函数照样会被进入。真实读数：冷读 4 次探测 / 5019ms，
+二次读 **0 次探测 / 181ms**。改包 `_QUERY_RUN`（= `subprocess.run`，只统计带 `-show_streams` 的调用）
+后 9 条全绿。`test_p6d_assembly_browser.py` 随之恢复：8 条 PASS + 驱动 PASS、89.8s、返回码 0，
+其中 `PASS: 保存配置后无需手动刷新即可显示待重新合成` 正是此前卡住的那条。
+
+**这一轮读数与「推算值」的收场**：Slice 4 之后两轮都是 **54/55**；加上 14.19.2 新登记的一条
+（→ 56 项）后，本窗口第一轮是 **55/56**，两轮的断言都是 **525 pass / 0 fail / 2 skip**。
+此前推算过的 55 项 / 526 断言只是**预期值**，现已被实测取代：**以 525 为准，526 不再引用**。
+两轮都有失败项、且失败项不同（先是 p6d、后是 ui_workbench），所以都不是偶发 ——
+后者的真身见 14.19.3。**57 项的两轮读数已回填在 14.19.4：两轮同为 57/57、
+541 pass / 0 fail / 2 skip，口径一致且全绿。**
 
 **顺带记两条观测**（都不是本切片引入的）：
 
@@ -1467,11 +1515,118 @@ EventSource 发出来了、紧随其后的 GET 没发，只剩两种解释：
 
 **仍未做（勿读成已验证）**：
 
-1. **p6d 这条保存路径要先修**（或至少先做一次带探针的定向复现把根因钉死）——不修它，
-   55 项 / 526 断言这个基线就拿不到，后面任何改动都验收不了。修法方向：保存成功后就地用 PUT 响应更新
-   `state.project.assembly_stale` 并重渲染（不依赖一次可能被静默跳过的回读），且让跳过的分支可见。
+1. ~~p6d 这条保存路径要先修~~ —— **已完成**：三处修复见上，p6d 用例恢复（8 PASS + 驱动 PASS、
+   89.8s、返回码 0）。同一轮回归又暴露出一个更底层的缺陷（`database is locked`），其取证与修复见 14.19.3。
 2. 三家真实调用依旧未付费验收（见 14.18 末）。本切片补的是**护栏**，护栏不等于验证——
    它只保证"万一要花，先拦得住"，不保证"参考图真的维持了一致性"。
-3. 修好之后，两轮同口径全绿仍要在**当前 HEAD** 上重跑才算数。
+3. 两轮同口径全绿仍要在**当前 HEAD** 上重跑才算数（Slice 4 之后的第一轮全量已跑，读数见上）。
+
+#### 14.19.3 真根因之二：并发写把读打成 500（SQLite busy 等待不够）（2026-09-27 当日完成）
+
+修完 14.19.2 之后重跑全量，**失败项换了**：从 `test_p6d_assembly_browser.py` 换成
+`test_ui_workbench.py`（55/56；该项 `4 pass / 0 fail` 却返回码 1 —— 说明是**脚本崩了**，不是断言失败）。
+后端日志给出真身：
+
+```
+sqlite3.OperationalError: database is locked
+  project_service.py:337 get_project → validate_assembly → SELECT * FROM projects
+```
+
+**触发时序**：`tools/ui_workbench.cjs:237` 是 `POST /api/projects/{id}/run`，紧接着第 238 行
+`waitProject()` 立刻轮询 `GET /api/projects/{id}`。而 `/run` 端点用的是 FastAPI 的
+**BackgroundTasks** —— 后台任务在**响应发送之后**才开始执行，于是「POST 返回」与「第一个读」
+天然重叠在**后台任务的第一批写事务**上。这不是本次改动引入的时序，是**接口形状**决定的。
+
+**为什么以前不撞**（这一点值得记下来）：`get_project` 的读要跑到第 337 行才碰 `validate_assembly`，
+而改造前它会先在 `get_assembly_status` 里逐镜跑 ffprobe（4 镜 ≈ 4.2s）。等它跑到锁点，
+后台那批写**早就提交完了**。14.19.2 把读提速到 0.2s，反而让读**正好落进写窗口**。
+换句话说：**提速把一扇一直开着的窗暴露了出来，窗本身是既有的。**
+
+> 与 14.19.2 的排除清单不冲突：那里排除的是「SSE 常开连接引发锁等待」，
+> 这里发现的是「后台写事务与并发读相撞」—— 两回事。
+
+**竞争窗口有多大（实测，不是估的）**：
+
+- 一次性探针（照失败用例的动作）重复 3 轮（2200 字中等文本，落在 medium 区间），
+  60 次 GET 采样**全部 200**，但**每轮第一次 GET 都要 1.5–1.8s** —— 那就是它被写事务挡住的时间。
+  干净机器上 5 秒够用，所以只表现为「偶发」。
+- 一条反直觉的事实：**标称 5000ms 的 `busy_timeout`，在这台机器上的真实放弃时刻约 7.4s**。
+  SQLite 的每轮重试都要做一次文件锁系统调用，实际 elapsed 被放大到标称值的 ~1.5 倍。
+  三处独立测量互证：`output/lock_control_ab5000.txt` 的 7.447s、另一次独立探针实测的 7.35s、
+  `tools/test_sqlite_lock_tolerance.py` 红轮的 7.3s。
+
+**修复**：`database.py` 的 `connect()` 显式声明 `PRAGMA busy_timeout = 20000`，不再依赖
+`sqlite3.connect` 的隐式 5 秒（`BUSY_TIMEOUT_MS` 常量）。**没有改用 WAL** —— 仓库里有三处
+`shutil.copy2(DB_PATH, backup)` 的备份路径（`cleanup_temp_project` / `restore_project_from_backup` /
+`retire_remote_video_task`），WAL 下这样复制主库文件会丢掉 `-wal` 里尚未 checkpoint 的数据，
+收益不抵风险。
+
+**验收（先红后绿，确定性而非偶发）**：新用例 `tools/test_sqlite_lock_tolerance.py`
+（登记进驱动器 → **57 项**）用另一个连接 `BEGIN EXCLUSIVE` **持写锁 10s**，在窗口内发一次 GET，
+断言它**不是 500**、而是等到锁释放后返 200。它同时钉住三件事：
+
+| 断言 | 作用 |
+|---|---|
+| 常量 `BUSY_TIMEOUT_MS` 显著大于持锁时长 | 配置护栏：常量被调小就立刻指出 |
+| 打印连接上**真实生效**的 `busy_timeout` | 常量写对、PRAGMA 漏掉时，这两个数会分叉 |
+| 读必须真的等待（耗时 ≥ 持锁 × 0.7） | 防「根本没撞上锁」的假通过 |
+
+同口径对照（同一个脚本，只差 `connect()` 里那一行 PRAGMA）：
+
+| 设置 | 连接上真实值 | 持锁 10s 时的读 |
+|---|---|---|
+| 无 PRAGMA（= 隐式 5000） | 5000ms | **FAIL** 7.3s → 500 |
+| 有 PRAGMA | 20000ms | **PASS** 10.2s → 200 |
+
+跨进程旁证（一次性探针，独立进程持锁）：5000 → 持锁 9s 让读 7.447s 后 500；
+20000 → 同条件读 9.268s 后 200。两个实验互相印证。
+
+**过程中差点写错的结论**：用例第一版 `HOLD_SECONDS = 6.5`，在「无 PRAGMA」时**照样 PASS** ——
+因为 6.5s 落在 7.4s 的真实上限之内，两种设置都能等到，**用例失去分辨力**。那不是「用例通过了」，
+是「用例测不出」。把持锁改成 10s 才拿到上面那张同口径表。
+
+**边界**：这条修的是**容错窗口**，不是「消灭写事务」。窗口从 ~7.4s 放宽到 ~29s，
+对实测 1.5s 的真实竞争有约 19 倍裕量；但若将来出现「单个写事务本身就要几十秒」的路径，仍会重现，
+届时该做的是**拆小事务**或**改 WAL（并同时修那三处备份）**，而不是继续加大这个数。
+
+**一次性探针的去向**：上面提到的 `repro_lock` / `lock_control` / `probe_busy` 都是当轮的一次性诊断脚本，
+**结论写进本节后已删除**，与本项目既有做法一致（见 §14.14 与 `docs/stage-c-evidence-archive-2026-09-20.md` 第 4 条）。
+可复核的落点是：真正复现这条缺陷的是**已提交的** `tools/test_sqlite_lock_tolerance.py`，
+它的同口径 A/B 表就在上面；探针本身不承担长期取证责任。
 
 
+#### 14.19.4 修复后的全量复核（**连续两轮同口径全绿**，2026-09-27 当日完成）
+
+前面 14.19.1 记录的是两轮都跑成 `54 / 55`（同一项复现）。两处根因修完后重跑，拿到本窗口的基线：
+
+| 运行 | 结果 | 断言 | 耗时 |
+|---|---|---|---|
+| `run-20260927-200842` | **57/57** | **541 pass / 0 fail / 2 skip** | 3085.7s |
+| `run-20260927-210126` | **57/57** | **541 pass / 0 fail / 2 skip** | 3085.5s |
+
+**两轮口径完全一致（同为 57 项 / 541 断言 / 2 skip）且都全绿**，这才是可引用的事实。
+断言数可交叉验证：上一窗口实测 525，本窗口 +6（`test_sqlite_lock_tolerance.py` 新增）
++10（`test_ui_workbench.py` 从崩溃时的 4 pass 恢复满额 14 pass）= **541**，与实测吻合。
+
+**2 条 skip 的出处**（从本轮报告 JSON 的 `skip_lines` 字段直接取，不是照抄旧结论；两轮同位置）：
+
+| 用例 | skip 原文 | 是不是"有检查被跳过" |
+|---|---|---|
+| `test_live_safeguards.py` | `SKIP: inflight_remote_tasks db_tasks=1 db_shots=1` | **不是**。这是诊断打印（说明夹具里有 1 条 inflight 任务），紧邻的下一行就是 `PASS: 脚本异常且 lineage 过期时，DB inflight 仍阻止清理` |
+| `test_mock_web_smoke.py` | `SKIP: 视频阶段只有一个模型，无法切换` | 是子步骤跳过，理由写明：mock 下只有一个视频模型，没有可切换对象 |
+
+本窗口一并完成的两项修复（详见 14.19.2 / 14.19.3）：
+
+1. **项目读取成本**：`_ffprobe_json` 按 `(绝对路径, mtime_ns, 字节数)` 缓存 + 四个成片端点
+   的存在性检查换 `_project_exists()` + 保存成片配置后就地应用 PUT 响应。效果：
+   同一批未改动文件的二次读取从 ~4.2s 降到 **181ms**，p6d 用例恢复（9 pass / 0 fail，66.3s / 69.1s）。
+2. **并发写把读打成 500**：`connect()` 显式 `PRAGMA busy_timeout = 20000`。效果：
+   `test_ui_workbench.py` 恢复满额（14 pass / 0 fail）。
+
+**新增的两项用例都先跑成红再变绿**：`test_project_read_budget.py` 用「探测次数预算」而不是墙钟
+（机器一忙就假失败）；`test_sqlite_lock_tolerance.py` 用另一连接真的持写锁 10s，断言读**不是 500**。
+后者第一版持锁 6.5s 时**在缺 PRAGMA 的情况下也报绿**——6.5s 落在真实上限 ~7.4s 之内，
+两种设置都能等到，属「用例测不出」而不是「用例通过」；改成 10s 才恢复分辨力。
+
+**边界（勿读成已闭环）**：这两轮证明的是**无费用回归全绿**。参考图链路与付费闸门
+**仍未经过任何真实付费调用验收**——护栏不等于验证。本窗口零费用，20 元额度一分未动。
