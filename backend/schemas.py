@@ -115,6 +115,7 @@ class MediumScopeSaveRequest(BaseModel):
     storyline_id: str | None = Field(default=None, max_length=40)
     event_ids: list[str] | None = None
     chunk_ids: list[str] | None = None
+    chapter_ids: list[str] | None = None
     user_note: str | None = Field(default=None, max_length=400)
 
 

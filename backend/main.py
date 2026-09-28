@@ -503,6 +503,7 @@ def save_medium_scope_endpoint(project_id: str, payload: MediumScopeSaveRequest)
             storyline_id=payload.storyline_id,
             event_ids=payload.event_ids,
             chunk_ids=payload.chunk_ids,
+            chapter_ids=payload.chapter_ids,
             user_note=payload.user_note,
         )
     except MediumTextError as exc:
@@ -526,6 +527,7 @@ def confirm_medium_scope_endpoint(project_id: str, payload: MediumScopeSaveReque
             storyline_id=data.get("storyline_id"),
             event_ids=data.get("event_ids"),
             chunk_ids=data.get("chunk_ids"),
+            chapter_ids=data.get("chapter_ids"),
             user_note=data.get("user_note"),
         )
     except MediumTextError as exc:

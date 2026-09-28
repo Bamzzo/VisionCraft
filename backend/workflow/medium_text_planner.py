@@ -1,6 +1,8 @@
 """Deterministic medium-text segmentation, events, and storylines. No live LLM."""
 from __future__ import annotations
 
+import re
+
 from .adaptation_planner import CONFLICT_RE, analyze_source
 
 TARGET_CHARS = 900
@@ -9,6 +11,17 @@ MIN_CHARS = 600
 MAX_CHARS = 1200
 SHORT_LIMIT = 1500
 MEDIUM_LIMIT = 10000
+LONG_LIMIT = 100000
+
+# 无章节标记时的强制分章长度。取 10,000 是有原因的：它正好是 P5-A 的上限，
+# 也就是"一段文本只要还在 P5-A 的射程内，就不需要被切开"。
+CHAPTER_FALLBACK_CHARS = 10000
+
+# 语料里的真实形态是「第一节：纵身亡魔心仍不悔」，行首可能有一个半角空格，
+# 文件开头则顶着 BOM。数字用中文数字。标题只取到行尾。
+CHAPTER_MARKER_RE = re.compile(
+    r"(?m)^[\ufeff\u3000 \t]{0,4}第([一二三四五六七八九十百千零〇0-9]{1,6})节[：:][ \t\u3000]*(.{0,40})"
+)
 
 
 def text_scale(source_text: str) -> str:
@@ -17,42 +30,142 @@ def text_scale(source_text: str) -> str:
         return "short"
     if length <= MEDIUM_LIMIT:
         return "medium"
-    return "long"
+    if length <= LONG_LIMIT:
+        return "long"
+    return "over_limit"
 
 
 def scale_label(scale: str) -> str:
     return {
         "short": "短文本：直接改编",
         "medium": "中等文本：先选择故事线，再进行改编",
-        "long": "长文本：章节检索尚未实现（P5-B）",
+        "long": "长文本：按章节选择改编范围",
+        "over_limit": f"超出上限：最多支持 {LONG_LIMIT:,} 字",
     }.get(scale, "未知规模")
 
 
-def segment_source(source_text: str) -> list[dict]:
+def parse_chapters(source_text: str) -> list[dict]:
+    """把原文切成章节树。
+
+    顺序即语义：第 N 章的 ``end_offset`` 就是第 N+1 章的 ``start_offset``，
+    中间不允许有缝。理由很直接——"按章节选择改编范围"这个承诺全靠它兑现，
+    一旦有个字符同时属于两章（或谁都不属于），用户在界面上勾选的结果
+    就没法回溯到确定的一段原文。
+    """
     text = source_text or ""
-    n = len(text)
-    if n == 0:
+    if not text:
         return []
-    chunks = []
-    start = 0
-    index = 1
-    while start < n:
-        end = min(n, start + TARGET_CHARS)
-        if end < n:
-            snapped = _forward_boundary(text, end, min(n, start + MAX_CHARS))
-            if snapped > start:
-                end = snapped
-        if end - start < MIN_CHARS and end < n:
-            end = _forward_boundary(text, min(n, start + MIN_CHARS), min(n, start + MAX_CHARS)) or min(n, start + MAX_CHARS)
+    marks = list(CHAPTER_MARKER_RE.finditer(text))
+    if len(marks) < 2:
+        return _fallback_chapters(text)
+    bounds = [0] + [mark.start() for mark in marks[1:]] + [len(text)]
+    chapters = []
+    for index, mark in enumerate(marks, start=1):
+        start, end = bounds[index - 1], bounds[index]
         body = text[start:end]
+        analysis = analyze_source("", body)
+        chapters.append(
+            {
+                "chapter_index": index,
+                "marker": f"第{mark.group(1)}节",
+                "title": mark.group(2).strip(),
+                "start_offset": start,
+                "end_offset": end,
+                "char_count": end - start,
+                "text": body,
+                "summary": (analysis["conflict_line"] or body[:80]).strip(),
+                "characters": analysis["names"][:8],
+                "places": analysis["places"][:8],
+                "source": "chapter_marker",
+            }
+        )
+    return chapters
+
+
+def _fallback_chapters(text: str) -> list[dict]:
+    """没有章节标记时，按固定长度硬切，并吸附到句子边界。"""
+    chapters = []
+    n = len(text)
+    cursor = 0
+    index = 1
+    while cursor < n:
+        stop = min(n, cursor + CHAPTER_FALLBACK_CHARS)
+        if stop < n:
+            snapped = _forward_boundary(text, stop, min(n, stop + MIN_CHARS))
+            if snapped > cursor:
+                stop = snapped
+        body = text[cursor:stop]
+        analysis = analyze_source("", body)
+        chapters.append(
+            {
+                "chapter_index": index,
+                "marker": f"第{index}段",
+                "title": body[:24].strip() or f"第{index}段",
+                "start_offset": cursor,
+                "end_offset": stop,
+                "char_count": stop - cursor,
+                "text": body,
+                "summary": (analysis["conflict_line"] or body[:80]).strip(),
+                "characters": analysis["names"][:8],
+                "places": analysis["places"][:8],
+                "source": "length_fallback",
+            }
+        )
+        cursor = stop
+        index += 1
+    return chapters
+
+
+def segment_source(source_text: str, *, chapters: list[dict] | None = None) -> list[dict]:
+    """分块。
+
+    给了 ``chapters`` 时**逐章独立分块**：块的边界不可能越过章节边界，
+    因为每一章都是在自己的区间里从头切起的。这比"切完再判断归属"更可靠——
+    后者需要额外的裁剪逻辑，而裁剪本身就可能再引入缝隙。
+    """
+    text = source_text or ""
+    if not text:
+        return []
+    if not chapters:
+        return _segment_range(text, 0, len(text), chapter_index=None)
+    chunks: list[dict] = []
+    for chapter in chapters:
+        chunks.extend(
+            _segment_range(
+                text,
+                int(chapter["start_offset"]),
+                int(chapter["end_offset"]),
+                chapter_index=int(chapter["chapter_index"]),
+            )
+        )
+    for index, chunk in enumerate(chunks, start=1):
+        chunk["chunk_index"] = index
+    return chunks
+
+
+def _segment_range(text: str, start: int, end: int, *, chapter_index: int | None) -> list[dict]:
+    n = end
+    chunks: list[dict] = []
+    index = 1
+    cursor = start
+    while cursor < n:
+        stop = min(n, cursor + TARGET_CHARS)
+        if stop < n:
+            snapped = _forward_boundary(text, stop, min(n, cursor + MAX_CHARS))
+            if snapped > cursor:
+                stop = snapped
+        if stop - cursor < MIN_CHARS and stop < n:
+            stop = _forward_boundary(text, min(n, cursor + MIN_CHARS), min(n, cursor + MAX_CHARS)) or min(n, cursor + MAX_CHARS)
+        body = text[cursor:stop]
         analysis = analyze_source("", body)
         chunks.append(
             {
                 "chunk_index": index,
+                "chapter_index": chapter_index,
                 "text": body,
-                "start_offset": start,
-                "end_offset": end,
-                "char_count": end - start,
+                "start_offset": cursor,
+                "end_offset": stop,
+                "char_count": stop - cursor,
                 "summary": (analysis["conflict_line"] or body[:80]).strip(),
                 "characters": analysis["names"],
                 "places": analysis["places"],
@@ -60,13 +173,13 @@ def segment_source(source_text: str) -> list[dict]:
                 "source": "mock_segmenter",
             }
         )
-        if end >= n:
+        if stop >= n:
             break
-        nxt = max(start + 1, end - OVERLAP_CHARS)
-        nxt = _backward_boundary(text, nxt, start + 1)
-        if nxt <= start:
-            nxt = end
-        start = nxt
+        nxt = max(cursor + 1, stop - OVERLAP_CHARS)
+        nxt = _backward_boundary(text, nxt, cursor + 1)
+        if nxt <= cursor:
+            nxt = stop
+        cursor = nxt
         index += 1
     return chunks
 

@@ -7,8 +7,10 @@ from ..database import connect, from_json, to_json, utc_now
 from ..services.job_service import create_job, update_job
 from ..services.project_service import get_project, update_project_status
 from ..workflow.medium_text_planner import (
+    LONG_LIMIT,
     coverage_ok,
     extract_events,
+    parse_chapters,
     plan_storylines,
     scale_label,
     segment_source,
@@ -29,11 +31,21 @@ def attach_medium_text(project: dict) -> dict:
     scale = text_scale(source)
     project["text_scale"] = scale
     project["text_scale_label"] = scale_label(scale)
+    project["source_chapters"] = list_chapters(project["id"])
     project["source_chunks"] = list_chunks(project["id"])
     project["story_events"] = list_events(project["id"])
     project["storylines"] = list_storylines(project["id"])
     project["adaptation_scope"] = load_current_scope(project["id"])
     return project
+
+
+def list_chapters(project_id: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM source_chapters WHERE project_id = ? ORDER BY chapter_index",
+            (project_id,),
+        ).fetchall()
+    return [_decode_chapter(row) for row in rows]
 
 
 def list_chunks(project_id: str) -> list[dict]:
@@ -89,10 +101,10 @@ def medium_text_state(project_id: str) -> dict:
 def run_medium_analysis(project_id: str, job_id: str | None = None, *, regenerate: bool = False) -> dict:
     project = _require_project(project_id)
     scale = text_scale(project["source_text"])
-    if scale == "long":
+    if scale == "over_limit":
         raise MediumTextError(
-            "TEXT_TOO_LONG",
-            "当前文本超过 10,000 字。P5-B 的章节树与检索尚未实现，请先截取 1,501～10,000 字，或使用不超过 1,500 字的短文本直接改编。",
+            "TEXT_OVER_LIMIT",
+            f"当前文本超过 {LONG_LIMIT:,} 字的导入上限。请先截取到 {LONG_LIMIT:,} 字以内。",
         )
     if scale == "short":
         raise MediumTextError(
@@ -106,7 +118,17 @@ def run_medium_analysis(project_id: str, job_id: str | None = None, *, regenerat
         with connect() as conn:
             conn.execute("UPDATE storylines SET selected = 0 WHERE project_id = ?", (project_id,))
     source = project["source_text"]
-    chunks = segment_source(source)
+    # 长文本先立章节树，再逐章分块——顺序不能反：块要靠章节来决定自己的边界。
+    chapters = parse_chapters(source) if scale == "long" else []
+    if chapters:
+        update_job(
+            job_id,
+            "running",
+            18,
+            f"已识别 {len(chapters)} 个章节，分块不跨越章节边界",
+            stage="chapter_tree",
+        )
+    chunks = segment_source(source, chapters=chapters or None)
     if not chunks or not coverage_ok(source, chunks):
         raise MediumTextError("SEGMENT_FAILED", "原文分块失败，存在无法回溯的缺口。请检查文本后重试。")
     update_job(job_id, "running", 35, "正在从各块提取事件与原文依据", stage="event_extraction")
@@ -115,7 +137,7 @@ def run_medium_analysis(project_id: str, job_id: str | None = None, *, regenerat
     storylines = plan_storylines(project["title"], source, chunks, events)
     if not (2 <= len(storylines) <= 3):
         raise MediumTextError("STORYLINE_FAILED", "未能生成足够差异的候选故事线。请修改后重生成分析。")
-    _persist_analysis(project_id, source, chunks, events, storylines)
+    _persist_analysis(project_id, source, chunks, events, storylines, chapters)
     update_project_status(project_id, "awaiting_storyline_review")
     from .checkpoint_service import save_workflow_checkpoint
 
@@ -173,29 +195,56 @@ def save_adaptation_scope(
     storyline_id: str | None = None,
     event_ids: list[str] | None = None,
     chunk_ids: list[str] | None = None,
+    chapter_ids: list[str] | None = None,
     user_note: str | None = None,
 ) -> dict:
     _require_project(project_id)
     current = load_current_scope(project_id)
     selected = next((item for item in list_storylines(project_id) if item.get("selected")), None)
     storyline_id = storyline_id or (current or {}).get("storyline_id") or (selected or {}).get("id")
-    if not storyline_id:
-        raise MediumTextError("STORYLINE_NOT_SELECTED", "尚未选择故事线。请先点击一条候选故事线，再保存范围。")
-    line = _require_storyline(project_id, storyline_id)
-    if event_ids is None:
-        event_ids = (current or {}).get("event_ids") or line.get("event_ids") or []
-    event_ids = _require_event_ids(project_id, event_ids)
-    if not event_ids:
-        raise MediumTextError("SCOPE_EMPTY", "至少保留一个事件。取消勾选后范围内不能为空。")
-    if chunk_ids is None:
-        chunk_ids = _chunk_ids_for_events(project_id, event_ids)
+    line = _require_storyline(project_id, storyline_id) if storyline_id else None
+    chapter_ids = _require_chapter_ids(project_id, chapter_ids) if chapter_ids else []
+    if chapter_ids:
+        # 长文本走章节入口：章节是主选择器，块与事件都从章节推出来。
+        # 这里刻意不要求先选故事线——P5-A 的故事线是为"单块内取前 60% 事件"设计的，
+        # 到 10 万字尺度会退化；章节范围就是为了替代它，所以它不该成为前置条件。
+        chapter_chunk_ids = _chunk_ids_for_chapters(project_id, chapter_ids)
+        if not chapter_chunk_ids:
+            raise MediumTextError("SCOPE_EMPTY", "所选章节下没有可用片段，请重新勾选章节。")
+        if chunk_ids is None:
+            chunk_ids = chapter_chunk_ids
+        else:
+            allowed = set(chapter_chunk_ids)
+            chunk_ids = [item for item in _require_chunk_ids(project_id, chunk_ids) if item in allowed]
+            if not chunk_ids:
+                raise MediumTextError("SCOPE_EMPTY", "所选片段落在勾选的章节之外，请重新勾选。")
+        if event_ids is None:
+            event_ids = _event_ids_for_chunks(project_id, chunk_ids)
+        else:
+            # 显式传了事件也要落在勾选的章节里：只勾了第 10 节却提交了第 20 节的事件，
+            # 那不是"范围"，是范围漏了。
+            allowed_events = set(_event_ids_for_chunks(project_id, chunk_ids))
+            event_ids = [item for item in _require_event_ids(project_id, event_ids) if item in allowed_events]
     else:
-        chunk_ids = _require_chunk_ids(project_id, chunk_ids)
+        if not storyline_id:
+            if list_chapters(project_id):
+                raise MediumTextError("SCOPE_EMPTY", "请先勾选至少一个章节，长文本按章节圈定改编范围。")
+            raise MediumTextError("STORYLINE_NOT_SELECTED", "尚未选择故事线。请先点击一条候选故事线，再保存范围。")
+        if event_ids is None:
+            event_ids = (current or {}).get("event_ids") or (line or {}).get("event_ids") or []
+        event_ids = _require_event_ids(project_id, event_ids)
+        if not event_ids:
+            raise MediumTextError("SCOPE_EMPTY", "至少保留一个事件。取消勾选后范围内不能为空。")
+        if chunk_ids is None:
+            chunk_ids = _chunk_ids_for_events(project_id, event_ids)
+        else:
+            chunk_ids = _require_chunk_ids(project_id, chunk_ids)
     _upsert_scope(
         project_id,
         storyline_id=storyline_id,
         event_ids=event_ids,
         chunk_ids=chunk_ids,
+        chapter_ids=chapter_ids,
         review_status="draft",
         user_note=user_note if user_note is not None else ((current or {}).get("user_note") or ""),
         invalidate_p4=True,
@@ -211,6 +260,7 @@ def confirm_adaptation_scope(
     storyline_id: str | None = None,
     event_ids: list[str] | None = None,
     chunk_ids: list[str] | None = None,
+    chapter_ids: list[str] | None = None,
     user_note: str | None = None,
     job_id: str | None = None,
 ) -> dict:
@@ -241,6 +291,7 @@ def confirm_adaptation_scope(
         storyline_id=storyline_id,
         event_ids=event_ids,
         chunk_ids=chunk_ids,
+        chapter_ids=chapter_ids if chapter_ids is not None else (load_current_scope(project_id) or {}).get("chapter_ids") or None,
         user_note=user_note,
     )
     scope = state.get("adaptation_scope") or {}
@@ -318,23 +369,64 @@ def ensure_implicit_short_scope(project: dict) -> dict:
     return load_current_scope(project["id"]) or {}
 
 
-def _persist_analysis(project_id: str, source: str, chunks: list[dict], events: list[dict], storylines: list[dict]) -> None:
+def _persist_analysis(
+    project_id: str,
+    source: str,
+    chunks: list[dict],
+    events: list[dict],
+    storylines: list[dict],
+    chapters: list[dict] | None = None,
+) -> None:
     now = utc_now()
+    chapters = chapters or []
     with connect() as conn:
         conn.execute("DELETE FROM storylines WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM story_events WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM source_chunks WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM source_chapters WHERE project_id = ?", (project_id,))
         conn.execute("DELETE FROM adaptation_scopes WHERE project_id = ?", (project_id,))
+        chunk_count_by_chapter: dict[int, int] = {}
+        for chunk in chunks:
+            index = chunk.get("chapter_index")
+            if index is not None:
+                chunk_count_by_chapter[int(index)] = chunk_count_by_chapter.get(int(index), 0) + 1
+        for chapter in chapters:
+            conn.execute(
+                """
+                INSERT INTO source_chapters
+                (id, project_id, chapter_index, marker, title, start_offset, end_offset, char_count,
+                 summary, characters_json, places_json, chunk_count, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"chap_{uuid.uuid4().hex[:10]}",
+                    project_id,
+                    int(chapter["chapter_index"]),
+                    chapter.get("marker") or "",
+                    chapter.get("title") or "",
+                    int(chapter["start_offset"]),
+                    int(chapter["end_offset"]),
+                    int(chapter["char_count"]),
+                    chapter.get("summary") or "",
+                    to_json(chapter.get("characters") or []),
+                    to_json(chapter.get("places") or []),
+                    chunk_count_by_chapter.get(int(chapter["chapter_index"]), 0),
+                    chapter.get("source") or "chapter_marker",
+                    now,
+                ),
+            )
         chunk_ids_by_index = {}
+        chapter_index_by_chunk: dict[int, int | None] = {}
         for chunk in chunks:
             chunk_id = f"chk_{uuid.uuid4().hex[:10]}"
             chunk_ids_by_index[chunk["chunk_index"]] = chunk_id
+            chapter_index_by_chunk[chunk["chunk_index"]] = chunk.get("chapter_index")
             conn.execute(
                 """
                 INSERT INTO source_chunks
                 (id, project_id, chunk_index, text, start_offset, end_offset, char_count, summary,
-                 characters_json, places_json, conflict_terms_json, source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 characters_json, places_json, conflict_terms_json, chapter_index, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chunk_id,
@@ -348,6 +440,7 @@ def _persist_analysis(project_id: str, source: str, chunks: list[dict], events: 
                     to_json(chunk.get("characters") or []),
                     to_json(chunk.get("places") or []),
                     to_json(chunk.get("conflict_terms") or []),
+                    chunk.get("chapter_index"),
                     chunk.get("source") or "mock_segmenter",
                     now,
                 ),
@@ -356,13 +449,15 @@ def _persist_analysis(project_id: str, source: str, chunks: list[dict], events: 
         for event in events:
             event_id = f"evt_{uuid.uuid4().hex[:10]}"
             event_ids_by_index[event["event_index"]] = event_id
-            chunk_ids = [chunk_ids_by_index[idx] for idx in event.get("chunk_indexes") or [] if idx in chunk_ids_by_index]
+            chunk_indexes = event.get("chunk_indexes") or []
+            chunk_ids = [chunk_ids_by_index[idx] for idx in chunk_indexes if idx in chunk_ids_by_index]
+            event_chapter_index = chapter_index_by_chunk.get(chunk_indexes[0]) if chunk_indexes else None
             conn.execute(
                 """
                 INSERT INTO story_events
                 (id, project_id, event_index, title, summary, characters_json, places_json, goal, conflict, outcome,
-                 chunk_ids_json, source_excerpt, source_start, source_end, importance, source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 chunk_ids_json, source_excerpt, source_start, source_end, importance, chapter_index, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -380,6 +475,7 @@ def _persist_analysis(project_id: str, source: str, chunks: list[dict], events: 
                     event.get("source_start"),
                     event.get("source_end"),
                     float(event.get("importance") or 0),
+                    event_chapter_index,
                     event.get("source") or "mock_event_extractor",
                     now,
                 ),
@@ -426,6 +522,7 @@ def _upsert_scope(
     review_status: str,
     user_note: str,
     invalidate_p4: bool,
+    chapter_ids: list[str] | None = None,
     scoped_override: str | None = None,
     start_offset: int | None = None,
     end_offset: int | None = None,
@@ -446,7 +543,7 @@ def _upsert_scope(
             conn.execute(
                 """
                 UPDATE adaptation_scopes SET
-                  storyline_id=?, event_ids_json=?, chunk_ids_json=?, scoped_text=?, start_offset=?, end_offset=?,
+                  storyline_id=?, event_ids_json=?, chunk_ids_json=?, chapter_ids_json=?, scoped_text=?, start_offset=?, end_offset=?,
                   review_status=?, user_note=?, source=?, updated_at=?
                 WHERE project_id=?
                 """,
@@ -454,6 +551,7 @@ def _upsert_scope(
                     storyline_id,
                     to_json(event_ids),
                     to_json(chunk_ids),
+                    to_json(chapter_ids or []),
                     scoped_text,
                     start_offset,
                     end_offset,
@@ -468,9 +566,9 @@ def _upsert_scope(
             conn.execute(
                 """
                 INSERT INTO adaptation_scopes
-                (id, project_id, storyline_id, event_ids_json, chunk_ids_json, scoped_text, start_offset, end_offset,
+                (id, project_id, storyline_id, event_ids_json, chunk_ids_json, chapter_ids_json, scoped_text, start_offset, end_offset,
                  review_status, user_note, source, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scope_id,
@@ -478,6 +576,7 @@ def _upsert_scope(
                     storyline_id,
                     to_json(event_ids),
                     to_json(chunk_ids),
+                    to_json(chapter_ids or []),
                     scoped_text,
                     start_offset,
                     end_offset,
@@ -592,6 +691,36 @@ def _require_chunk_ids(project_id: str, chunk_ids: list[str]) -> list[str]:
     return cleaned
 
 
+def _require_chapter_ids(project_id: str, chapter_ids: list[str]) -> list[str]:
+    owned = {item["id"] for item in list_chapters(project_id)}
+    cleaned = []
+    for chapter_id in chapter_ids:
+        if chapter_id not in owned:
+            raise MediumTextError("CHAPTER_MISMATCH", "所选章节不属于当前项目。请只勾选本项目解析出的章节。")
+        if chapter_id not in cleaned:
+            cleaned.append(chapter_id)
+    return cleaned
+
+
+def _chunk_ids_for_chapters(project_id: str, chapter_ids: list[str]) -> list[str]:
+    """按章节选块：只取章节号落在勾选集合里的块，顺序沿用块序。"""
+    wanted = {item["chapter_index"] for item in list_chapters(project_id) if item["id"] in set(chapter_ids)}
+    return [
+        item["id"]
+        for item in list_chunks(project_id)
+        if item.get("chapter_index") is not None and int(item["chapter_index"]) in wanted
+    ]
+
+
+def _event_ids_for_chunks(project_id: str, chunk_ids: list[str]) -> list[str]:
+    wanted = set(chunk_ids)
+    ids = []
+    for event in list_events(project_id):
+        if wanted.intersection(event.get("chunk_ids") or []) and event["id"] not in ids:
+            ids.append(event["id"])
+    return ids
+
+
 def _record_review(project_id: str, stage: str, action: str, summary: str, target_id: str | None) -> None:
     with connect() as conn:
         conn.execute(
@@ -606,6 +735,13 @@ def _record_review(project_id: str, stage: str, action: str, summary: str, targe
 def _touch(project_id: str, now: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, project_id))
+
+
+def _decode_chapter(row) -> dict:
+    item = dict(row)
+    item["characters"] = from_json(item.get("characters_json"), [])
+    item["places"] = from_json(item.get("places_json"), [])
+    return item
 
 
 def _decode_chunk(row) -> dict:
@@ -636,4 +772,5 @@ def _decode_scope(row) -> dict:
     item = dict(row)
     item["event_ids"] = from_json(item.get("event_ids_json"), [])
     item["chunk_ids"] = from_json(item.get("chunk_ids_json"), [])
+    item["chapter_ids"] = from_json(item.get("chapter_ids_json"), [])
     return item

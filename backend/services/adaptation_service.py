@@ -70,17 +70,21 @@ PAST_BIBLE = {"awaiting_storyboard_review", "storyboard_draft_ready", *PAST_STOR
 
 def start_adaptation_workflow(project_id: str, job_id: str | None = None) -> dict:
     project = _require_project(project_id)
-    from ..workflow.medium_text_planner import text_scale
+    from ..workflow.medium_text_planner import LONG_LIMIT, text_scale
     from .medium_text_service import MediumTextError, ensure_implicit_short_scope, run_medium_analysis
 
     scale = text_scale(project["source_text"])
-    if scale == "long":
+    if scale == "over_limit":
+        # 超上限必须在这里挡住。往下走会落到短文本路径，把 10 万字整本塞进改编，
+        # 既不报错也不分章——那才是真正会炸的地方。
         raise AdaptationError(
-            "TEXT_TOO_LONG",
-            "当前文本超过 10,000 字。P5-B 章节检索尚未实现，请先截取不超过 10,000 字，或使用短文本直接改编。",
+            "TEXT_OVER_LIMIT",
+            f"当前文本超过 {LONG_LIMIT:,} 字的导入上限。请先截取到 {LONG_LIMIT:,} 字以内。",
         )
     job_id = job_id or create_job(project_id, "adaptation_workflow", "文本理解已排队")
-    if scale == "medium":
+    if scale in {"medium", "long"}:
+        # 长文本和中等文本走同一条分析路径，差别只在分块前先立章节树——
+        # 入口这里如果还按规模分支，就会把 P5-B 挡在门外。
         try:
             state = run_medium_analysis(project_id, job_id)
         except MediumTextError as exc:
@@ -425,7 +429,7 @@ def regenerate_stage(project_id: str, stage: str, job_id: str | None = None) -> 
         from ..workflow.medium_text_planner import text_scale
         from .medium_text_service import load_confirmed_scope
 
-        if text_scale(project["source_text"]) == "medium" and load_confirmed_scope(project_id):
+        if text_scale(project["source_text"]) in {"medium", "long"} and load_confirmed_scope(project_id):
             generate_options_from_context(project_id, job_id)
         else:
             start_adaptation_workflow(project_id, job_id)

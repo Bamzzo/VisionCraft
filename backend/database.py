@@ -346,6 +346,24 @@ def _ensure_medium_text_tables(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_source_chunks_project ON source_chunks(project_id);
         CREATE INDEX IF NOT EXISTS idx_source_chunks_project_index ON source_chunks(project_id, chunk_index);
+        CREATE TABLE IF NOT EXISTS source_chapters (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          chapter_index INTEGER NOT NULL,
+          marker TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL DEFAULT '',
+          start_offset INTEGER NOT NULL,
+          end_offset INTEGER NOT NULL,
+          char_count INTEGER NOT NULL,
+          summary TEXT NOT NULL DEFAULT '',
+          characters_json TEXT NOT NULL DEFAULT '[]',
+          places_json TEXT NOT NULL DEFAULT '[]',
+          chunk_count INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'chapter_marker',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_chapters_project ON source_chapters(project_id);
+        CREATE INDEX IF NOT EXISTS idx_source_chapters_project_index ON source_chapters(project_id, chapter_index);
         CREATE TABLE IF NOT EXISTS story_events (
           id TEXT PRIMARY KEY,
           project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -394,6 +412,7 @@ def _ensure_medium_text_tables(conn: sqlite3.Connection) -> None:
           storyline_id TEXT,
           event_ids_json TEXT NOT NULL DEFAULT '[]',
           chunk_ids_json TEXT NOT NULL DEFAULT '[]',
+          chapter_ids_json TEXT NOT NULL DEFAULT '[]',
           scoped_text TEXT NOT NULL DEFAULT '',
           start_offset INTEGER,
           end_offset INTEGER,
@@ -407,6 +426,10 @@ def _ensure_medium_text_tables(conn: sqlite3.Connection) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptation_scopes_project_unique ON adaptation_scopes(project_id);
         """
     )
+    # P5-B：块要有章节归属，事件与最终范围也要能回溯到章节。老库靠这三条补列。
+    _ensure_column(conn, "source_chunks", "chapter_index", "INTEGER")
+    _ensure_column(conn, "story_events", "chapter_index", "INTEGER")
+    _ensure_column(conn, "adaptation_scopes", "chapter_ids_json", "TEXT NOT NULL DEFAULT '[]'")
 
 
 def _ensure_assembly_settings(conn: sqlite3.Connection) -> None:
