@@ -138,6 +138,6 @@ HTTPS URL 与 Files API 是部署期扩展，本地测试使用 Data URL。见 `
 - 关键帧**生成**仍走现有图像占位/既有图像 Provider，尚未把用户选择接到真实 Seedream 调用。
 - 视觉检查的真实调用等待人工确认。
 - 审核暂停/继续已由后端 checkpoint 实现，见 `docs/workflow-pause-resume-design.md`。
-- P5-B 超过 10,000 字仍明确拒绝。
+- P5-B 超过 10,000 字仍明确拒绝。**（已被 P5-B-1 取代，2026-09-28：1 万–10 万字先立章节树后分析，只有超过 10 万字才拒绝；见 `docs/v1-delivery-roadmap.md` §P5）**
 - 通用上传、HTTPS URL / Files API 传递、成本配额、用户系统和部署不在本切片。
 - 导出页不重新合成；过期成片需返回成片合成页。

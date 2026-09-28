@@ -7,7 +7,8 @@
 本文件不含任何需要联网的指令。
 
 > 图外的一条提醒：本文件描述的是**设计约束**，不等于**已验收的效果**。
-> 参考图链路（图 5）与付费闸门（图 3）都**尚未经过真实付费调用验收**——护栏 ≠ 验证。
+> 参考图链路（图 5）**已于 2026-09-28 做过一次真实付费验收**（dashscope 通过、ark 因账号欠费未验，
+> 见交付文档 §14.20）；付费闸门（图 3）本身仍未在真实付费调用中被"拦下过一次"——护栏 ≠ 验证。
 
 ---
 
@@ -60,7 +61,7 @@ flowchart TB
   end
 
   subgraph LOCAL["本地件（零费用路径）"]
-    L1["SQLite · 26 张表"]
+    L1["SQLite · 27 张表"]
     L2["ChromaDB<br/>memory_service"]
     L3["backend/data/projects/:id/<br/>镜头视频 · 首帧 · 音频"]
     L4["FFmpeg / ffprobe<br/>不在系统 PATH"]
@@ -283,10 +284,10 @@ flowchart LR
 
 ---
 
-## 图 6 · 数据库 26 张表按职责分域
+## 图 6 · 数据库 27 张表按职责分域
 
 表名来自 `backend/schema.sql`，与真实库 `backend/data/visioncraft.db` 的
-`sqlite_master` 实测一致（26 张，不含 `sqlite_%`）。
+`sqlite_master` 实测一致（27 张，不含 `sqlite_%`）。
 
 **分域是我按职责归纳的，不是代码里的既有结构**——表本身是硬的，分组是解释性的。
 
@@ -301,9 +302,10 @@ flowchart TB
     provider_capabilities
   end
 
-  subgraph D2["② 文本理解与改编（P4-A / P5-A）"]
+  subgraph D2["② 文本理解与改编（P4-A / P5-A / P5-B）"]
     story_bibles
     global_constraints
+    source_chapters
     source_chunks
     story_events
     storylines
@@ -354,10 +356,10 @@ flowchart LR
 
 ---
 
-## 图 7 · 无费用回归驱动器的结构（57 项）
+## 图 7 · 无费用回归驱动器的结构（58 项）
 
 项数实测自 `tools/run_no_cost_regression.py` 的 `build_checks()`：静态 7 +
-Node 6 / Python 30 / 浏览器 14 = 57。注意浏览器组第 14 项
+Node 6 / Python 31 / 浏览器 14 = 58。注意浏览器组第 14 项
 `test_live_2shot_create_guard.cjs` 是**手工 append 在元组之外**的，只数元组会误算成 13。
 
 ```mermaid
@@ -368,11 +370,11 @@ flowchart TB
 
   COPY --> GROUPS
 
-  subgraph GROUPS["57 项"]
+  subgraph GROUPS["58 项"]
     direction LR
     G1["静态 7<br/>语法 / 命名 / 文档口径"]
     G2["Node 6<br/>含 live_2shot.cjs 等"]
-    G3["Python 30<br/>含 test_project_read_budget.py<br/>test_sqlite_lock_tolerance.py（均为新增）"]
+    G3["Python 31<br/>含 test_project_read_budget.py<br/>test_sqlite_lock_tolerance.py<br/>test_long_text_adaptation.py（均为新增）"]
     G4["浏览器 14<br/>Playwright"]
   end
 
@@ -577,6 +579,49 @@ flowchart LR
 
 ---
 
+## 图 11 · P5-B-1 长文本：章节树 → 逐章分块 → 按章范围
+
+出处：`backend/workflow/medium_text_planner.py`（`parse_chapters` / `segment_source`）、
+`backend/services/medium_text_service.py`（`save_adaptation_scope` / `_chunk_ids_for_chapters`）、
+`frontend/js/render.js`（`chapterTreeHtml`）。数字取自 `tools/test_long_text_adaptation.py` 实测。
+
+```mermaid
+flowchart TB
+  SRC["原文 95,618 字<br/>output/test_texts/蛊真人100000字.txt"] --> PARSE["parse_chapters()<br/>CHAPTER_MARKER_RE：第N节：标题<br/>兼容行首空格 / 全角空格 / BOM"]
+  PARSE -->|"匹配到 ≥ 2 个标记"| CH["章节树 30 节<br/>无缝：N 节的 end = N+1 节的 start<br/>末节覆盖到文末"]
+  PARSE -->|"标记 &lt; 2 个"| FB["_fallback_chapters()<br/>CHAPTER_FALLBACK_CHARS = 10,000<br/>吸附到句子边界"]
+  CH --> SEG["segment_source(chapters=...)<br/>逐章独立分块"]
+  FB --> SEG
+  SEG --> CHUNKS["131 块<br/>每块带 chapter_index"]
+  CHUNKS --> EV["story_events 131 条<br/>1 块 → 1 事件"]
+  EV --> SL["storylines 3 条<br/>跨章跨度 [18, 30, 14]"]
+  CH --> SCOPE["save_adaptation_scope(chapter_ids=[...])"]
+  CHUNKS --> SCOPE
+  SCOPE --> OUT["scoped_text<br/>只含勾选章节的原文"]
+  OUT --> P4["P4：改编方案 / Story Bible / 分镜<br/>沿用同一 scope 契约"]
+```
+
+四条是靠这张图才能看出来的不变量：
+
+```mermaid
+flowchart LR
+  I1["① 章节无缝<br/>N 节 end = N+1 节 start"] --> R1["勾了第 10 节<br/>不会把第 11 节开头顺带带进来"]
+  I2["② 逐章独立分块<br/>每章在自己的区间里从头切"] --> R2["块不可能越界<br/>范围能回溯到确定的一段原文"]
+  I3["③ 章节是主选择器<br/>块与事件都由章节推出来"] --> R3["显式传入的范围外事件会被剔除<br/>只勾第 10 节却提交第 20 节的事件 = 范围漏了"]
+  I4["④ 按章定范围不要求先选故事线"] --> R4["10 万字尺度下不再退化成<br/>『取前 60% 事件』"]
+```
+
+**这张图不包含什么**（避免把 P5-B-1 读成 P5-B 的全部）：
+
+- **没有向量检索、全文索引、真实 Embedding / RAG 召回**。这里范围的收缩是**结构性的**——
+  靠章节偏移裁剪，不是语义召回。文档里凡写"检索"处都该按前者理解。
+- 图里没画的两个入口缺陷（都在 2026-09-28 修掉，但值得记住形状）：
+  `start_adaptation_workflow` 里残留的 `scale == "long" → raise TEXT_TOO_LONG` 把长文本挡在门外；
+  拆出 `over_limit` 之后，**超过 10 万字的文本会掉到短文本路径**（不报错、不分章，整本塞进改编）。
+  → 纯函数全绿不代表入口打通。
+
+---
+
 ## 附：本文件里所有数字的出处
 
 | 数字 | 出处 |
@@ -585,10 +630,10 @@ flowchart LR
 | 19 个服务模块 / 20 个文件 | `backend/services/` 目录（含 `__init__.py`） |
 | 8 个 provider 模块 | `backend/providers/`（含 `__init__.py`） |
 | 前端 6 个 ES 模块与行数 | `frontend/js/` 逐文件统计 |
-| 26 张表 | `backend/schema.sql`，与真实库 `sqlite_master` 实测一致 |
+| 27 张表 | `backend/schema.sql`，与真实库 `sqlite_master` 实测一致 |
 | 6 道门 / 9 个状态 | `backend/services/checkpoint_service.py` 四张登记表 |
 | 单价与预算 5.0 元 | `backend/providers/live_budget.py` |
-| 57 项 / 分组 | `tools/run_no_cost_regression.py` 的 `build_checks()` 实测 |
+| 58 项 / 分组 | `tools/run_no_cost_regression.py` 的 `build_checks()` 实测 |
 | ffprobe 886 – 1136 ms | 本机单进程实测；排除过程与取证见交付文档 §14.19.2 |
 | 3.9 – 6.0 s / 8.2 s / 4.1 – 5.3 s | 同一端点三路交叉验证（node `http` · TestClient · TTFB），见 §14.19.2 |
 | 9.9 – 12.5 s / 181 ms / 89.8 s | 页面内打桩 `fetch` 实测 + 回归日志，见 §14.19.2 / §14.19.4 |
@@ -596,6 +641,22 @@ flowchart LR
 > 上表不含一次性临时脚本路径：取证脚本是当轮用完即清的，可复核的是上面这些
 > **已提交**的位置（代码文件与交付文档），不是当时的探针。
 >
-> 本文件的 mermaid 块经本机 Chromium + mermaid@11 **真实渲染校验**（18/18 可渲染，
+> 本文件的 mermaid 块经本机 Chromium + mermaid@11 **真实渲染校验**（**当前 20/20 可渲染**，
 > 逐块尺寸/节点数留证），不是只检查语法。改动本文件后**建议用任意 Mermaid 渲染器重跑一遍**——
 > 结构体检只证明括号平，不证明 mermaid 能解析。
+>
+> **2026-09-28 重跑**（P5-B-1 改动后：图 6 增 `source_chapters` 节点、图 7 计数 57→58、
+> 新增图 11）：**20/20 可渲染**。
+>
+> ⚠️ **块号 ≠ 图号**：探针按 mermaid 块在文件里出现的顺序编号，而一张图可能含多个块，
+> 所以引用尺寸时必须写明"块 N"。当前对应关系：图 6 = 块 9+10，图 7 = 块 11+12，
+> 图 11 = 块 19+20（其余图一律一块）。本文件旧版本曾把块号当图号写（写成"图 6 = 1189×1290"，
+> 而 1189×1290 其实是块 6、也就是**图 4** 的第一块），该口径已作废。
+>
+> 本轮实测（块号 → 尺寸 / 节点 / 边）：
+> - 图 6：块 9 = 1775×1022 / 33 / 5，块 10 = 586×434 / 6 / 3
+> - 图 7：块 11 = 814×2168 / 17 / 11，块 12 = 896×390 / 6 / 4
+> - 图 11（新增）：块 19 = 622×1182 / 11 / 12，块 20 = 586×574 / 8 / 4
+>
+> 渲染器 = 本机 `.playwright-cli` 里的 playwright 1.55.1 + Chromium 1193 + mermaid 11，
+> 脚本为一次性探针（未提交）。

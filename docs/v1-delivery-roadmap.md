@@ -187,7 +187,9 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 
 **2026-09-27 更新（切片 4）：付费闸门补齐到全部视频 provider。** 核查发现，付费闸门（授权开关 + 每项目视频次数上限 + 预算）此前**只在 `_generate_minimax_video` 里执行**，`ark` 与 `dashscope` 是直接分发的、完全不受管——而切片 3 恰恰要在那两家花钱。闸门现已上移到 `generate_video_asset` 的分发环，**全部 provider 共用**；被拦时抛 `BLOCKED_BEFORE_CALL` 并原样上抛，不会被兜底成「所有 provider 都失败」而让人以为换一家就能绕过去。单价也改成按 provider 取（MiniMax 0.50 / ark Seedance 2.0 720p 有输入 1.208 / Wan 2.7 R2V 720P 0.60 元每秒；出处见 `docs/real-live-test-preflight.md` 第 8 节），默认口径仍是 MiniMax。无费用验收：`tools/test_video_provider_guard.py`（10 项断言）。
 
-**付款前还欠两笔真实验收（都未做）**：① 切片 3 的参考图三家；② 首尾帧三家。护栏不等于验证——它只保证"万一要花先拦得住"，不保证"参考图真的维持了一致性"。
+**付款前还欠两笔真实验收**：① 切片 3 的参考图三家；② 首尾帧三家。护栏不等于验证——它只保证"万一要花先拦得住"，不保证"参考图真的维持了一致性"。
+
+> **2026-09-28 更新**：① 批次已实跑——`dashscope` `wan2.7-r2v` **通过**（实付 3.00 元，产物 `asset_76529b075f.mp4` + 对比图 `output/reference-smoke/dashscope-reference-vs-output.png`，身份/构图/绿蝶/金虫一致）；`ark` **未通过但不是能力问题**——火山方舟账号欠费（HTTP 403 `AccountOverdueError`），0 元、未提交，**待充值后补验**；`minimax` 接口无参考图参数，本就不参与。② 首尾帧批次**仍未授权、未跑**。详见 `docs/codex-handoff-delivery-2026-09.md` §14.20。
 
 ### P5：分级长文本适配
 
@@ -197,22 +199,32 @@ V1 的核心不是“一次端到端生成”，而是一个可控、可回退�
 |---|---|---|
 | 0～1,500 字 | 直接分析与分镜（P4-A） | 已完成 |
 | 1,501～10,000 字 | 确定性分块、事件提取、2～3 条候选故事线、用户确认范围后交给 P4 | **P5-A 已完成（2026-08-28，无费用 mock）** |
-| 10,000～100,000 字 | 章节/事件层级摘要、向量检索、跨章节故事线 | **P5-B 尚未实现** |
+| 10,000～100,000 字 | 章节树 + 逐章分块 + 按章选范围 + 跨章故事线 | **P5-B-1 已完成（2026-09-27/28）**；向量检索/RAG 见 P5-B-2 |
+| 超过 100,000 字 | 明确拒绝并说明上限 | 已完成 |
 
 **P5-A 已实现：**
 
 - 持久化 `source_chunks`、`story_events`、`storylines`、`adaptation_scopes`；下游 `adaptation_options` / Bible / 分镜记录 `scope_id`。
-- `POST /run` 按字数路由：短文本仍走 P4；中等文本进入 `awaiting_storyline_review`；超过 10,000 字中文拒绝并说明 P5-B 未实现。
+- `POST /run` 按字数路由：短文本仍走 P4；中等文本进入 `awaiting_storyline_review`。
 - P4 `plan_adaptations` / `plan_story_bible` / `plan_storyboard` 消费已确认 scope 的 `scoped_text`，不再必然使用全文。
 - 无费用测试：`tools/test_medium_text_adaptation.py`。
 
-**P5-B 明确未做：** 章节树、向量检索、全文索引、跨章节故事线、真实 Embedding/RAG API。
+**P5-B-1 已实现（长文本章节树与按章范围）：**
 
-**验收（P5 全量仍待 P5-B）：**
+- `parse_chapters()`：识别 `第N节：标题`（兼容行首空格与 BOM），章节间**无缝**（N 节 end = N+1 节 start），最后一节覆盖到文末。无标记时按 `CHAPTER_FALLBACK_CHARS = 10,000` 硬切并吸附句子边界。
+- `segment_source(..., chapters=...)` **逐章独立分块**，块不可能越界；块上记 `chapter_index`。
+- 持久化新表 `source_chapters`，并在 `source_chunks.chapter_index`、`story_events.chapter_index`、`adaptation_scopes.chapter_ids_json` 三处留章节归属。新库由 `schema.sql` 建，老库由 `_ensure_column` 补列。
+- 范围入口扩展：`save_adaptation_scope(..., chapter_ids=[...])`。章节是长文本的主选择器——块与事件都由章节推出来，**范围外的原文一个字都不会进 `scoped_text`**；显式传入的事件若落在勾选章节之外会被剔除。
+- 前端：`needsScopeStage()` 把 `medium` 与 `long` 收到同一个"范围选择"阶段（长文本在 `render.js` 里渲染章节树勾选面板），避免 10 万字项目掉回短文本路径整本改编。
+- 无费用测试：`tools/test_long_text_adaptation.py`（真实语料 30 节 / 131 块 / 131 事件 / 3 条故事线，含一条 HTTP 端到端）。
 
-- 10 万字导入不将全文一次传入模型。
-- 用户能按章节、人物或事件选择改编范围。
-- 分镜能展示相关原文依据；选定范围外内容不无故进入短片。
+**P5-B-2 明确未做：** 向量检索、全文索引、真实 Embedding/RAG API 召回。当前"按章节缩小范围"是**结构性的**（靠偏移与章节树），不是语义检索。
+
+**验收（P5 全量仍待 P5-B-2）：**
+
+- 10 万字导入不将全文一次传入模型。（P5-B-1 已满足：`scoped_text` 只含勾选章节）
+- 用户能按章节选择改编范围。（P5-B-1 已满足）
+- 分镜能展示相关原文依据；选定范围外内容不无故进入短片。（P5-A 已满足，P5-B-1 沿用同一 `scoped_text` 契约）
 
 ### P6：多镜头合成、导出与演示包装
 

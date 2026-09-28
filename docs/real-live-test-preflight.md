@@ -156,3 +156,31 @@ $env:VISIONCRAFT_LIVE_BUDGET_CNY="20"       # 默认 5.0 装不下 ark
 **验收要看的是画面，不是状态码**：① 参考图模式下人物/场景是否真的维持了一致性；② 首尾帧是否真的按给定的两帧收束。两批都要在清理前落脱敏 `live_run_audit.json` / `live_run_lineage.json` / `live_run_ffprobe.json`（见第 7 节），并把真实产物留在项目目录里以便复核。
 
 **还有一条属于"实调才知道"的**：`wan2.7-r2v` 的模型 id 在官方文档里是对的，但本项目的 `DASHSCOPE_API_HOST` 是专属 MaaS 域名，**该模型是否已在该端点上开通仍需实调确认**——id 正确不等于账号可用（见第 8 节末）。
+
+## 10. 批次①的实跑结果与账目（2026-09-28）
+
+竹木授权「今天跑①」后实际执行，**只用了一次真实付费调用**。报告与产物落在：
+
+- `<数据目录>/reference-smoke/reference-ark-refsmoke_ark_59c51f0a.json`
+- `<数据目录>/reference-smoke/refresh-vt_90b0e699f8.json`（零费用回查）
+- `<数据目录>/projects/refsmoke_dashscope_9f75dc8f/asset_76529b075f.mp4`
+- `output/reference-smoke/dashscope-reference-vs-output.png`（左参考图 / 右输出首帧）
+
+| Provider | 结果 | 实际费用 | 说明 |
+|---|---|---|---|
+| `dashscope` `wan2.7-r2v` | **成功** | **3.00 元**（0.60 × 5s） | `video_tasks` 1 条 `completed`；提交 payload 里 `reference_image` 与 `first_frame` **并存**；ffprobe 实测 h264 1110×828 / 150 帧 / 5.038005s / aac |
+| `ark` Seedance 2.0 | **失败，未提交** | **0 元** | HTTP 403 `AccountOverdueError`（**火山方舟账号欠费**），`video_tasks` 0 条 |
+| `minimax` | 跳过 | 0 元 | 接口本就没有参考图参数，不参与本批次 |
+
+**① 批次实际花掉 3.00 元，不是估的 9.04 元**——ark 那一半压根没提交出去（欠费在开 HTTP 前就被对方拒了）。
+
+**两个被这次实跑解答、以及一个新增的待办**：
+
+1. ✅ `wan2.7-r2v` 在本项目**专属 MaaS 端点**上**已开通**（此前只确认了模型 id 正确）。
+2. ✅ dashscope 的 `reference_image` 与 `first_frame` **可以并存**。
+3. ⏳ **ark 参考图模式仍未验证**，卡在**账号欠费**上。**需要给火山方舟账号充值后再单独授权补跑**——
+   这不是能力问题，不要写成"ark 不支持参考图"。
+
+**回顾性提醒**：本条也说明第 9 节那套预计口径的用途是"授权前的上限"，不是"事后账目"。
+真实开销可能远低于预计（这次只有估计的 1/3）。
+
