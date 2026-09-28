@@ -68,7 +68,7 @@ export function stageStateMark(state) {
 }
 
 export function resolveStageId(stageId, project) {
-  if (stageId === "adaptation") return isMedium(project) ? "storyline" : "text";
+  if (stageId === "adaptation") return needsScopeStage(project) ? "storyline" : "text";
   if (STAGES.some((stage) => stage.id === stageId)) return stageId;
   return LEGACY_STAGE_ALIAS[stageId] || "text";
 }
@@ -116,7 +116,7 @@ const STAGE_JOB_TYPES = {
 
 const STAGE_GOALS = {
   text: "理解原文规模、人物与冲突，并产出可审核的改编依据。",
-  storyline: "从候选故事线或改编方案中确认本次短片范围。",
+  storyline: "从候选故事线或章节树中确认本次短片范围。",
   bible: "锁定角色、场景与视觉规则，作为后续镜头的锚点。",
   storyboard: "确认镜头顺序、动作与原文依据，再进入制作。",
   keyframes: "为每个镜头准备首帧与尾帧，供视频生成引用。",
@@ -127,7 +127,7 @@ const STAGE_GOALS = {
 
 const STAGE_INPUTS = {
   text: "项目原文与规模判断。",
-  storyline: "文本理解结果与候选故事线。",
+  storyline: "文本理解结果、候选故事线与章节树。",
   bible: "已确认的改编范围。",
   storyboard: "已确认的 Story Bible。",
   keyframes: "已确认的分镜镜头。",
@@ -138,7 +138,7 @@ const STAGE_INPUTS = {
 
 const STAGE_OUTPUTS = {
   text: "摘要、人物、场景、事件，以及短文本改编方案。",
-  storyline: "已选故事线、事件范围，以及中等文本改编方案。",
+  storyline: "已选故事线/章节范围、事件范围，以及改编方案。",
   bible: "角色卡、场景卡与视觉规则。",
   storyboard: "可审核的分镜草案或已入制作镜头。",
   keyframes: "每镜首帧与尾帧。",
@@ -180,8 +180,14 @@ const PRODUCTION_STATUSES = new Set([
   "completed",
 ]);
 
-function isMedium(project) {
-  return project?.text_scale === "medium";
+/**
+ * 是否需要「故事线 / 章节」这一步来圈定改编范围。
+ * 中等文本靠故事线，长文本靠章节树——两者是同一个阶段的两个入口，
+ * 所以判定要一起收，否则 10 万字项目会掉到短文本路径上，直接拿全文去改编。
+ */
+export function needsScopeStage(project) {
+  const scale = project?.text_scale;
+  return scale === "medium" || scale === "long";
 }
 
 function currentVersionOf(shot) {
@@ -252,7 +258,7 @@ export function executionStageId(project) {
   if (!project) return "text";
   const status = project.status || "created";
   if (status === "awaiting_scope_review" || status === "adaptation_options_ready") {
-    return isMedium(project) ? "storyline" : "text";
+    return needsScopeStage(project) ? "storyline" : "text";
   }
   if (ADAPTATION_STATUS_STAGE[status]) return ADAPTATION_STATUS_STAGE[status];
   if (PRODUCTION_STATUSES.has(status) || status === "failed") return productionFrontier(project);
@@ -295,7 +301,7 @@ function stageHasData(project, stageId) {
     case "text":
       return Boolean(project?.source_text) || (project?.adaptation_options || []).length > 0;
     case "storyline":
-      return (project?.storylines || []).length > 0 || (isMedium(project) && (project?.adaptation_options || []).length > 0);
+      return (project?.storylines || []).length > 0 || (needsScopeStage(project) && (project?.adaptation_options || []).length > 0);
     case "bible":
       return Boolean(project?.story_bible);
     case "storyboard":
@@ -405,7 +411,7 @@ function completedStageModified(project, stageId) {
  * 返回 { executionStage, stages: [{ id, label, index, state, stateLabel, tone, summary, skippedReason, current, ... }] }。
  */
 export function computeWorkflow(project) {
-  const medium = isMedium(project);
+  const medium = needsScopeStage(project);
   let frontierId = executionStageId(project);
   if (project?.status === "failed") frontierId = failedStage(project);
   const frontierIndex = stageIndex(frontierId);
@@ -507,11 +513,11 @@ function stageJobCount(project, stageId) {
 
 function stageAssetCount(project, stageId) {
   if (!project) return 0;
-  if (stageId === "text" && !isMedium(project)) {
+  if (stageId === "text" && !needsScopeStage(project)) {
     return textAssets(project).length + (project?.adaptation_options || []).length;
   }
-  if (stageId === "storyline" && isMedium(project)) {
-    return storylineAssets(project).length + (project?.adaptation_options || []).length;
+  if (stageId === "storyline" && needsScopeStage(project)) {
+    return storylineAssets(project).length + (project?.source_chapters || []).length + (project?.adaptation_options || []).length;
   }
   return stageAssets(project, stageId).length;
 }
@@ -527,15 +533,17 @@ function stageSummary(project, stageId, state) {
   switch (stageId) {
     case "text": {
       const len = (project?.source_text || "").length;
-      const options = isMedium(project) ? 0 : (project?.adaptation_options || []).length;
+      const options = needsScopeStage(project) ? 0 : (project?.adaptation_options || []).length;
       const scale = project?.text_scale_label || "文本";
       if (options) return `${scale} · ${len} 字 · ${options} 个方案`;
       return len ? `${scale} · ${len} 字` : "等待原文";
     }
     case "storyline": {
       const count = (project?.storylines || []).length;
-      const options = isMedium(project) ? (project?.adaptation_options || []).length : 0;
+      const chapters = (project?.source_chapters || []).length;
+      const options = needsScopeStage(project) ? (project?.adaptation_options || []).length : 0;
       if (options) return `${count} 条故事线 · ${options} 个改编方案`;
+      if (chapters) return `${chapters} 个章节 · ${count} 条候选故事线`;
       return count ? `${count} 条候选故事线` : "等待故事线";
     }
     case "bible":

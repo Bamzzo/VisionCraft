@@ -1264,10 +1264,16 @@ async function onCleanupDemoData() {
 
 function collectMediumScopePayload() {
   const eventIds = [...document.querySelectorAll("[data-event-check]:checked")].map((input) => input.value);
-  return {
-    event_ids: eventIds,
-    user_note: document.getElementById("scopeUserNote")?.value || "",
-  };
+  const chapterIds = [...document.querySelectorAll("[data-chapter-check]:checked")].map((input) => input.value);
+  const payload = { user_note: document.getElementById("scopeUserNote")?.value || "" };
+  // 章节是长文本的主选择器：勾了章节就以章节为准，事件由后端从章节推出来。
+  // 两套选择器同时提交会各说各话，反而把范围外的原文带进 scope。
+  if (chapterIds.length) {
+    payload.chapter_ids = chapterIds;
+  } else {
+    payload.event_ids = eventIds;
+  }
+  return payload;
 }
 
 function collectBiblePayload() {

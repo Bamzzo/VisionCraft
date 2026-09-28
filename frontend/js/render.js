@@ -6,6 +6,7 @@ import {
   computeWorkflow,
   jobCenterRows,
   jobStatusLabel,
+  needsScopeStage,
   resolveAnchor,
   resolveStageId,
   stageAssets,
@@ -366,8 +367,8 @@ function projectStageLabel(project) {
     draft: "文本理解",
     running: "文本理解",
     awaiting_storyline_review: "故事线选择",
-    adaptation_options_ready: project.text_scale === "medium" ? "故事线选择" : "文本理解",
-    awaiting_scope_review: project.text_scale === "medium" ? "故事线选择" : "文本理解",
+    adaptation_options_ready: needsScopeStage(project) ? "故事线选择" : "文本理解",
+    awaiting_scope_review: needsScopeStage(project) ? "故事线选择" : "文本理解",
     story_bible_ready: "Story Bible",
     awaiting_bible_review: "Story Bible",
     storyboard_draft_ready: "分镜设计",
@@ -739,20 +740,22 @@ function stageEmptyText(stage) {
 function textStageHtml(project) {
   const cards = stageAssets(project, "text");
   const scaleLine = `<div class="prompt-block"><strong>原文规模</strong><br />${escapeHtml(project.text_scale_label || "")} · 共 ${escapeHtml(String((project.source_text || "").length))} 字</div>`;
-  const options = project.text_scale === "medium" ? "" : adaptationStageHtml(project, { embedded: true });
+  const options = needsScopeStage(project) ? "" : adaptationStageHtml(project, { embedded: true });
   if (!cards.length && !options) return `${scaleLine}<div class="empty-state">启动改编流程后显示文本理解结果。</div>`;
   return `${scaleLine}${assetGridHtml(project, "text")}${options}`;
 }
 
-/* ---- 故事线选择（中等文本） ---- */
+/* ---- 故事线选择（中等文本）与章节树（长文本） ---- */
 function storylineStageHtml(project) {
   const storylines = project.storylines || [];
-  if (!storylines.length) {
-    return `<div class="empty-state">启动改编流程后，这里出现候选故事线。当前状态：${escapeHtml(project.status || "")}</div>`;
+  const chapters = project.source_chapters || [];
+  if (!storylines.length && !chapters.length) {
+    return `<div class="empty-state">启动改编流程后，这里出现候选故事线或章节树。当前状态：${escapeHtml(project.status || "")}</div>`;
   }
   const scope = project.adaptation_scope;
   const selectedLine = storylines.find((item) => item.selected);
   const selectedEventIds = new Set(scope?.event_ids || selectedLine?.event_ids || []);
+  const selectedChapterIds = new Set(scope?.chapter_ids || []);
   const cards = storylines
     .map(
       (item) => `
@@ -788,23 +791,46 @@ function storylineStageHtml(project) {
     : "";
   const scopedPreview = scope?.scoped_text
     ? `<blockquote>系统将把以下选中范围交给后续改编（共 ${escapeHtml(String(scope.scoped_text.length))} 字）：「${escapeHtml(scope.scoped_text.slice(0, 280))}${scope.scoped_text.length > 280 ? "…" : ""}」</blockquote>`
-    : `<p class="muted-text">选择故事线并勾选事件后，这里会显示实际交给改编的原文。</p>`;
-  const scopePanel = selectedLine
-    ? `<div class="prompt-block">
-        <strong>组成事件（可勾选/取消少量事件）</strong>
-        ${eventChecks}
+    : `<p class="muted-text">勾选章节或事件后，这里会显示实际交给改编的原文。</p>`;
+  const chapterPanel = chapters.length ? chapterTreeHtml(chapters, selectedChapterIds) : "";
+  const eventBlock = selectedLine ? `<strong>组成事件（可勾选/取消少量事件）</strong>${eventChecks}` : "";
+  const scopePanel =
+    selectedLine || chapters.length
+      ? `<div class="prompt-block">
+        ${eventBlock}
         ${scopedPreview}
         <label>修改说明<input id="scopeUserNote" value="${escapeHtml(scope?.user_note || "")}" /></label>
         <div class="button-row compact-row">
-          <button class="secondary-btn mini-btn" data-adapt="recommend-scope">按推荐范围继续</button>
+          ${selectedLine ? `<button class="secondary-btn mini-btn" data-adapt="recommend-scope">按推荐范围继续</button>` : ""}
           <button class="secondary-btn mini-btn" data-adapt="save-medium-scope">保存范围</button>
           <button class="primary-btn mini-btn" data-adapt="confirm-medium-scope">确认范围并进入改编</button>
           <button class="secondary-btn mini-btn" data-adapt="regen-medium" data-stage="analysis">修改后重生成分析</button>
         </div>
       </div>`
-    : `<p class="muted-text">请先选择一条故事线。</p>`;
+      : `<p class="muted-text">请先选择一条故事线。</p>`;
   const options = (project.adaptation_options || []).length ? adaptationStageHtml(project, { embedded: true }) : "";
-  return `<div class="asset-grid single">${cards}</div>${scopePanel}${options}`;
+  return `${cards ? `<div class="asset-grid single">${cards}</div>` : ""}${chapterPanel}${scopePanel}${options}`;
+}
+
+/* ---- 长文本章节树 ---- */
+function chapterTreeHtml(chapters, selectedChapterIds) {
+  const total = chapters.reduce((sum, item) => sum + Number(item.char_count || 0), 0);
+  const rows = chapters
+    .map(
+      (chapter) => `
+      <label class="prompt-block">
+        <input type="checkbox" data-chapter-check value="${escapeHtml(chapter.id)}" ${selectedChapterIds.has(chapter.id) ? "checked" : ""} />
+        <strong>${escapeHtml(chapter.marker || "")}：${escapeHtml(chapter.title || "")}</strong>
+        <p>${escapeHtml(chapter.summary || "")}</p>
+        <p class="muted-text">${escapeHtml(String(chapter.char_count || 0))} 字 · 偏移 ${escapeHtml(String(chapter.start_offset))}–${escapeHtml(String(chapter.end_offset))} · ${escapeHtml(String(chapter.chunk_count || 0))} 块</p>
+      </label>`
+    )
+    .join("");
+  return `<div class="prompt-block">
+      <strong>章节树（${escapeHtml(String(chapters.length))} 节 · 共 ${escapeHtml(String(total))} 字）</strong>
+      <p class="muted-text">长文本按章节圈定范围：勾选哪几节，交给改编的就只有这几节，范围外的原文不会混进来。</p>
+      ${rows}
+    </div>`;
 }
 
 /* ---- 改编方案 ---- */
