@@ -114,6 +114,20 @@ def _provider_key_present(candidate: str) -> bool:
     return False
 
 
+# 诊断面板与实际分发必须同源：这里就是 `generate_video_asset` 分发环里用的那套判定。
+VIDEO_PROVIDER_KEY_NAMES = ("siliconflow", "ark", "dashscope", "minimax")
+
+
+def video_key_status() -> dict[str, bool]:
+    """哪些视频 provider 配了密钥。
+
+    存在的理由：`/api/health` 的 `live_access` 原先只看 MiniMax 一家，
+    于是只配了 ark/dashscope 的机器会被报成「视频：未配置访问密钥」——
+    而分发环其实会照样把它们发出去。诊断说没有、实际有，比没有诊断更糟。
+    """
+    return {name: _provider_key_present(name) for name in VIDEO_PROVIDER_KEY_NAMES}
+
+
 def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
     from .capabilities import normalize_video_provider
 

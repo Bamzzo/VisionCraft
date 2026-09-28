@@ -366,16 +366,20 @@ def _default_model_for_provider(provider: str) -> str:
 def _live_access_payload() -> dict:
     from .llm_catalog import deepseek_configured, live_llm_authorized, live_vision_authorized
     from .live_budget import live_video_authorized
+    from .video_provider import video_key_status
 
     deepseek_key = deepseek_configured()
-    minimax_key = bool(os.getenv("MINIMAX_API_KEY"))
+    video_keys = video_key_status()
+    any_video_key = any(video_keys.values())
     llm_authorized = live_llm_authorized()
     vision_authorized = live_vision_authorized()
     video_authorized = live_video_authorized()
 
     text_ready = bool(llm_authorized and deepseek_key)
     vision_ready = bool(vision_authorized and deepseek_key)
-    video_ready = bool(video_authorized and minimax_key)
+    # 视频只要有一家可用就算可用：分发环会跳过没有密钥的候选，
+    # 只认 MiniMax 会把「只配了 ark / dashscope」误报成不可用。
+    video_ready = bool(video_authorized and any_video_key)
     ready = text_ready or vision_ready or video_ready
 
     # Report the two gates separately. A missing key and a closed authorization
@@ -388,7 +392,7 @@ def _live_access_payload() -> dict:
     blocked_by: list[str] = []
     if not deepseek_key:
         blocked_by.append("文本与视觉：未配置访问密钥")
-    if not minimax_key:
+    if not any_video_key:
         blocked_by.append("视频：未配置访问密钥")
     if not llm_authorized:
         blocked_by.append("文本：真实调用授权未开启")
@@ -413,7 +417,7 @@ def _live_access_payload() -> dict:
         "vision_ready": vision_ready,
         "video_ready": video_ready,
         "authorized": {"llm": llm_authorized, "vision": vision_authorized, "video": video_authorized},
-        "keys_present": {"deepseek": deepseek_key, "minimax": minimax_key},
+        "keys_present": {"deepseek": deepseek_key, **video_keys},
         "blocked_by": blocked_by,
         "hint": hint,
     }

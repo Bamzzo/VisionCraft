@@ -221,6 +221,76 @@ def test_prepare_rejects_i2v_without_frame() -> None:
         shutil.rmtree(PROJECTS_DIR / project_id, ignore_errors=True)
 
 
+VIDEO_KEY_ENVS = (
+    "SILICONFLOW_API_KEY",
+    "VOLC_API_KEY",
+    "VOLC_VIDEO_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "MINIMAX_API_KEY",
+)
+
+
+def _env(values: dict[str, str | None]):
+    """临时设置/清除环境变量（None = 清除），退出时还原。
+
+    刻意**不调用 init_environment()**：它会 `load_dotenv` 把 `.env` 里的真实密钥
+    重新填回被我清空的变量，用例就测不到"没有密钥"这一支了。
+    因此这里也用 `VOLC_API_KEY` 而不是 `ARK_API_KEY` —— 后者要靠 `init_environment`
+    才有映射，而 `_ark_api_key()` 读的就是前者。
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def manager():
+        previous = {key: os.environ.get(key) for key in values}
+        try:
+            for key, value in values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    return manager()
+
+
+def test_live_access_recognises_every_video_provider() -> None:
+    """诊断面板必须认 ark / dashscope 的密钥，不能只认 MiniMax。
+
+    此前 `keys_present` 只填 deepseek/minimax、`video_ready` 只看 minimax：
+    只配 ark 的机器会被报成「视频：未配置访问密钥」，而分发环照样会把请求发出去。
+    **诊断说没有、实际有，比没有诊断更糟。**
+    """
+    blank = dict.fromkeys(VIDEO_KEY_ENVS)
+
+    with _env({**blank, "VISIONCRAFT_ALLOW_LIVE_VIDEO": "1"}):
+        empty = get_provider_capabilities()["live_access"]
+        assert empty["video_ready"] is False, "一个视频密钥都没有时不应报视频可用"
+        assert any("视频：未配置访问密钥" in item for item in empty["blocked_by"]), "应明确说明缺视频密钥"
+
+    with _env({**blank, "VISIONCRAFT_ALLOW_LIVE_VIDEO": "1", "VOLC_API_KEY": "unit-test-ark-key"}):
+        ark_only = get_provider_capabilities()["live_access"]
+        assert ark_only["keys_present"]["ark"] is True, "ark 密钥必须被诊断面板认到"
+        assert ark_only["keys_present"]["minimax"] is False, "没配 MiniMax 就不该说配了"
+        assert ark_only["video_ready"] is True, "只配 ark 也应报视频可用——分发环真的会用它"
+        assert not any("视频：未配置访问密钥" in item for item in ark_only["blocked_by"]), "不该再报缺视频密钥"
+        blob = json.dumps(ark_only, ensure_ascii=False)
+        for forbidden in ("VOLC_API_KEY", "ARK_API_KEY", "DASHSCOPE_API_KEY", "MINIMAX_API_KEY"):
+            assert forbidden not in blob, f"诊断 payload 泄露了环境变量名：{forbidden}"
+
+    with _env({**blank, "VISIONCRAFT_ALLOW_LIVE_VIDEO": "1", "DASHSCOPE_API_KEY": "unit-test-dashscope-key"}):
+        dashscope_only = get_provider_capabilities()["live_access"]
+        assert dashscope_only["keys_present"]["dashscope"] is True, "dashscope 密钥必须被诊断面板认到"
+        assert dashscope_only["video_ready"] is True, "只配 dashscope 也应报视频可用"
+        print("PASS: 视频可用性诊断覆盖全部 provider（不再只认 MiniMax），且不泄露环境变量名")
+
+
 def main() -> None:
     init_environment()
     init_db()
@@ -228,6 +298,7 @@ def main() -> None:
     test_validate_frames_and_modes()
     test_prepare_forks_on_provider_switch()
     test_prepare_rejects_i2v_without_frame()
+    test_live_access_recognises_every_video_provider()
     print("PASS: provider capability contract and shot-level constraints")
 
 
