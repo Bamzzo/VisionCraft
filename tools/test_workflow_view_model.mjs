@@ -328,6 +328,28 @@ function realShot(overrides = {}) {
 }
 
 {
+  // P5-B：长文本与中等文本共用「范围」阶段，入口从故事线换成章节树。
+  // 这里钉的是最难看出来的退化——长文本若被判成"不需要这一步"，
+  // 用户就没有任何地方能圈定 10 万字的范围，只能整本拿去改编。
+  const longProject = baseProject({
+    status: "awaiting_storyline_review",
+    text_scale: "long",
+    text_scale_label: "长文本：按章节选择改编范围",
+    source_chapters: [{ id: "chap_1", chapter_index: 1, marker: "第一节", title: "纵身亡魔心仍不悔", char_count: 3200 }],
+    storylines: [{ id: "sln_1", title: "候选线", chunk_ids: [], event_ids: [] }],
+  });
+  const workflow = computeWorkflow(longProject);
+  assert(workflow.executionStage === "storyline", `长文本执行阶段应为 storyline，实际 ${workflow.executionStage}`);
+  assert(stageById(workflow, "storyline").state !== STAGE_STATE.SKIPPED, "长文本不能跳过范围选择阶段");
+  assert(stageById(workflow, "storyline").summary.includes("章节"), "范围阶段摘要应体现章节树");
+  assert(resolveStageId("adaptation", longProject) === "storyline", "长文本旧 adaptation 映射到 storyline");
+  // 这一条才是真正的钉子：范围审核中的长文本必须停在范围阶段。
+  const scopeReview = computeWorkflow(baseProject({ status: "awaiting_scope_review", text_scale: "long" }));
+  assert(scopeReview.executionStage === "storyline", `长文本范围审核应停在 storyline，实际 ${scopeReview.executionStage}`);
+  console.log("PASS: 长文本与中等文本共用范围阶段（章节入口）");
+}
+
+{
   const workflow = computeWorkflow(
     baseProject({
       status: "production_ready",

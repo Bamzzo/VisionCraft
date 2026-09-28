@@ -280,17 +280,33 @@ def test_short_text_still_direct_p4() -> None:
         _cleanup(project_id)
 
 
-def test_long_text_rejected() -> None:
+def test_long_text_enters_chapter_analysis() -> None:
+    """P5-B：1 万–10 万字不再被拒绝，而是先立章节树再进入范围选择。"""
     source = _medium_text(12000)
     assert text_scale(source) == "long"
-    project_id = _project(source, "超长文本")
+    project_id = _project(source, "长文本")
+    try:
+        start_adaptation_workflow(project_id)
+        project = get_project(project_id)
+        assert project["status"] == "awaiting_storyline_review"
+        assert len(project["source_chapters"]) >= 2, "长文本必须先立章节树，否则无处按章圈定范围"
+        print(f"PASS: 12,000 字长文本不再被拒，立起 {len(project['source_chapters'])} 章并进入范围选择")
+    finally:
+        _cleanup(project_id)
+
+
+def test_over_limit_text_rejected() -> None:
+    """超过 10 万字仍要拒绝——上限不是摆设。"""
+    source = _medium_text(101000)
+    assert text_scale(source) == "over_limit"
+    project_id = _project(source, "超上限文本")
     try:
         try:
             start_adaptation_workflow(project_id)
-            raise AssertionError("超长文本应被拒绝")
+            raise AssertionError("超过 100,000 字应被拒绝")
         except AdaptationError as exc:
-            assert "P5-B" in str(exc)
-        print("PASS: 超过 10,000 字拒绝并说明 P5-B 未实现")
+            assert "上限" in str(exc), f"拒绝理由应说明上限，实际：{exc}"
+        print("PASS: 超过 100,000 字仍被拒绝并说明上限")
     finally:
         _cleanup(project_id)
 
@@ -340,7 +356,8 @@ def main() -> None:
     test_scope_persist_and_p4_uses_scope()
     test_regen_keeps_p3()
     test_short_text_still_direct_p4()
-    test_long_text_rejected()
+    test_long_text_enters_chapter_analysis()
+    test_over_limit_text_rejected()
     test_http_smoke()
     print("ALL MEDIUM TEXT TESTS PASSED")
 

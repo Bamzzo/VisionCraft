@@ -37,6 +37,21 @@ function mediumText() {
   return text;
 }
 
+// 长文本必须**带真实章节标记**：只有标记才验证得了"按章选范围"这条链路，
+// 用无标记文本会退化成硬切分章，测不到章节树本身。
+const LONG_SECTIONS = 12;
+
+function longText() {
+  const unit = shortText();
+  let text = "";
+  for (let section = 1; section <= LONG_SECTIONS; section += 1) {
+    let body = "";
+    while (body.length < 1100) body += unit;
+    text += `第${section}节：第${section}节标题\n${body}\n`;
+  }
+  return text;
+}
+
 async function launchBrowser() {
   try {
     return await chromium.launch({ channel: "chrome", headless: true });
@@ -64,6 +79,40 @@ async function createProject(page, title, text) {
 
 async function currentProjectId(page) {
   return page.locator(".project-item.active").getAttribute("data-project-id");
+}
+
+/**
+ * 等「阶段工作区」停止重渲染。
+ *
+ * 为什么需要：改编流程跑完前后，后台任务事件会把 `#stageWorkspace` 整块重绘
+ * （实测一次长文本分析期间数到 **13 次**）。勾选框的勾选状态只存在于 DOM 里，
+ * 重绘会把它抹掉——于是"勾 3 节却存下 2 节"这种失败看起来像产品缺陷，
+ * 其实是**用例撞上了重绘窗口**。这里不是在掩盖问题：重绘期间的丢勾选是已知的
+ * 界面隐患（未保存的勾选不跨重绘），已单列在文档里；这里只是让用例不再依赖时序。
+ */
+async function waitForWorkspaceQuiet(page, quietMs = 1500) {
+  await page.evaluate(() => {
+    const host = document.querySelector("#stageWorkspace");
+    if (window.__wsObserver) window.__wsObserver.disconnect();
+    window.__wsObservedFrom = Date.now();
+    window.__wsLastMutation = 0;
+    window.__wsObserver = new MutationObserver(() => {
+      window.__wsLastMutation = Date.now();
+    });
+    window.__wsObserver.observe(host, { childList: true, subtree: true });
+  });
+  await page.waitForFunction(
+    (quiet) => {
+      // 注意两种都算"静止"：观察期内没有发生过变化（last === 0，界面本来就稳），
+      // 或最后一次变化已经过去 quiet 毫秒。写成"必须观察到过变化"会在本来就没有重绘时
+      // 永远等不到——本用例第一版就是这么在驱动器里超时的（手跑时有任务事件掩盖了它）。
+      const last = window.__wsLastMutation || 0;
+      const baseline = last || window.__wsObservedFrom || Date.now();
+      return Date.now() - baseline > quiet;
+    },
+    quietMs,
+    { timeout: 30000 }
+  );
 }
 
 async function deleteProject(page, projectId) {
@@ -161,6 +210,68 @@ async function main() {
       { timeout: 10000 }
     );
     console.log("PASS: 刷新后中等文本故事线仍在");
+
+    // ---- 长文本：章节树 + 按章选范围 ----
+    const longSource = longText();
+    const longTitle = `ui-long-${Date.now()}`;
+    const longId = await runWithoutReload(page, longTitle, longSource);
+    created.push(longId);
+    await page.click('[data-stage-id="storyline"]');
+    await page.waitForFunction(
+      () => (document.querySelector("#stageWorkspace")?.innerText || "").includes("章节树"),
+      null,
+      { timeout: 20000 }
+    );
+    const boxes = page.locator("[data-chapter-check]");
+    await waitForWorkspaceQuiet(page);
+    const boxCount = await boxes.count();
+    if (boxCount !== LONG_SECTIONS) {
+      throw new Error(`长文本应渲染 ${LONG_SECTIONS} 个章节勾选框，实际 ${boxCount}`);
+    }
+    const longSummary = await page.locator("#summaryFields").innerText();
+    if (!longSummary.includes("按章节选择改编范围")) throw new Error("长文本未显示按章节的规模说明");
+    console.log("PASS: 长文本启动后未刷新即出现章节树与逐章勾选框");
+
+    // 只勾中间三节：从第 1 节开始会让"范围"恰好等于前缀，测不出越界。
+    const picked = [4, 5, 6];
+    for (const index of picked) await boxes.nth(index).check();
+    const checkedBeforeSave = await page.locator("[data-chapter-check]:checked").count();
+    if (checkedBeforeSave !== picked.length) {
+      throw new Error(`点完勾选后应勾着 ${picked.length} 节，实际 ${checkedBeforeSave}（界面重绘抹掉了勾选？）`);
+    }
+    await page.click('[data-adapt="save-medium-scope"]');
+    await page.waitForFunction(
+      () => (document.querySelector("#stageWorkspace")?.innerText || "").includes("系统将把以下选中范围交给后续改编"),
+      null,
+      { timeout: 20000 }
+    );
+    const previewText = await page.locator("#stageWorkspace").innerText();
+    // 只从「交给后续改编」那句往后取数：章节树头部也写着「共 N 字」（那是全文），
+    // 直接全文匹配会抓到全文长度，把"范围没生效"误判成通过的反面——口径错了，
+    // 报出来的永远是错的数。见 PITFALLS「计量点选错」。
+    const previewSlice = previewText.slice(previewText.indexOf("系统将把以下选中范围交给后续改编"));
+    const matched = previewSlice.match(/共\s*([\d,]+)\s*字/);
+    if (!matched) throw new Error("范围预览里没有可读的字数");
+    const scopedChars = Number(matched[1].replace(/,/g, ""));
+    if (!(scopedChars > 0 && scopedChars < longSource.length * 0.5)) {
+      throw new Error(`只勾 3 节却带进 ${scopedChars} 字（全文 ${longSource.length} 字）`);
+    }
+    await page.screenshot({ path: path.join(OUT, "long-chapters.png"), fullPage: true });
+    console.log(`PASS: 长文本按章选范围后 scope 为 ${scopedChars} 字（全文 ${longSource.length} 字）`);
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#runWorkflowBtn");
+    await page.click('[data-stage-id="storyline"]');
+    await page.waitForFunction(
+      () => document.querySelectorAll("[data-chapter-check]").length > 0,
+      null,
+      { timeout: 15000 }
+    );
+    const stillChecked = await page.locator("[data-chapter-check]:checked").count();
+    if (stillChecked !== picked.length) {
+      throw new Error(`刷新后应仍勾着 ${picked.length} 节，实际 ${stillChecked}`);
+    }
+    console.log("PASS: 刷新后长文本章节范围仍保留");
   } finally {
     for (const id of created.filter(Boolean)) {
       try {

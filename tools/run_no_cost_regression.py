@@ -128,6 +128,7 @@ def build_checks() -> list[Check]:
         "test_adaptation_start_refresh.py",
         "test_adaptation_workflow.py",
         "test_medium_text_adaptation.py",
+        "test_long_text_adaptation.py",
         "test_upload_assets.py",
         "test_job_center.py",
         "test_media_transfer.py",
