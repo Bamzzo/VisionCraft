@@ -556,6 +556,13 @@ async function onAdaptationAction(trigger) {
       // 重做：先保存当前阶段草稿，再从该阶段重新执行（后端会失效必要下游）。
       await redoStage(state.project, trigger.dataset.stage);
     }
+    // 这些动作会让服务端改写范围、或重跑会重建章节的分析：返回的项目才是权威，
+    // 留着一份改动前的勾选草稿会跟它打架（`select-storyline` 还会换掉默认事件集）。
+    // 只清这几项、不在每个动作上清，是为了让无关动作（如视觉检查）不吞掉未保存的勾选。
+    const scopeInvalidating =
+      ["save-medium-scope", "confirm-medium-scope", "recommend-scope", "regen-medium", "select-storyline"].includes(action) ||
+      (action === "regen" && ["analysis", "storyline"].includes(trigger.dataset.stage));
+    if (scopeInvalidating) state.scopeSelectionDraft = null;
     attachEvents();
     renderAll();
     if (["save-bible", "save-storyboard", "save-medium-scope"].includes(action)) {
@@ -1262,16 +1269,68 @@ async function onCleanupDemoData() {
 /* 表单数据收集                                                         */
 /* ================================================================== */
 
+/** 从 DOM 取当前勾选与说明：勾选状态的原始出处。 */
+function scopeSelectionValues() {
+  return {
+    chapter_ids: [...document.querySelectorAll("[data-chapter-check]:checked")].map((input) => input.value),
+    event_ids: [...document.querySelectorAll("[data-event-check]:checked")].map((input) => input.value),
+    user_note: document.getElementById("scopeUserNote")?.value || "",
+  };
+}
+
+/** 已保存的范围。事件回退与渲染侧同一套：scope 未记事件时用所选故事线的事件。 */
+function savedScopeValues() {
+  const scope = state.project?.adaptation_scope || {};
+  const line = (state.project?.storylines || []).find((item) => item.selected);
+  return {
+    chapter_ids: [...(scope.chapter_ids || [])],
+    event_ids: [...(scope.event_ids?.length ? scope.event_ids : line?.event_ids || [])],
+    user_note: scope.user_note || "",
+  };
+}
+
+function scopeSelectionEqual(left, right) {
+  const sameIds = (a, b) =>
+    [...(a || [])].sort().join("\u0000") === [...(b || [])].sort().join("\u0000");
+  return (
+    sameIds(left.chapter_ids, right.chapter_ids) &&
+    sameIds(left.event_ids, right.event_ids) &&
+    String(left.user_note || "") === String(right.user_note || "")
+  );
+}
+
+/**
+ * 把 DOM 上的勾选存进草稿，供渲染侧在整块重绘时取回。
+ *
+ * 这里**故意不 renderAll()**：渲染结果与此刻 DOM 一致，重绘只会让正在输入的说明框丢焦点；
+ * 要防的是「后台任务事件触发的整块重绘」，那一次重绘会来读这份草稿。
+ */
+function updateScopeSelectionDraft() {
+  if (!state.project) return;
+  const values = scopeSelectionValues();
+  state.scopeSelectionDraft = {
+    projectId: state.project.id,
+    dirty: !scopeSelectionEqual(values, savedScopeValues()),
+    values,
+  };
+}
+
+/** 当前生效的勾选：草稿新鲜且属于本项目就用草稿，否则回落 DOM。 */
+function effectiveScopeSelection() {
+  const draft = state.scopeSelectionDraft;
+  if (draft?.dirty && draft.projectId === state.project?.id && draft.values) return draft.values;
+  return scopeSelectionValues();
+}
+
 function collectMediumScopePayload() {
-  const eventIds = [...document.querySelectorAll("[data-event-check]:checked")].map((input) => input.value);
-  const chapterIds = [...document.querySelectorAll("[data-chapter-check]:checked")].map((input) => input.value);
-  const payload = { user_note: document.getElementById("scopeUserNote")?.value || "" };
+  const values = effectiveScopeSelection();
+  const payload = { user_note: values.user_note };
   // 章节是长文本的主选择器：勾了章节就以章节为准，事件由后端从章节推出来。
   // 两套选择器同时提交会各说各话，反而把范围外的原文带进 scope。
-  if (chapterIds.length) {
-    payload.chapter_ids = chapterIds;
+  if (values.chapter_ids.length) {
+    payload.chapter_ids = values.chapter_ids;
   } else {
-    payload.event_ids = eventIds;
+    payload.event_ids = values.event_ids;
   }
   return payload;
 }
@@ -1386,6 +1445,8 @@ function onWorkspaceInput(event) {
   }
   if (target.closest("#assemblySettingsForm")) {
     updateAssemblySettingsDirtyUI();
+  } else if (target.closest("[data-chapter-check]") || target.closest("[data-event-check]") || target.id === "scopeUserNote") {
+    updateScopeSelectionDraft();
   } else if (target.closest("[data-model-stage]")) {
     onStageModelDraftInput(target);
   } else if (target.closest("[data-bible-track]") || target.closest("[data-bible-card]")) {

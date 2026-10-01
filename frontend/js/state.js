@@ -53,6 +53,11 @@ export const state = {
   stageModelDraft: {},
   /* ---- 成片配置草稿（未保存时刷新/任务更新不丢，切换项目时清空） ---- */
   assemblyDraft: null,
+  /* ---- 改编范围勾选草稿：{ projectId, dirty, values: {chapter_ids, event_ids, user_note} } ----
+   * 章节/事件勾选原先只活在被重绘覆盖的 DOM 里：后台任务事件会触发 renderAll()
+   * 整块替换 stageWorkspace 的 innerHTML（一次长文本分析实测 13 次），落在窗口里的
+   * 勾选就丢了。草稿态让渲染有据可依 —— 与 assemblyDraft 同一套路。 */
+  scopeSelectionDraft: null,
   statusNotice: null,
 };
 
@@ -93,5 +98,6 @@ export function resetViewState() {
   disarmAnchorSkip();
   state.assetUpload = { role: "", status: "idle", message: "" };
   state.assemblyDraft = null;
+  state.scopeSelectionDraft = null;
   state.statusNotice = null;
 }

@@ -753,9 +753,15 @@ function storylineStageHtml(project) {
     return `<div class="empty-state">启动改编流程后，这里出现候选故事线或章节树。当前状态：${escapeHtml(project.status || "")}</div>`;
   }
   const scope = project.adaptation_scope;
+  // 未保存的勾选由草稿兜底：重绘整块替换 innerHTML，只认后端 scope 会把用户刚勾的丢掉。
+  // 与 assemblyStageHtml 同源：草稿新鲜且属于当前项目时才覆盖已保存值。
+  const scopeDraft = state.scopeSelectionDraft;
+  const scopeDraftLive = Boolean(scopeDraft?.dirty && scopeDraft.projectId === project?.id && scopeDraft.values);
   const selectedLine = storylines.find((item) => item.selected);
-  const selectedEventIds = new Set(scope?.event_ids || selectedLine?.event_ids || []);
-  const selectedChapterIds = new Set(scope?.chapter_ids || []);
+  const selectedEventIds = new Set(
+    scopeDraftLive ? scopeDraft.values.event_ids || [] : scope?.event_ids?.length ? scope.event_ids : selectedLine?.event_ids || []
+  );
+  const selectedChapterIds = new Set(scopeDraftLive ? scopeDraft.values.chapter_ids || [] : scope?.chapter_ids || []);
   const cards = storylines
     .map(
       (item) => `
@@ -789,7 +795,11 @@ function storylineStageHtml(project) {
         )
         .join("")
     : "";
-  const scopedPreview = scope?.scoped_text
+  // 勾选改了但没保存时，scope.scoped_text 还是旧的 —— 照它宣称"系统将把以下范围交给后续改编"
+  // 就是在说一件假话。这一档改成如实说明，保存后再显示真实范围。
+  const scopedPreview = scopeDraftLive
+    ? `<p class="muted-text">勾选已改动、尚未保存：保存或确认后，这里显示实际交给改编的原文。</p>`
+    : scope?.scoped_text
     ? `<blockquote>系统将把以下选中范围交给后续改编（共 ${escapeHtml(String(scope.scoped_text.length))} 字）：「${escapeHtml(scope.scoped_text.slice(0, 280))}${scope.scoped_text.length > 280 ? "…" : ""}」</blockquote>`
     : `<p class="muted-text">勾选章节或事件后，这里会显示实际交给改编的原文。</p>`;
   const chapterPanel = chapters.length ? chapterTreeHtml(chapters, selectedChapterIds) : "";
@@ -799,7 +809,9 @@ function storylineStageHtml(project) {
       ? `<div class="prompt-block">
         ${eventBlock}
         ${scopedPreview}
-        <label>修改说明<input id="scopeUserNote" value="${escapeHtml(scope?.user_note || "")}" /></label>
+        <label>修改说明<input id="scopeUserNote" value="${escapeHtml(
+          (scopeDraftLive ? scopeDraft.values.user_note : scope?.user_note) || ""
+        )}" /></label>
         <div class="button-row compact-row">
           ${selectedLine ? `<button class="secondary-btn mini-btn" data-adapt="recommend-scope">按推荐范围继续</button>` : ""}
           <button class="secondary-btn mini-btn" data-adapt="save-medium-scope">保存范围</button>
@@ -1991,9 +2003,22 @@ export function renderCapabilities() {
   uniqueValues(videos.flatMap((item) => item.supported_ratios || [])).forEach((ratio) => {
     ratioInput.append(new Option(ratio, ratio));
   });
-  uniqueValues(videos.flatMap((item) => item.supported_durations || [])).forEach((duration) => {
-    durationInput.append(new Option(`${duration}s`, duration));
-  });
+  // 单镜时长：只列**项目创建契约接受**的档位（后端 `ProjectCreate.duration_seconds` = 5..10）。
+  //
+  // 为什么必须过滤 + 升序，而不是把能力表给的时长全列出来：那些是**生成**端的档位
+  // （dashscope 有 2/15、minimax 有 4/15），而这张表单填的是**分镜计划**的意图时长；
+  // 更要命的是**默认值取第一个选项**（`app.js::resetProjectForm` 里 `selectedIndex = 0`）。
+  // ark 退役前能力表首位是 ark（时长 [5,10]），首项恰好 = 5（合法）；退役后首位换成
+  // dashscope（时长 [2,5,10,15]），首项变成 2 → 建项目直接 422。过滤到 [5,10] 并升序后
+  // 首项恒为 5，与退役前行为一致，且不可能再选出后端会拒的值。
+  const PROJECT_DURATION_MIN = 5;
+  const PROJECT_DURATION_MAX = 10;
+  uniqueValues(videos.flatMap((item) => item.supported_durations || []))
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value)
+      && value >= PROJECT_DURATION_MIN && value <= PROJECT_DURATION_MAX)
+    .sort((left, right) => left - right)
+    .forEach((duration) => durationInput.append(new Option(`${duration}s`, duration)));
   const allowedResolutions = ["1280x720", "1920x1080", "720x1280", "1080x1080", "720x720"];
   const fromProviders = uniqueValues(videos.flatMap((item) => item.supported_resolutions || []));
   const resolutions = (fromProviders.length ? fromProviders : allowedResolutions)
@@ -2080,6 +2105,24 @@ function videoProviderOptions(videoMode) {
   });
 }
 
+/**
+ * 在"支持当前生成模式"的 provider 里挑一个能用的。
+ *
+ * 踩过的坑：`videoProviderOptions()` 返回的是**全部** provider，不支持的只是标了 `disabled`。
+ * 于是 `options.some((item) => item.id === provider)` 只要 provider 是个已知 id 就恒为真，
+ * 自动修正永远不触发——切到参考图模式时仍留着 minimax，提交才报错。
+ * 所以这里判断的是"有没有**可用**的"（`disabled` 即不支持该模式），而不是"存不存在"。
+ *
+ * 优先级：当前选择若可用就保留（尊重用户选择）→ 否则退到默认 provider（若它可用）
+ * → 再退到第一个可用的 → 都不行则原样返回，把"该模式无可用 provider"如实暴露给界面。
+ */
+export function resolveVideoProvider(options, providerId, defaultProviderId) {
+  const usable = (options || []).filter((item) => !item.disabled);
+  if (usable.some((item) => item.id === providerId)) return providerId;
+  if (defaultProviderId && usable.some((item) => item.id === defaultProviderId)) return defaultProviderId;
+  return usable[0]?.id || providerId;
+}
+
 function videoModelOptions(providerId, videoMode) {
   const provider = findVideoProvider(providerId);
   return (provider?.models || []).filter((item) => (item.supported_modes || []).includes(videoMode));
@@ -2099,9 +2142,7 @@ function syncVideoDraft(shot, version) {
   const videoMode = existing?.video_mode || persisted.video_mode || version?.video_mode || "t2v";
   let provider = existing?.provider || persisted.provider || version?.provider || defaultProvider;
   const providers = videoProviderOptions(videoMode);
-  if (!providers.some((item) => item.id === provider)) {
-    provider = defaultProvider;
-  }
+  provider = resolveVideoProvider(providers, provider, defaultProvider);
   const models = videoModelOptions(provider, videoMode);
   let model = existing?.model || persisted.model || version?.model || findVideoProvider(provider)?.default_model;
   if (!models.some((item) => item.id === model)) {
