@@ -1825,11 +1825,393 @@ P5-B 此前在文档里一直写作"未实现"，且 `start_adaptation_workflow`
 
 | 运行 | 结果 | 断言 | 耗时 |
 |---|---|---|---|
-| `run-20260928-105835` | **58/58** | **555 pass / 0 fail / 2 skip** | 725.2s |
-| `run-20260928-111249` | **58/58** | **555 pass / 0 fail / 2 skip** | 720.0s |
+| `run-20260929-112714` | **59/59** | **563 pass / 0 fail / 1 skip** | 838.2s |
+| `run-20260929-114125` | **59/59** | **563 pass / 0 fail / 1 skip** | 779.0s |
+
+**上一版基线（已作废，仅留档）**：`run-20260928-105835` 与 `run-20260928-111249` 均为 58/58、555 pass / 0 fail / 2 skip。
+作废原因不是失败，而是 §14.24 改了检查内容：新增一个 Node 检查文件（+1 项、+6 断言）、
+`local_keyframe_ui.cjs` 加一条真行为断言（+1）、`mock_web_smoke.cjs` 修掉一个**静默分支**（该检查 19→20 pass、1→0 skip）。
+**改了检查内容，前一轮基线即作废**——这是本仓库的既有纪律。
+
+交叉验证：555（上一基线）+ 6（新 Node 检查）+ 1（本地首帧新增断言）+ 1（mock 冒烟静默分支补回）= **563**，
+skip 2 → 1 正好是那个补回的分支，与实测一致。
 
 **中间那一轮失败也记下来**：`run-20260928-104159` = **57/58**，`551 pass / 0 fail / 2 skip`，788.4s，
 唯一失败项 `test_adaptation_start_refresh.py`（exit 1、43.2s），根因就是上面第 3 条。修好后重跑才拿到上表。
 按纪律，**失败那一轮不参与配对**，两次全绿必须都在修复后的修订上。
 
-交叉验证：551（上一窗口基线）+ 3（长文本 UI 新增子 PASS）+ 1（视频诊断新增断言）= **555**，与实测一致。
+**同一天的中间轮 `run-20260929-111142` 也不参与配对**：59/59、`562 pass / 0 fail / 1 skip`、770.2s。
+它绿得很干净，但那是**在修静默分支之前**的口径——skip 从 2 变 1 就是它暴露的（详见 §14.24）。
+"全绿"本身不构成配对资格，**断言条数对不上就不是同口径**。
+
+### 14.23 切片 7：首尾帧真实付费验收（② 批次）——dashscope + minimax 通过且「收束」成立，ark 仍欠费未提交（2026-09-29）
+
+**授权口径**：竹木 2026-09-29 给「付费授权上限 **60 元 / 单批 ≤ 20 元**」，并在此前明确「除录屏外我全自动接管」。
+据此把**上限判定为授权**，取消原定的「每批开跑前等竹木回一个字」——改为**跑前把清单写进文档、不再等回字**。
+这是本次**唯一一处扩权**，竹木一句话即可收回。
+
+**先补上一个缺口**：`keyframes` 模式在 provider 层**早已实现**（三家都真的拼了 `last_frame`，能力矩阵也标了
+`requires_last_frame`），但两个付费运行器一个写死 `i2v`、一个写死 `reference`——**这条路从来没有被提交过**。
+新写 `tools/run_keyframes_smoke.py`：报价档、`--refresh` 只回查不重提、按 provider 取合法时长档，
+并自带一条防线（**首尾帧是同一文件就拒跑**，防住"拿同一张图测收束"这种假验收）。
+
+**尾帧图换过一次，值得记**：第一版取 9-28 参考图验收那条视频的末帧，结果它与首帧**构图几乎相同、只是略推近**——
+用它区分不了「收束」与「忽略」。改用演示项目 `p6demo_story` 一条镜头的末帧（**正面→背影、亮场→暗场**），裁到与首帧同比例（4:3）后判据才立得住。
+`output/keyframes-smoke/end-frame.jpg`，`sha1_16 = 9f76f5d084307fce`（首帧 `gyfy.jpg` = `4fda98c6eccf9306`）。
+**一个不能证伪的判据，等于没做验收。**
+
+**四格结果**（日志 `output/live-20260929/`）：
+
+| 格 | provider | 模型 | 档位 | 本地状态 | 结果 | 实付 |
+|---|---|---|---|---|---|---|
+| 批1 | `ark` 参考图 | `doubao-seedance-2-0-260128` | 720p / 5s | `no-task` | ❌ HTTP 403 `AccountOverdueError` | **0.00** |
+| 批2a | `dashscope` 首尾帧 | `wan2.7-i2v` | 720P / 5s | `completed` | ✅ 5.062s，收束成立 | 3.00 |
+| 批2b | `minimax` 首尾帧 | `MiniMax-H3` | 768P / 4s | `completed` | ✅ 4.458s，收束成立 | 2.00 |
+| 批2c | `ark` 首尾帧 | `doubao-seedance-2-0-260128` | 720p / 5s | `no-task` | ❌ HTTP 403 `AccountOverdueError` | **0.00** |
+
+**合计实付 5.00 元**（预算 17.08；ark 两格未提交，省下 12.08）。
+
+**「收束」的判定方式**——只看 `status: completed` 不算通过，provider 完全可能忽略尾帧、只按首帧生成后照样返回 completed。
+所以对每条产物抽三帧（起/中/末），与两张输入横排：`输入首帧 | 输出起 | 输出中 | 输出末 | 输入尾帧`
+（`output/keyframes-smoke/convergence-dashscope.jpg`、`convergence-minimax.jpg`）。
+两家都呈现 **正面（左绿蝶+右金虫）→ 中途转身 → 末帧背影走入水墨暗处**，末帧构图与输入尾帧一致；
+**可证伪点**是：若忽略尾帧，第 3、4 格应仍是正面亮场——它们不是。抽帧脚本 `tmp/verify_keyframes_convergence.py`（一次性探针，未提交）。
+
+**顺带核出的两条事实**：
+1. **同一个 provider 在不同模式下可能用不同模型**：`dashscope` 参考图走 `wan2.7-r2v`，首尾帧走 `wan2.7-i2v`。报价必须按模式读，不能按 provider 记死。
+2. 默认闸门 `DEFAULT_BUDGET_CNY=5.0` **装不下 ark 的单次 6.04**，正式跑必须显式设 `VISIONCRAFT_LIVE_BUDGET_CNY=20`（否则被闸门拦下，不是失败而是拒绝提交）。
+
+**ark 那条 403 与账面冲突**（只有竹木能解）：控制台读数欠费 **¥0.00**、可用余额 **¥31.43**，API 判定却是 `AccountOverdueError`。
+两条 Request id：`021790650188282b3954f28f435bddee30da27ebc9f6d6ead9b79`（参考图）、`021790650336364f5028489cb353b460b901382cc7748695bfb29`（首尾帧）。
+三种可能：结清到解冻有延迟 / 同账号另有未结清项（子账号·其他计费项·其他 region）/ 需人工申请解冻。
+
+**结论口径（别越界）**：
+- ✅ 可以说：**首尾帧路径已由两家真实验收通过，并验证了「收束到给定尾帧」**。
+- ❌ 不能说「首尾帧三家全部验证」——ark 那格是**未知**，不得由 dashscope / minimax 外推。
+- ❌ 不能说「ark 可用」——两次实测都是 403。
+
+**未验格子从 4 格降到 2 格**（`ark` 参考图 + `ark` 首尾帧），且这 2 格同源、属于**账号状态**而非代码缺陷。
+
+### 14.24 默认视频 provider 改为 dashscope，并修掉 provider 自动修正的反向判断（2026-09-29）
+
+竹木问"这个策略里用到的是不是都是已验过的资源、今天能不能直接跑通"，并据此拍定**默认视频 provider 从
+`minimax` 改为 `dashscope`**。答案是能，而且逐格对得上——但要点是**按模式读，不是按 provider 记**：
+
+| 模式 | 落到的模型 | 验收记录 |
+|---|---|---|
+| `t2v` | `wan2.7-t2v` | 2026-08 三家 T2V 各完成一次付费异步任务并下载 MP4（`task_plan.md` / `progress.md`） |
+| `i2v` | `wan2.7-i2v` | 2026-08-28 三家同一首帧对比 |
+| `keyframes` | `wan2.7-i2v` | 2026-09-29 本日志 §14.23（5.062s、收束成立、3.00 元） |
+| `reference` | `wan2.7-r2v` | 2026-09-28 §14.20（3.00 元） |
+
+注意 `keyframes` 与 `i2v` **用的是同一个模型**，而 `reference` 用另一个——所以"这家验过了"这句话必须落到模式上。
+
+**改默认值顺带关掉的缺口**：默认是 `minimax` 时，minimax 没有参考图能力，于是"不指定 provider 直接走
+参考图模式"会抛 `UNSUPPORTED_MODE_FOR_MODEL`。换成 `dashscope` 后四种模式都有落点。
+
+**修掉一个界面缺陷（第二个真缺陷）**：`frontend/js/render.js` 的 `syncVideoDraft` 用
+`options.some((item) => item.id === provider)` 判断"要不要修正 provider"，而 `videoProviderOptions()`
+返回**全部** provider（不支持的只标 `disabled`）——只要 provider 是已知 id，判断**恒为真**、修正永不触发。
+后果：手动选 minimax 再把模式切到参考图，界面留着 minimax、模型下拉被过滤成空，**提交时才报错**。
+现已抽成导出的纯函数 `resolveVideoProvider(options, providerId, defaultProviderId)`：可用则保留用户选择 →
+否则退到默认（若可用）→ 再退到第一个可用的 → 都没有则**原样返回**，把问题暴露给界面而不是替用户猜。
+**「未配置」仍不等于「不支持」**：未配置但支持该模式的 provider 算可用，是否拦在开 HTTP 之前由后端闸门决定。
+
+**测试侧的三处改动**（这是本次最该记住的部分）：
+
+1. `tools/test_video_provider_resolution.mjs`（新，6 条）：钉住修正语义，并**专门保留一条断言复现旧缺陷的形状**
+   ——证明"存在性判断"在该 fixture 上恒为真。否则改完之后没人知道原来错在哪。
+2. `tools/local_keyframe_ui.cjs` 加**真行为**断言：先选 minimax、再把模式切到参考图，断言 provider 被换掉
+   且模型下拉非空。**纯函数测试防不住有人把调用点改回旧写法**，所以这一步必须落在浏览器里。
+3. `tools/mock_web_smoke.cjs` 的"视频阶段应预选 MiniMax"**写死了默认值**，改配置后必挂（而那不是产品回归）。
+   改为读 `/api/providers/capabilities` 的 `default_video_provider` 再比对面板文字——**断言与配置同源**。
+   顺带一个细节：面板上显示的是 provider **id**，不是中文标签，第一版改成比对标签是错的。
+
+**针对性回归**（`--only`，5 项 / 45 断言全绿）：新增 Node 6 条、mock 冒烟 19 条、本地首帧浏览器 10 条、
+`test_provider_capabilities` 5 条、`test_v1_usability` 5 条。`test_v1_usability` 的
+`test_default_preselects` 用 `_without_env("VISIONCRAFT_VIDEO_PROVIDER")` 显式摘掉变量，测的是**代码内建默认值**，
+所以它没有被这次配置变更影响——这是个好设计，值得沿用。
+
+**检查侧又抓到一个缺陷：全绿，但断言条数悄悄变了。** 第一轮全量回归 **59/59、0 fail**，
+`asserts` 却是 `562 pass / 1 skip`——对比上一基线是 `555 pass / 2 skip`。**skip 少的那一条，正是一条检查没跑。**
+逐行 diff 两轮 `logs/test_mock_web_smoke.py.log` 才定位到：少的是 `SKIP: 视频阶段只有一个模型，无法切换`，
+而且**没有 PASS 补上来**。根因是那段检查自己写的
+
+```js
+if (options > 1) { if (next && next !== current) { ...; pass(...); } }   // 内层 if 没有 else
+else { skip(...); }
+```
+
+默认 provider 换成 `dashscope` 后，视频阶段出现 3 个模型（`wan2.7-t2v` / `wan2.7-i2v` / `wan2.7-r2v`），
+而**阶段默认模型恰好是排第二位的 `wan2.7-i2v`**，于是 `nth(1) !== current` 为假 → 两个分支都不走 →
+一条断言凭空消失，而整轮**仍是绿的**。已改成「找第一个与当前值不同的选项」，找不到才 skip
+（并把当前值写进 skip 文案）；修后该项 = 20 pass / 0 fail / 0 skip。
+
+**由此得到三条规矩**（已写进 `PITFALLS.md`）：
+① 每轮都要对**断言条数**，不只对 checks 是否全绿；条数变化必须能解释到具体某一条；
+② 写检查时**每个分支都要打印 PASS/FAIL/SKIP**——允许"什么都不打印"的分支，等于允许断言消失；
+③ **改夹具或配置就要重估条数**（配置改动会改变夹具路径，路径变了就可能绕过断言）。
+
+### 14.25 修掉「未保存的章节勾选不跨重绘」（2026-09-29）
+
+**这不是"勾看起来消失了"，而是"保存了错误的范围"。** 根因两段接在一起：
+
+1. `frontend/js/app.js` 的 `collectMediumScopePayload()` **直接从 DOM 读勾选**
+   （`[data-chapter-check]:checked`）；
+2. `render.js` 的 `renderAll()` 是**整块替换** `stageWorkspace` 的 innerHTML，
+   而后台任务事件会调用它——一次长文本分析实测触发 **13 次**。
+
+于是落在重绘窗口里的勾选会消失，用户接着点「保存范围」，提交上去的是重绘后的空范围。
+
+**修法照抄仓库里已有的草稿态范式**（`assemblyDraft` / `stageEdit`），不发明新机制：
+
+| 位置 | 改动 |
+|---|---|
+| `state.js` | 新增 `scopeSelectionDraft: { projectId, dirty, values }`，在 `resetViewState()` 里清空（= 切项目清空） |
+| `render.js` | `storylineStageHtml()` 新增 `scopeDraftLive`：草稿新鲜且属于当前项目时，勾选与「修改说明」按**草稿**渲染 |
+| `render.js` | 草稿生效时，预览区**不再**拿旧的 `scoped_text` 宣称"系统将把以下选中范围交给后续改编"，改为如实提示"勾选已改动、尚未保存" |
+| `app.js` | 新增 `scopeSelectionValues()` / `savedScopeValues()` / `scopeSelectionEqual()` / `updateScopeSelectionDraft()` / `effectiveScopeSelection()`；`collectMediumScopePayload()` 改为优先取草稿 |
+| `app.js` | `onWorkspaceInput` 增加 `[data-chapter-check]` / `[data-event-check]` / `#scopeUserNote` 分支，**只写草稿、不重绘**（重绘会让正在输入的说明框丢焦点） |
+| `app.js` | 只在**该清的动作**上清草稿：`save-` / `confirm-medium-scope` / `recommend-scope` / `regen-medium` / `select-storyline` / `regen(analysis\|storyline)`。不在每个动作上清，是为了让无关动作（如视觉检查）不吞掉未保存的勾选 |
+
+**预览那一处是顺带修掉的界面缺陷**：勾选改了但没保存时，旧 `scoped_text` 还在，界面照它宣称"将把以下范围交给后续改编"——
+那是在说一件假话。现在这一档改成如实说明。
+
+**测试的非空虚设计**（`tools/scope_draft_ui.cjs` + `tools/test_scope_draft_browser.py`，9 条断言）：
+用例分两层，缺一层都不成立——① 用户可见层：重绘后勾还在、且出现"尚未保存"提示；
+② 真正结算层：此时点「保存范围」，**服务端落库的 `chapter_ids` 必须等于用户勾的那一节**。
+关键是另加一条**非空虚保证**：重绘前在元素上挂内存标记，重绘后该标记必须消失。
+没有这一条，一个根本没重绘的环境也能让 ① 通过，用例就失去分辨力。
+
+**并做了证伪检验**（这是本次最该保留的习惯）：临时把 `render.js` 的 `scopeDraftLive` 硬置为 `false`，
+重跑用例——它在预期位置失败：
+
+```
+PASS: 刷新触发了整块重绘（元素已被重建，标记消失）
+Error: 重绘后未保存的勾选丢了——这正是要修的缺陷
+```
+
+随后**还原并核对文件指纹**（`render.js` sha256 前缀回到 `4d93c035…`，与修复版一致，无残留标记）。
+
+**用例自身也踩了一个坑，值得记**：第一版在服务端落库后**立刻**读 DOM，而保存后的那次 `renderAll()`
+还没跑完，读到的是保存前的旧 DOM —— 于是把"用例读太早"误报成"草稿没清掉"，**失败信息指向了错误的地方**。
+现在改成先等一个**正向信号**（界面开始按已落库的 `scoped_text` 说话）再断言，并把工作区末尾文案写进失败信息。
+
+### 14.26 切片 8：P5-B-2 第一层——章节感知索引 + FTS5 字面召回（2026-09-29）
+
+**先把边界说死：这一层不是 RAG。** 它没有任何语义理解，只解决一件事——
+**"字面就写在原文里"的块，不能召不回来。**
+
+#### 为什么原来会漏召
+
+原有检索只有一条路：ChromaDB 里 384 维**本地 hash embedding**（字符二元组哈希）
+取 `limit*3` 个候选，再用 `_lexical_score` 按"查询字符出现在文档里的比例"重新加权。
+注意那是**字符集合**、不看顺序，而且候选集完全由向量路径给定。
+
+实测（95,618 字语料）选一个在原文里字面出现 2 次的片段 `你已经中了我的独门毒蛊`：
+**向量 top-18 一个都没召回**，也就是说没有全文索引时，这条查询返回的全是**不含该片段**的块。
+
+#### 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `backend/database.py` | 新增 `_ensure_source_chunk_fts()`：建 FTS5 虚拟表 `source_chunk_fts(project_id UNINDEXED, chunk_id UNINDEXED, text, tokenize='trigram')`；建表失败（SQLite 未编入 FTS5）只告警、不阻断启动，检索退回纯向量路径 |
+| `backend/services/memory_service.py` | ① 索引单位从「硬切 `source_text`(900/120)」改为 `_source_text_units()`：**有 `source_chunks` 就用它**（章节感知，块不跨章），没有才退回硬切；metadata 带 `chapter_index` / `chapter_title` / `chunk_id` |
+| 同上 | ② 新增 `index_source_chunk_fts()`（按项目重建）、`_fts_phrase()`、`_fts_match_expression()`、`_fts_candidates()` |
+| 同上 | ③ `index_project_memory()` 末尾一并重建全文索引；`search_project_memory()` 改为**向量候选 ∪ FTS 候选**后按同一套分数排序，条目新增 `fts_hit` 标记 |
+| `backend/services/medium_text_service.py` | `_persist_analysis()` 在**事务之外**重建索引——该函数整批删掉并重建 `source_chunks`，索引必须跟着换 |
+
+#### 四个实测出来的边界（都不是推理）
+
+1. **trigram 对短于 3 字的查询静默返回 0 条。** `方源`（2 字）→ 0 条，不报错。
+   所以 `_fts_match_expression()` 对 <3 字的片段返回 `None`，由调用方退回字面重合打分——
+   **"索引答不了"不等于"没有匹配"**，不能静默变空。已有一条断言专门钉这个。
+2. **查询必须整体短语化转义。** 裸引号（`x"y`）会让 FTS5 抛 `unterminated string`；
+   而 `方源*`、`方源 OR 春秋`、`NEAR(方源 山)` 在 trigram 下**既不是通配也不是布尔**
+   （实测都返回 0 条）。统一短语化后，用户输什么就查什么，不崩也不被误解析。
+3. **短语匹配是连续子串语义。** 用最小例子核实：把同一批字符打乱顺序不命中，
+   因此每个 FTS 候选都**真的包含**该片段——用例据此断言"每个候选文档都含查询片段"。
+4. **bm25 不当分数用。** 它的量级随语料规模变，跨语料不可比；FTS 只负责"找得到"，
+   排序仍由 `lexical*0.8 + vector*0.2` 决定，字面命中另加**有上限的固定加成 0.05**。
+
+**索引与内容同源是第二道守卫**：`_persist_analysis` 会整批删块，索引会留下悬空行。
+所以检索一律 `JOIN source_chunks` ——即使某次忘了重建，也不会返回已经不存在的块。已实测：
+删掉目标块后，检索立刻不再返回它。
+
+#### 实测（`tools/test_source_chunk_retrieval.py`，9 条断言，零费用）
+
+- 语料 95,618 字 → **131 块 / 30 节**；全部 131 块进向量索引，全文索引 **131 行**与块一一对应；
+  **分析一结束索引就已新鲜**（不靠外面再点一次"建索引"）。
+- 跨项目隔离：项目 B 只取前 40,000 字（该片段在第 45,798 字之后、B 里没有），
+  A 的片段在 B 里查不到。
+- **召回增益**：字面出现 2 次的片段，向量 top-18 两个都不含它；FTS 补齐后这两块排到
+  **第 1、2 位**且都真的包含该片段，章节归属分别落在**第 16、15 节**（并与章节偏移交叉核对一致）。
+- 2 字查询：全文索引侧为空（trigram 下限），**合并检索仍有 6 条结果**（向量路径兜住）。
+- 短文本项目：没有章节块 → 全文索引 0 行，检索行为不变（无回归）。
+- HTTP 冒烟：`/memory/index` + `/memory/search` 正常，`x"y` / `方源*` / `方源 OR 春秋` 均不 5xx。
+
+#### 仍**未**做的（勿读成已闭环）
+
+- **真实语义 embedding 没换**：仍是本地 hash embedding（0 费用），换本地 bge 类模型或云端
+  embedding API 是**竹木的待定决策**，本次按"零费用、不引新依赖"的默认值执行。
+- **没有语义召回**：同义词、改写、指代一律召不回来。这一层解决的是字面漏召。
+- 索引仍是**按项目全量重建**，没有增量更新；也没有跨项目/全局检索。
+
+#### 回归（连续两轮同口径）
+
+`61/61 checks`、**581 pass / 0 fail / 1 skip**（旧基线 59/59 · 563 pass；
+新增 `test_scope_draft_browser.py` 9 条 + `test_source_chunk_retrieval.py` 9 条 = +18，
+563 + 18 = 581，且 skip 数不变 —— 条数变化可解释到具体来源，符合 §14.24 立的三条规矩）。
+
+**结构文档同步**：`docs/visioncraft-diagrams.md` 改图 6（增 `source_chunk_fts` 节点、
+写清 27 张业务表 + 6 个 FTS 对象 = 33 个 table 对象）、图 7（58 → 61 项）、
+新增**图 12**（检索层通路 + 五条设计取舍）、并改掉"没有向量检索、全文索引"那句旧边界。
+渲染校验脚本已**提交**为 `tools/check_mermaid_docs.cjs`（本轮 **22/22 块可渲染**，
+并记录"尺寸随视口变、跨探针不可比"的口径）。
+
+### 14.27 无人版演示录屏产出（2026-09-29）
+
+竹木出门前授权"按你的规划自动接管"；路线图 §8.5 明确"**无人在场则由我录自动演示版**"，
+所以这是被授权的交付动作，不是自作主张。
+
+**产物**：`output/demo/visioncraft-demo.mp4` —— h264 / 1440×900 / **133.6s** / 2.3MB /
+**无声**（无音轨）。原始录屏 `output/demo/raw/*.webm`（vp8，10.5MB）保留，便于重编码。
+**费用 0 元**：子进程的 `VISIONCRAFT_ALLOW_LIVE_LLM / _VISION / _VIDEO` 三个开关在启动前被摘掉，
+所以"录着录着真花钱"在结构上不可能。**隔离性**：跑在 `output/demo-session/data`，
+不碰竹木的真实项目库。
+
+**素材来源（都是真的、都是免费的）**
+- 全流程段：`prepare_v1_demo.prepare()` 的夹具——改编走 **mock 规划器**，关键帧/视频/配乐/字幕由
+  **ffmpeg lavfi** 生成，四镜成片是真实 MP4（探测：`h264 1280x720 5.07s audio=aac`）。
+- 长文本段：工作区根真实语料，`95618 字 / 30 节 / 131 块`，章节树、按章范围、字面检索全部本地算。
+
+**录到哪 8 个场景**：工作台 → 八阶段扫览 → 镜头视频（**可见新默认 `dashscope` /
+"阿里百炼 Wan 2.7 I2V"**，即 §14.24 的默认值变更真的落到了界面上）→ 成片合成
+（`#assemblyPanel video` 真实预览）→ 导出交付 → 长文本章节树按节圈范围 → 按字面"蛊虫"检索。
+
+**核验方式是"看产物"，不是只看 ffprobe**：一个"全白屏"的视频同样能通过 ffprobe，
+所以另抽 5 帧（6s / 45s / 78s / 112s / 128s）**逐帧目视**，确认渲染的是真实界面：
+6s 见项目列表 + 阶段轨 + 文本理解面板；45s 见 Story Bible 已确认态；78s 见三张镜头卡与
+provider 面板；128s 见章节树（第十八~二十一节，含字数/偏移/块数）+ 已填 "蛊虫" 的检索框。
+（帧文件在 `output/demo/frames/`，`output/` 已 gitignore，不入库。）
+
+**版本控制**：`tools/record_v1_demo.py` + `record_v1_demo.cjs` 已提交（`e7343aa`）。
+与 `v1_demo.cjs` **刻意分开**：那个是**验收**（断言、截图、失败即红），这个是**演示**
+（有停顿、滚动、无断言）。把断言塞进演示会让两者都变脆。
+
+#### 顺带澄清一个会误导人的现象：两轮日志 `elapsed` 完全相同
+
+Round A / Round B 两轮全量回归的 `elapsed` 都是 **806.7s**，与 `checks / asserts` 两行一样
+**逐字节相同**，第一眼像是"第二轮其实没跑、日志被覆盖"。**这是错的**：两轮共 **86 行不同**
+（逐项耗时、夹具 `seeded_at`、`Run data dir` 全不同；逐项耗时和 776.9s vs 777.9s）。
+用时间戳反推也能对上：A 夹具 `12:09:10` → 报告 mtime `12:22:37` ≈ 807s；
+B `12:23:02` → `12:36:29` ≈ 807s —— 两轮都真跑了，`elapsed` 也没算错。
+**规矩**：`elapsed` 既不是独立性证据、也不是跨轮可比指标；判"是否真跑过"用 run 目录 +
+夹具时间戳 + 逐项耗时。已入 `.workbuddy/memory/PITFALLS.md`。
+
+#### 本轮仍未完成（勿读成已闭环）
+
+- **ark 参考图补验**：账号 HTTP 403 `AccountOverdueError`，充值后仍被拒 → **等竹木联系客服**。
+- **部署与非核心扩展**（原 P7 段）：未开始。
+- **推送**：本地领先 `origin/feat/v1-media-pipeline` 10 个提交（代理未起，按约定攒着）。
+
+
+## 14.28 自我证伪：ark「账号已解冻」这个结论是错的（2026-09-29 晚）
+
+**起因**：竹木问“我们真的没有排查一下那个说明 ark 的方法了吗”。上一轮我用两个免费探针
+（`GET` 不存在的任务 id → 404；`POST` 但 `model` 传不存在的名字 → 404）判定“账号闸门已放行”，
+并据此把路线图里的“火山方舟充值”改标为**不再是阻塞项**。**那个判读是错的。**
+
+**错在哪（定序）**：2026-09-29 19:3x 用**合法模型**（`doubao-seedance-2-0-260128`，`/models` 里
+`status=None`）配 **`content:[]`**（结构非法，绝不可能生成视频）打**同一个创建接口**，返回
+
+```
+HTTP 403  {"error":{"code":"AccountOverdueError","type":"Forbidden",
+  "message":"The request failed because your account has an overdue balance.
+             Request id: 0217906817757904de2cf568a9a04a3957d59acb492788b3934fd"}}
+```
+
+**不是 400**。于是同一路径上同日三次请求构成定序证据：
+
+| 请求体 | 命中层 | 返回 |
+|---|---|---|
+| 非法模型 + 有 content | 模型解析 | `404 InvalidEndpointOrModel.NotFound` |
+| **合法模型 + 空 content** | **账号闸门** | **`403 AccountOverdueError`** |
+| 合法模型 + 合法 content | —— | （**不跑**：会真建任务、真计费） |
+
+=> 内部顺序是 **模型解析 → 账号闸门 → 参数校验**。**模型解析排在闸门之前**，所以
+“非法模型名得 404”**根本走不到闸门**，那条探针是**空转的**，与账号状态无关。
+上一轮我把“晚一层的 404”误读成“闸门放行”，这是**把错误码与其所在层脱钩**读出来的假阳性。
+
+**安全性**：两次探针提交前后各查一次 `GET /contents/generations/tasks`，`total` 恒为 `0`
+—— 本探针零副作用、零费用，**没有**产生任何任务。
+
+**结论**：`reference@ark` / `keyframes@ark` 仍是**账号闸门**造成，**且当前无法验收**。
+所以**先别花那约 12 元**——闸门未开时提交必然 403、0 元退回。
+
+**带客服的线索**：官方 FAQ 原文“代金券使用失败，报错 `AccountOverdueError` … 如需使用代金券，
+**需保证账号余额大于等于 0**”，欠费定义为“**可用额度（含账户余额和代金券）小于待结算账单**”。
+故“欠费 ¥0.00 / 可用余额 ¥31.43”与判欠费**未必矛盾**：若那 ¥31.43 主要是**代金券**而现金余额为负，
+API 就会判欠费 → 建议核**现金余额**，并拿上表 Request id 找客服。
+
+**已同步修正**：预检 §13.7 重写、路线图 §8.4/§8.5 相应段落改回“阻塞项”、项目记忆与
+`PITFALLS.md` 增补定序判例、skill `api-credential-vs-account-triage` 的核心判据与最小例更正。
+
+## 14.29 ark 退役：把“用不了”从投放面拿掉（2026-09-29 22:0x）
+
+**触发**：竹木在方舟控制台实测到平台门槛 —— **账户余额低于 200 元不允许开通
+`doubao-seedance-2-0-260128`**，于是决定放弃 Seedance 2.0。逐层排查过程见
+`docs/real-live-test-preflight.md` §13.8 → §13.9 → §13.10，收口在 **§13.11**。
+
+**这不是“又一次失败”，是一次范围收缩**：ark 与 dashscope 在能力矩阵里**并列四模式全覆盖**，
+而 dashscope 四模式均已真实验收（参考图 3.00 元；首尾帧 3.00 + 2.00 = 5.00 元）。
+退役 ark **无能力空洞**，只少了“同一模式第二家可选”。
+
+**核心判据（为什么不能只改文档）**：动手前先读代码确认 ark 是怎么“露面”的。结论是
+`frontend/js/render.js::videoProviderOptions()` 直接用 `state.capabilities.video` 渲染 `<select>`，
+而 `label` 只在 `mode !== "live-ready"` 时才补“（未配置）”。密钥在、`mode === "live-ready"`，
+于是**「火山 Seedance」就是一个不带任何后缀的就绪选项**，选中后必然 404。所以必须动投放面，
+而不是把它记成“已知问题”。
+
+**改动**（三处投放面 + 一处校验；逐处都写了“不改会怎样”的注释）：一句话 —— 能力表移除条目、
+诊断名单去掉 ark、隐式兜底链去掉 ark、校验层新增 `RETIRED_VIDEO_PROVIDERS` 与 `PROVIDER_RETIRED`
+（带可操作提示，而不是“未知 provider”）。完整表格见预检 §13.11。
+
+**刻意保留**：适配器实现、单价表里 ark 的档位（“未登记取最贵档”的保守基准）、适配器互斥规则的既有单测。
+它们都不是“广告”，且 `test_video_provider_guard.py` 正靠显式 `provider_override="ark"` 验证
+“闸门在网络之前拦下”——删了就丢一段护栏覆盖。
+
+**一个有意留下的“当前不可达分支”**：ark 退场后，能力表里已无 `reference_includes_first_frame=False`
+的 provider，`validate_video_generation` 里那条分支当前没有 provider 会走到。这是退役的必然结果，
+已写进代码注释，避免下次有人当它是 bug；规则本身仍有 `test_reference_generation.test_payloads` 钉着
+（它直接调 `_ark_content_items`，不经能力表）。
+
+**测试同步**：ark 原先在多个用例里充当“代表 provider”（唯一四模式全通）。退役后代表权交给 dashscope。
+⚠️ **第一版只改了 3 个文件，是回归抓出爆炸半径比预想大**：`test_stage_models.py`（1 处）与
+`test_shot_versions.py`（4 处）也直接用 `provider="ark"` 调 `validate_video_generation` /
+`prepare_version_for_generation`（`validate_video_generation` 的调用点是 `video_service` 与
+`shot_edit_service` 两个 prepare 函数），退役后同样报 `PROVIDER_RETIRED`。**这正是“改共用代码必须跑
+全量回归”的判例**——`ark` 在源码里出现几十次，靠 grep 分不出“存字符串”（无害）与“调校验”（会红）。
+最终同步 **5 个文件**：`test_provider_capabilities.py`（7 处）、`test_reference_generation.py`（4 处）、
+`test_video_provider_resolution.mjs`（4 处）、`test_stage_models.py`（1 处）、`test_shot_versions.py`（4 处），
+并把 ark 那几支改写成可证伪的退役断言 —— 例如“只配 ark 密钥的机器必须报视频不可用”，
+这条在退役当天由假变真，正是本次改动的判据。
+
+**逐项计数零漂移**（“回归可信”的证据）：受影响 5 个用例的 PASS 行数与退役前基线**逐一相同** ——
+capabilities 5 / reference 10 / mjs 6 / stage_models 13 / shot_versions 11；全量断言总数仍为
+**61 项 / 581 pass / 0 fail / 1 skip**（与基线 `run-20260929-122249` 同口径）。
+
+**退役顺带揭开的一个真缺陷（已修）**：能力表**首位 provider 变了**会静默改掉前端新建项目表单的
+**默认单镜时长**。`renderCapabilities()` 用 `videos.flatMap(item => item.supported_durations)` 生成时长下拉，
+`app.js::resetProjectForm()` 取**第一个选项**作默认值。ark 在首位时默认 5（合法）；ark 退场后首位换成
+dashscope（时长 `[2,5,10,15]`）⇒ 默认变成 **2**，而后端 `ProjectCreate.duration_seconds` 是 `ge=5` ⇒
+**建项目直接 422**。全量回归一次抓出 **6 个浏览器用例全红**（每个恰好一条 `POST /api/projects 422`），
+而它们的表面症状都是 `waitForFunction` 超时——**很像环境抖动**，靠“逐项读后端状态码”才定性。
+修法：时长选项**过滤到 `[5,10]` 并升序**，首项恒为 5（并覆盖“能力未加载”的竞态）。修后 6 项条数回到基线
+（8/20/10/14/12/19）。**教训：「默认值取列表第一项」的 UI，正确性隐含依赖列表顺序**——改后端 provider
+顺序会静默改前端默认值，这类耦合 grep 不出来，只有跑真实浏览器流程才暴露。
+
+**一处必须自我更正**：本轮之前我对这条线的判读被推翻过两次（“账号已解冻”→ 实为探针空转；
+“重发 key 无效”→ 其前提“key 与控制台同账号”从未验证）。两次的教训是同一个：**先确认错误码属于哪一层，
+再确认那一层是不是排在前面**，否则就是拿“晚一层的错误”当“前面那层已放行”的证据。
+已入 `.workbuddy/memory/PITFALLS.md` 与 skill `api-credential-vs-account-triage`。

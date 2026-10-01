@@ -9,6 +9,11 @@
 > 图外的一条提醒：本文件描述的是**设计约束**，不等于**已验收的效果**。
 > 参考图链路（图 5）**已于 2026-09-28 做过一次真实付费验收**（dashscope 通过、ark 因账号欠费未验，
 > 见交付文档 §14.20）；付费闸门（图 3）本身仍未在真实付费调用中被"拦下过一次"——护栏 ≠ 验证。
+> **2026-09-29 变更：ark（火山 Seedance 2.0）退役。** 缘由是平台门槛（方舟账户余额 < 200 元
+> 不允许开通该模型），而它与 dashscope **并列四模式全覆盖**、dashscope 已全验 ⇒ 退役**无能力空洞**。
+> ark 已从**投放面**移除（能力表 / 隐式兜底链 / 诊断名单三处，校验层新增 `PROVIDER_RETIRED`）；
+> 见预检 §13.11。本文件里 ark 的节点一律标注为“已退役”，**适配器与单价档位仍在** —— 所以下面几张图
+> 仍会提到它，那不是漏改。
 
 ---
 
@@ -54,7 +59,7 @@ flowchart TB
 
   subgraph EXT["外部（真实调用需授权）"]
     E1["DeepSeek<br/>deepseek-v4-flash"]
-    E2["火山方舟 ark<br/>doubao-seedance-2-0-260128"]
+    E2["火山方舟 ark（已退役 2026-09-29）<br/>doubao-seedance-2-0-260128"]
     E3["阿里百炼 dashscope<br/>wan2.7-t2v / i2v / r2v"]
     E4["MiniMax H3"]
     E5["SiliconFlow<br/>Wan-AI/Wan2.2-T2V-A14B"]
@@ -197,7 +202,7 @@ flowchart LR
   subgraph PRICE["已登记的单价（未登记的一律回退到最贵档：高估安全，低估是事故）"]
     direction TB
     M["minimax<br/>768p: 0.50 / 0.50"]
-    A["ark · 火山 Seedance 2.0<br/>480p 0.562/0.924<br/>720p 1.208/1.988<br/>1080p 3.014/4.958<br/>4k 6.22/10.108"]
+    A["ark · 火山 Seedance 2.0（已退役，仅作最贵档基准）<br/>480p 0.562/0.924<br/>720p 1.208/1.988<br/>1080p 3.014/4.958<br/>4k 6.22/10.108"]
     D["dashscope<br/>720p 0.60/0.60<br/>1080p 1.00/1.00<br/>参考输入不额外计费"]
     S["siliconflow<br/>1280x720 · 720p<br/>均 0.50 / 0.50<br/>未取到公开价，按 MiniMax 档保守取值"]
   end
@@ -205,12 +210,13 @@ flowchart LR
 
 ---
 
-## 图 4 · 参考图模式：三家规则互不相同，必须分流
+## 图 4 · 参考图模式：各家规则互不相同，必须分流
 
-依据 `backend/providers/capabilities.py` 的 `_video_provider_catalog()`（第 227 行起）
-与 `MODE_REQUIREMENTS["reference"]`（第 19 行：首帧否 / 尾帧否 / **必须有参考图**）。
+依据 `backend/providers/capabilities.py` 的 `_video_provider_catalog()`（第 274 行起）
+与 `MODE_REQUIREMENTS["reference"]`（第 35 行：首帧否 / 尾帧否 / **必须有参考图**）。
 
-**这是三家唯一不能共用一套 payload 的地方**，混发会被云端直接拒单。
+**这是各家唯一不能共用一套 payload 的地方**，混发会被云端直接拒单。
+**（2026-09-29：ark 已退役，投放面上只剩 dashscope 能走参考图；ark 那一支保留在适配器里，见 `capabilities.RETIRED_VIDEO_PROVIDERS`。）**
 
 ```mermaid
 flowchart TB
@@ -218,7 +224,7 @@ flowchart TB
   MODE -- 是 --> COLLECT["collect_reference_images()<br/>见 图 5"]
 
   COLLECT --> SPLIT{"目标 provider"}
-  SPLIT --> ARK["ark · 火山 Seedance"]
+  SPLIT --> ARK["ark · 火山 Seedance<br/>（已退役 2026-09-29）"]
   SPLIT --> DASH["dashscope · 阿里百炼 Wan"]
   SPLIT --> MM["minimax"]
   SPLIT --> SF["siliconflow"]
@@ -239,13 +245,12 @@ flowchart TB
   LOUD --> FAIL(["失败要响：静默丢弃 = 用户以为参考图生效了"])
 ```
 
-四家的能力边界（含各家默认档位，与 `live_budget.VIDEO_DEFAULT_RESOLUTION` 必须一致）：
+三家的能力边界（含各家默认档位，与 `live_budget.VIDEO_DEFAULT_RESOLUTION` 必须一致）：
 
 ```mermaid
 flowchart LR
   subgraph CAP["provider 能力（capabilities.py）"]
     direction TB
-    C1["ark<br/>模式 t2v i2v keyframes reference<br/>比例 16:9 9:16 1:1 4:3 3:4<br/>时长 5 10 s<br/>分辨率 720p 1080p"]
     C2["dashscope<br/>模式 t2v i2v keyframes reference<br/>比例 16:9 9:16 1:1<br/>时长 2 5 10 15 s<br/>分辨率 720P 1080P"]
     C3["minimax<br/>模式 t2v i2v keyframes<br/>比例 16:9 9:16 1:1<br/>时长 4 6 10 15 s<br/>分辨率 768P 1080P"]
     C4["siliconflow<br/>模式仅 t2v<br/>比例 16:9 9:16 1:1<br/>时长仅 5 s<br/>分辨率仅 720p"]
@@ -284,10 +289,12 @@ flowchart LR
 
 ---
 
-## 图 6 · 数据库 27 张表按职责分域
+## 图 6 · 数据库 27 张业务表按职责分域（另加 1 张 FTS5 虚拟表）
 
-表名来自 `backend/schema.sql`，与真实库 `backend/data/visioncraft.db` 的
-`sqlite_master` 实测一致（27 张，不含 `sqlite_%`）。
+表名来自 `backend/schema.sql`，与真实库 `sqlite_master` 实测一致：**27 张业务表**。
+2026-09-29 起另有全文索引 `source_chunk_fts`（FTS5 虚拟表），它带 5 张影子表
+（`_config` / `_content` / `_data` / `_docsize` / `_idx`），
+所以 `sqlite_master` 里 type='table' 的对象是 **33 个**（27 + 6，实测）。
 
 **分域是我按职责归纳的，不是代码里的既有结构**——表本身是硬的，分组是解释性的。
 
@@ -307,6 +314,7 @@ flowchart TB
     global_constraints
     source_chapters
     source_chunks
+    source_chunk_fts["source_chunk_fts<br/>FTS5 trigram 虚拟表"]
     story_events
     storylines
     adaptation_options
@@ -356,11 +364,12 @@ flowchart LR
 
 ---
 
-## 图 7 · 无费用回归驱动器的结构（58 项）
+## 图 7 · 无费用回归驱动器的结构（61 项）
 
 项数实测自 `tools/run_no_cost_regression.py` 的 `build_checks()`：静态 7 +
-Node 6 / Python 31 / 浏览器 14 = 58。注意浏览器组第 14 项
-`test_live_2shot_create_guard.cjs` 是**手工 append 在元组之外**的，只数元组会误算成 13。
+Node 7 + Python 32 + 浏览器 15 = **61**（2026-09-29 实测；上一版为 58）。
+注意浏览器组最后一项 `test_live_2shot_create_guard.cjs` 是**手工 append 在元组之外**的，
+只数元组会误算成 14。`SERVER_DEPENDENT` 共 7 项，其余检查各自起独立后端。
 
 ```mermaid
 flowchart TB
@@ -574,7 +583,7 @@ flowchart LR
 flowchart LR
   T1["文本理解 / 改编方案 / Story Bible<br/>TEXT_LIVE_STAGES 三次上限"] --> L["DeepSeek deepseek-v4-flash<br/>thinking disabled · max_tokens 4096"]
   T2["关键帧视觉检查<br/>MAX_VISION_CALLS = 1"] --> L2["deepseek-v4-flash-vision-exp<br/>max_tokens 2048"]
-  T3["镜头视频生成<br/>走 图 3 闸门"] --> L3["ark / dashscope / minimax / siliconflow"]
+  T3["镜头视频生成<br/>走 图 3 闸门"] --> L3["dashscope / minimax / siliconflow"]
 ```
 
 ---
@@ -613,12 +622,64 @@ flowchart LR
 
 **这张图不包含什么**（避免把 P5-B-1 读成 P5-B 的全部）：
 
-- **没有向量检索、全文索引、真实 Embedding / RAG 召回**。这里范围的收缩是**结构性的**——
-  靠章节偏移裁剪，不是语义召回。文档里凡写"检索"处都该按前者理解。
+- 图里只有**结构性范围收缩**（靠章节偏移裁剪），不含检索层——检索见**图 12**（2026-09-29 补上）。
+  两层的边界必须分清：范围收缩决定"哪些原文允许进入后续流程"，检索决定
+  "从允许的范围里取出哪几块当作证据"。混为一谈就会把"按章节圈了范围"说成"做了 RAG"。
+- **仍然没有语义召回 / 真实 Embedding**。图 12 的向量侧是本地 hash embedding（字符二元组哈希），
+  全文侧是 SQLite FTS5 的**字面子串**匹配，两者都不是语义理解；
+  换真实 embedding（本地 bge 类模型或云端 embedding API）**仍未做**，属竹木的待定决策。
 - 图里没画的两个入口缺陷（都在 2026-09-28 修掉，但值得记住形状）：
   `start_adaptation_workflow` 里残留的 `scale == "long" → raise TEXT_TOO_LONG` 把长文本挡在门外；
   拆出 `over_limit` 之后，**超过 10 万字的文本会掉到短文本路径**（不报错、不分章，整本塞进改编）。
   → 纯函数全绿不代表入口打通。
+
+---
+
+## 图 12 · P5-B-2 检索层：章节感知索引 + FTS5 字面召回
+
+出处：`backend/services/memory_service.py`（`_source_text_units` / `index_source_chunk_fts` /
+`_fts_candidates` / `search_project_memory`）、`backend/database.py`（`_ensure_source_chunk_fts`）、
+`backend/services/medium_text_service.py`（`_persist_analysis` 末尾重建索引）。
+数字取自 `tools/test_source_chunk_retrieval.py` 与同轮探针实测（95,618 字语料）。
+
+```mermaid
+flowchart TB
+  ANA["run_medium_analysis()"] --> PERS["_persist_analysis()<br/>整批 DELETE + 重建 source_chunks"]
+  PERS --> IDX["index_source_chunk_fts()<br/>事务之外重建<br/>DELETE 本项目的行 → INSERT ... SELECT"]
+  PERS --> MEM["index_project_memory()<br/>reset 本项目 collection"]
+  IDX --> FTS[("source_chunk_fts<br/>FTS5 · tokenize=trigram<br/>project_id / chunk_id UNINDEXED + text")]
+  MEM --> UNITS["_source_text_units()<br/>有 source_chunks 就用它（章节感知）<br/>否则退回 _chunk_text(900/120)"]
+  UNITS --> VEC[("ChromaDB<br/>384 维本地 hash embedding")]
+
+  Q["查询 q"] --> VPATH["向量候选<br/>n_results = limit*3（≤18）"]
+  Q --> FPATH{"len(q) ≥ 3 ?"}
+  FPATH -->|"是"| FPHR["短语化转义<br/>'...' 每个空白片段一个短语 OR 串联"]
+  FPATH -->|"否"| FSKIP["跳过 FTS<br/>trigram 对 &lt;3 字静默返回 0 条"]
+  FPHR --> FQ["MATCH + JOIN source_chunks<br/>按 bm25 排序"]
+  FTS --> FQ
+  VEC --> VPATH
+  VPATH --> MERGE["按候选合并去重<br/>（以 chunk_id 为准）"]
+  FQ --> MERGE
+  FSKIP --> MERGE
+  MERGE --> SCORE["同一套打分<br/>lexical*0.8 + vector*0.2 + FTS命中 +0.05"]
+  SCORE --> OUT["top-limit 结果<br/>每条带 fts_hit 标记与 chapter_index"]
+```
+
+五条只有画出来才看得清的设计取舍：
+
+```mermaid
+flowchart LR
+  D1["FTS 只负责『找得到』<br/>不负责排序"] --> E1["跨语料 bm25 量级不稳定<br/>不适合当分数；排序仍用同一套口径"]
+  D2["查询整体短语化转义"] --> E2["裸引号会抛 unterminated string<br/>『方源*』『方源 OR 春秋』在 trigram 下也不是运算符（实测 0 条）"]
+  D3["检索侧 JOIN source_chunks"] --> E3["即使漏了一次重建<br/>也不会返回已删除的块"]
+  D4["查询短于 3 字不进 MATCH"] --> E4["不是『没有匹配』而是『索引答不了』<br/>必须退回向量路径，别静默变空"]
+  D5["索引单位取自 source_chunks"] --> E5["块不跨章 → 证据能归属到章<br/>硬切 900/120 会落到范围外的章节"]
+```
+
+**这一层仍然不是 RAG**：召回靠字面子串与字符二元组哈希，不理解同义、改写与语义相近。
+实测能站住的增益只有一条，但它很实在——见 `tools/test_source_chunk_retrieval.py`：
+语料里字面出现 2 次的片段 `你已经中了我的独门毒蛊`，**向量 top-18 一个都没召回**，
+没有 FTS 时这条查询返回的全是不含该片段的块；补上 FTS 后这两块排到第 1、2 位。
 
 ---
 
@@ -630,10 +691,10 @@ flowchart LR
 | 19 个服务模块 / 20 个文件 | `backend/services/` 目录（含 `__init__.py`） |
 | 8 个 provider 模块 | `backend/providers/`（含 `__init__.py`） |
 | 前端 6 个 ES 模块与行数 | `frontend/js/` 逐文件统计 |
-| 27 张表 | `backend/schema.sql`，与真实库 `sqlite_master` 实测一致 |
+| 27 张业务表（+ 6 个 FTS 对象） | `backend/schema.sql`，与真实库 `sqlite_master` 实测一致；FTS 见 `_ensure_source_chunk_fts` |
 | 6 道门 / 9 个状态 | `backend/services/checkpoint_service.py` 四张登记表 |
 | 单价与预算 5.0 元 | `backend/providers/live_budget.py` |
-| 58 项 / 分组 | `tools/run_no_cost_regression.py` 的 `build_checks()` 实测 |
+| 61 项 / 分组 | `tools/run_no_cost_regression.py` 的 `build_checks()` 实测 |
 | ffprobe 886 – 1136 ms | 本机单进程实测；排除过程与取证见交付文档 §14.19.2 |
 | 3.9 – 6.0 s / 8.2 s / 4.1 – 5.3 s | 同一端点三路交叉验证（node `http` · TestClient · TTFB），见 §14.19.2 |
 | 9.9 – 12.5 s / 181 ms / 89.8 s | 页面内打桩 `fetch` 实测 + 回归日志，见 §14.19.2 / §14.19.4 |
@@ -641,22 +702,30 @@ flowchart LR
 > 上表不含一次性临时脚本路径：取证脚本是当轮用完即清的，可复核的是上面这些
 > **已提交**的位置（代码文件与交付文档），不是当时的探针。
 >
-> 本文件的 mermaid 块经本机 Chromium + mermaid@11 **真实渲染校验**（**当前 20/20 可渲染**，
-> 逐块尺寸/节点数留证），不是只检查语法。改动本文件后**建议用任意 Mermaid 渲染器重跑一遍**——
-> 结构体检只证明括号平，不证明 mermaid 能解析。
+> 本文件的 mermaid 块经本机 Chromium + mermaid@11 **真实渲染校验**（**当前 22/22 可渲染**），
+> 不是只检查语法。校验脚本已**提交**为 `tools/check_mermaid_docs.cjs`：
+> `node tools/check_mermaid_docs.cjs`（需 `NODE_PATH=.playwright-cli/node_modules`）。
+> 改动本文件后请重跑它——结构体检只证明括号平，不证明 mermaid 能解析。
 >
-> **2026-09-28 重跑**（P5-B-1 改动后：图 6 增 `source_chapters` 节点、图 7 计数 57→58、
-> 新增图 11）：**20/20 可渲染**。
+> **2026-09-29 重跑**（P5-B-2 改动后：图 6 增 `source_chunk_fts` 节点、图 7 计数 58→61、
+> 新增图 12）：**22/22 可渲染**。
 >
-> ⚠️ **块号 ≠ 图号**：探针按 mermaid 块在文件里出现的顺序编号，而一张图可能含多个块，
+> ⚠️ **块号 ≠ 图号**：脚本按 mermaid 块在文件里出现的顺序编号，而一张图可能含多个块，
 > 所以引用尺寸时必须写明"块 N"。当前对应关系：图 6 = 块 9+10，图 7 = 块 11+12，
-> 图 11 = 块 19+20（其余图一律一块）。本文件旧版本曾把块号当图号写（写成"图 6 = 1189×1290"，
-> 而 1189×1290 其实是块 6、也就是**图 4** 的第一块），该口径已作废。
+> 图 11 = 块 19+20，**图 12 = 块 21+22**（其余图一律一块）。本文件旧版本曾把块号当图号写
+> （写成"图 6 = 1189×1290"，而 1189×1290 其实是块 6、也就是**图 4** 的第一块），该口径已作废。
 >
-> 本轮实测（块号 → 尺寸 / 节点 / 边）：
-> - 图 6：块 9 = 1775×1022 / 33 / 5，块 10 = 586×434 / 6 / 3
-> - 图 7：块 11 = 814×2168 / 17 / 11，块 12 = 896×390 / 6 / 4
-> - 图 11（新增）：块 19 = 622×1182 / 11 / 12，块 20 = 586×574 / 8 / 4
+> ⚠️ **尺寸与节点数依赖度量口径，跨探针不可比**：本轮的脚本固定 viewport 1600×1200，
+> 且节点/子图/边/参与者是**分开**数的（时序图用 `g.node` 会数出 0，那是口径差异不是空图）。
+> 因此本节**上一版**记录的尺寸（如"块 9 = 1775×1022 / 33"）与本轮数字不可直接对比——
+> 旧探针的宽度口径与计数方式都不同。引用时只引用同一次运行的整组数字。
 >
-> 渲染器 = 本机 `.playwright-cli` 里的 playwright 1.55.1 + Chromium 1193 + mermaid 11，
-> 脚本为一次性探针（未提交）。
+> 本轮实测（视口 1600×1200；块号 → 尺寸 / 口径内计数）：
+> - 图 6：块 9 = 1584×1026 / 节点 28 / 子图 6 / 边 5，块 10 = 586×434 / 节点 6 / 子图 0 / 边 3
+> - 图 7：块 11 = 814×2168 / 节点 15 / 子图 2 / 边 11，块 12 = 896×390 / 节点 6 / 子图 0 / 边 4
+> - 图 11：块 19 = 622×1182 / 节点 11 / 边 12，块 20 = 586×574 / 节点 8 / 边 4
+> - 图 12（新增）：块 21 = 1116×1366 / 节点 16 / 边 18，块 22 = 586×798 / 节点 10 / 边 5
+> - 时序图：块 13 = 1561×959 / 参与者 20 / 消息 9，块 14 = 1470×1137 / 参与者 20 / 消息 13，
+>   块 16 = 1199×1203 / 参与者 12 / 消息 11
+>
+> 渲染器 = 本机 `.playwright-cli` 里的 playwright 1.55.1 + Chromium + mermaid **11.17.2**。
