@@ -26,16 +26,68 @@ async function launchBrowser() {
   }
 }
 
-async function selectProject(page, id) {
-  await page.waitForSelector(`#projectList .project-item[data-project-id="${id}"]`, { timeout: 10000 });
-  await page.locator(`#projectList .project-item[data-project-id="${id}"]`).click();
-  const modal = page.locator("#unsavedModal:not(.hidden)");
-  if (await modal.count()) await page.click("#unsavedDiscardBtn");
+async function clearUnsaved(page) {
+  const visible = await page.evaluate(() => {
+    const modal = document.querySelector("#unsavedModal");
+    return Boolean(modal && !modal.classList.contains("hidden"));
+  });
+  if (!visible) return;
+  await page.locator("#unsavedDiscardBtn").click({ force: true });
   await page.waitForFunction(
-    (pid) => document.querySelector(".project-item.active")?.getAttribute("data-project-id") === pid,
-    id,
+    () => document.querySelector("#unsavedModal")?.classList.contains("hidden"),
+    null,
     { timeout: 8000 }
   );
+}
+
+async function activeProjectId(page) {
+  return page.evaluate(
+    () => document.querySelector(".project-item.active")?.getAttribute("data-project-id") || null
+  );
+}
+
+async function dumpProjectList(page) {
+  return page.evaluate(() => ({
+    active: document.querySelector(".project-item.active")?.getAttribute("data-project-id") || null,
+    items: [...document.querySelectorAll("#projectList .project-item")].map(
+      (n) => `${n.getAttribute("data-project-id")}${n.classList.contains("active") ? "*" : ""}`
+    ),
+    modal: Boolean(
+      document.querySelector("#unsavedModal") &&
+        !document.querySelector("#unsavedModal").classList.contains("hidden")
+    ),
+  }));
+}
+
+// 与 local_keyframe_ui.cjs 的同名逻辑对齐：那里等 .active 用的是 15000ms，
+// 本文件原先只用 8000ms，是工具集里的孤例（2026-10-01 全量轮次因此报过一次假红）。
+// 另：应用的「首屏自动选项目」会用一次重绘覆盖我们刚点出来的 .active，
+// 所以这里除了放宽容限，还允许「重试一次」，并在彻底失败时把现场打出来。
+async function selectProject(page, id) {
+  await clearUnsaved(page);
+  await page.waitForSelector(`#projectList .project-item[data-project-id="${id}"]`, { timeout: 15000 });
+  await clearUnsaved(page);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await page.locator(`#projectList .project-item[data-project-id="${id}"]`).click();
+    await clearUnsaved(page);
+    try {
+      await page.waitForFunction(
+        (pid) => document.querySelector(".project-item.active")?.getAttribute("data-project-id") === pid,
+        id,
+        { timeout: 15000 }
+      );
+      return;
+    } catch (err) {
+      if (attempt === 2) {
+        const dump = await dumpProjectList(page);
+        throw new Error(
+          `选择项目 ${id} 后 .active 未生效（2 次尝试各 15s）。` +
+            `实际 active=${dump.active}；列表=${dump.items.join(",")}；unsavedModal=${dump.modal}`
+        );
+      }
+      console.log(`RETRY: 第 ${attempt} 次选择未落地（active=${await activeProjectId(page)}），重试一次`);
+    }
+  }
 }
 
 async function openAssembly(page) {
