@@ -115,14 +115,18 @@ def _provider_key_present(candidate: str) -> bool:
 
 
 # 诊断面板与实际分发必须同源：这里就是 `generate_video_asset` 分发环里用的那套判定。
-VIDEO_PROVIDER_KEY_NAMES = ("siliconflow", "ark", "dashscope", "minimax")
+#
+# ark 不在名单里（2026-09-29 退役，见 capabilities.RETIRED_VIDEO_PROVIDERS）：隐式兜底链
+# 已经不再把它当候选，所以"只配了 ark 密钥"的机器**确实**发不出视频，如实报「未配置访问
+# 密钥」才是对的。留在名单里会让诊断说可用、provider 层却 404 —— 恰是上一版要修的那个病。
+VIDEO_PROVIDER_KEY_NAMES = ("siliconflow", "dashscope", "minimax")
 
 
 def video_key_status() -> dict[str, bool]:
     """哪些视频 provider 配了密钥。
 
     存在的理由：`/api/health` 的 `live_access` 原先只看 MiniMax 一家，
-    于是只配了 ark/dashscope 的机器会被报成「视频：未配置访问密钥」——
+    于是只配了 dashscope 的机器会被报成「视频：未配置访问密钥」——
     而分发环其实会照样把它们发出去。诊断说没有、实际有，比没有诊断更糟。
     """
     return {name: _provider_key_present(name) for name in VIDEO_PROVIDER_KEY_NAMES}
@@ -137,9 +141,10 @@ def generate_video_asset(request: VideoAssetRequest) -> VideoGenerationResult:
     if explicit:
         providers = [provider]
     else:
-        providers = [provider] if provider in {"siliconflow", "ark", "volc", "dashscope", "minimax"} else ["siliconflow", "ark"]
-        if provider == "siliconflow":
-            providers.append("ark")
+        # 隐式兜底链不再包含 ark（已退役）：默认 siliconflow 的机器以前会退到一家用不了的，
+        # 白跑一次 404。显式指定（provider_override）仍原样尊重 —— 退役不该把用户的选择偷偷
+        # 换成别家，那叫"静默替换"，本项目已经踩过这个坑（见 test_video_provider_resolution.mjs）。
+        providers = [provider] if provider in {"siliconflow", "ark", "volc", "dashscope", "minimax"} else ["siliconflow"]
 
     attempted = False
     for candidate in dict.fromkeys(providers):
@@ -1217,6 +1222,16 @@ def _compact_error(error: Exception) -> str:
     return message[:280] or error.__class__.__name__
 
 
+# ---- 已退役的 ark 适配器（保留，不在投放面上） --------------------------------
+#
+# 2026-09-29 退役：Seedance 2.0 需账号余额 ≥ 200 元才能开通，本账号开通不了（实测
+# `404 ModelNotOpen`）。退役只发生在**投放面**（能力表 / 隐式兜底链 / 诊断名单），这段
+# 适配器刻意留着：
+#   * 显式 `provider_override="ark"` 的路径仍走它，`test_video_provider_guard.py` 正是靠
+#     这条路径打桩验证"闸门在网络之前拦下"，删了就丢一段护栏覆盖；
+#   * 账号门槛满足后，删掉 RETIRED_VIDEO_PROVIDERS 里那一条即可恢复，不必重写。
+# 所以：它"未使用"是**有意的**，不是没人管的死代码。单价表里 ark 的档位同理保留
+# —— 它是"未登记取最贵档"的保守基准，删掉会放松预算护栏。
 def _ark_api_key() -> str:
     return os.getenv("VOLC_VIDEO_API_KEY") or os.getenv("VOLC_API_KEY") or ""
 

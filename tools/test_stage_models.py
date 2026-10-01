@@ -398,8 +398,10 @@ def test_p1_video_matrix_not_regressed() -> None:
         last_frame_path=None,
     )
     assert plan["provider"] == "minimax"
-    ark = validate_video_generation(
-        provider="ark",
+    # ark 已于 2026-09-29 退役（见 capabilities.RETIRED_VIDEO_PROVIDERS），这条"切换 provider"
+    # 的正例改用 dashscope：它同样覆盖 i2v，且是当前默认 provider。
+    switched = validate_video_generation(
+        provider="dashscope",
         model=None,
         video_mode="i2v",
         duration_seconds=5,
@@ -407,8 +409,8 @@ def test_p1_video_matrix_not_regressed() -> None:
         first_frame_path="/assets/demo/first.jpg",
         last_frame_path=None,
     )
-    assert ark["provider"] == "ark"
-    print("PASS: P1 video capability matrix still accepts MiniMax default and Ark switch")
+    assert switched["provider"] == "dashscope"
+    print("PASS: P1 video capability matrix still accepts MiniMax default and dashscope switch")
 
 
 def main() -> None:

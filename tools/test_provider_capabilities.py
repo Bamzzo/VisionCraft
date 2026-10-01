@@ -50,7 +50,11 @@ def test_capability_contract() -> None:
     assert payload["mode_requirements"]["i2v"]["requires_first_frame"] is True
     assert payload["mode_requirements"]["keyframes"]["requires_last_frame"] is True
     ids = {item["id"] for item in payload["video"]}
-    assert {"ark", "dashscope", "minimax", "siliconflow"} <= ids
+    assert {"dashscope", "minimax", "siliconflow"} <= ids
+    # ark 已退役（2026-09-29，见 capabilities.RETIRED_VIDEO_PROVIDERS）：能力表只列**可交付**
+    # 的 provider。留着它，前端 `<select>` 就会把「火山 Seedance」当成就绪选项摆出来，
+    # 选中后必然 404 —— 这正是要退役的原因，所以这条断言是本次改动的判据。
+    assert "ark" not in ids, "退役的 provider 不该再出现在投放面上"
     for item in payload["video"]:
         missing = REQUIRED_VIDEO_FIELDS - set(item)
         assert not missing, f"{item['id']} missing {missing}"
@@ -101,7 +105,7 @@ def test_capability_contract() -> None:
 
 
 def test_validate_frames_and_modes() -> None:
-    common = dict(provider="ark", model=None, duration_seconds=5, aspect_ratio="16:9")
+    common = dict(provider="dashscope", model=None, duration_seconds=5, aspect_ratio="16:9")
     expect_error(
         "MISSING_FIRST_FRAME",
         video_mode="i2v",
@@ -137,6 +141,20 @@ def test_validate_frames_and_modes() -> None:
         last_frame_path=None,
     )
     plan = validate_video_generation(
+        provider="wan",
+        model=None,
+        video_mode="i2v",
+        duration_seconds=5,
+        aspect_ratio="16:9",
+        first_frame_path="/assets/demo/first.jpg",
+        last_frame_path=None,
+    )
+    assert plan["provider"] == "dashscope", "别名 wan/alibaba/aliyun 应归一化到 dashscope"
+    assert plan["video_mode"] == "i2v"
+    # 退役判定必须排在"未知 provider"之前：`seedance` 归一化到 ark 后要报 PROVIDER_RETIRED
+    # 并说清该改用什么；报"未知 provider"会让人以为是自己拼错了，反复试。
+    expect_error(
+        "PROVIDER_RETIRED",
         provider="seedance",
         model=None,
         video_mode="i2v",
@@ -145,8 +163,6 @@ def test_validate_frames_and_modes() -> None:
         first_frame_path="/assets/demo/first.jpg",
         last_frame_path=None,
     )
-    assert plan["provider"] == "ark"
-    assert plan["video_mode"] == "i2v"
 
 
 def _insert_shot(project_id: str, shot_id: str, version_id: str, first_frame: str | None, video_path: str | None) -> None:
@@ -180,10 +196,12 @@ def test_prepare_forks_on_provider_switch() -> None:
     version_id = f"version_{uuid.uuid4().hex[:8]}"
     _insert_shot(project_id, shot_id, version_id, "/assets/demo/first.jpg", "/assets/demo/old.mp4")
     try:
-        first = prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="ark", duration_seconds=5)
-        second = prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="dashscope", duration_seconds=5)
-        assert first["provider"] == "ark"
-        assert second["provider"] == "dashscope"
+        # ark 退役后，能力表里同时支持 i2v 的只剩 dashscope 与 minimax（minimax 无 5s，用 6s）。
+        # 这条用例考的是"换 provider 要分叉出新版本"，代表 provider 换成我们真正出货的两家。
+        first = prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="dashscope", duration_seconds=5)
+        second = prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="minimax", duration_seconds=6)
+        assert first["provider"] == "dashscope"
+        assert second["provider"] == "minimax"
         assert first["version_id"] != version_id
         assert second["version_id"] != first["version_id"]
         with connect() as conn:
@@ -209,7 +227,7 @@ def test_prepare_rejects_i2v_without_frame() -> None:
     _insert_shot(project_id, shot_id, version_id, None, None)
     try:
         try:
-            prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="ark", duration_seconds=5)
+            prepare_shot_video_generation(project_id, shot_id, video_mode="i2v", provider="dashscope", duration_seconds=5)
         except CapabilityError as exc:
             assert exc.code == "MISSING_FIRST_FRAME"
             print("PASS: I2V without first frame is rejected before provider submit")
@@ -261,11 +279,15 @@ def _env(values: dict[str, str | None]):
 
 
 def test_live_access_recognises_every_video_provider() -> None:
-    """诊断面板必须认 ark / dashscope 的密钥，不能只认 MiniMax。
+    """诊断面板必须认 dashscope 的密钥，不能只认 MiniMax。
 
     此前 `keys_present` 只填 deepseek/minimax、`video_ready` 只看 minimax：
-    只配 ark 的机器会被报成「视频：未配置访问密钥」，而分发环照样会把请求发出去。
+    只配 dashscope 的机器会被报成「视频：未配置访问密钥」，而分发环照样会把请求发出去。
     **诊断说没有、实际有，比没有诊断更糟。**
+
+    2026-09-29 ark 退役后，ark 这一支的结论**反过来**了：隐式兜底链已不含 ark，所以只配
+    ark 密钥的机器**确实**发不出视频，诊断必须报「未配置访问密钥」。原来的断言写着
+    "只配 ark 也应报视频可用"——它在退役当天就成了错的，这里按新事实改写。
     """
     blank = dict.fromkeys(VIDEO_KEY_ENVS)
 
@@ -276,10 +298,10 @@ def test_live_access_recognises_every_video_provider() -> None:
 
     with _env({**blank, "VISIONCRAFT_ALLOW_LIVE_VIDEO": "1", "VOLC_API_KEY": "unit-test-ark-key"}):
         ark_only = get_provider_capabilities()["live_access"]
-        assert ark_only["keys_present"]["ark"] is True, "ark 密钥必须被诊断面板认到"
+        assert "ark" not in ark_only["keys_present"], "退役的 provider 不该出现在 keys_present 里"
         assert ark_only["keys_present"]["minimax"] is False, "没配 MiniMax 就不该说配了"
-        assert ark_only["video_ready"] is True, "只配 ark 也应报视频可用——分发环真的会用它"
-        assert not any("视频：未配置访问密钥" in item for item in ark_only["blocked_by"]), "不该再报缺视频密钥"
+        assert ark_only["video_ready"] is False, "只配退役 provider 的机器发不出视频，不该报可用"
+        assert any("视频：未配置访问密钥" in item for item in ark_only["blocked_by"]), "应如实报缺视频密钥"
         blob = json.dumps(ark_only, ensure_ascii=False)
         for forbidden in ("VOLC_API_KEY", "ARK_API_KEY", "DASHSCOPE_API_KEY", "MINIMAX_API_KEY"):
             assert forbidden not in blob, f"诊断 payload 泄露了环境变量名：{forbidden}"

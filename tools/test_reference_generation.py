@@ -63,9 +63,10 @@ def test_mode_is_registered() -> None:
     assert "reference" in requirements, "reference 模式没有登记，等于没有这个模式"
     assert requirements["reference"]["requires_reference"] is True, "reference 模式必须要求参考图"
     providers = {item["id"]: item for item in payload["video"]}
-    assert "reference" in providers["ark"]["supported_modes"], "Seedance 2.0 支持 role=reference_image"
+    assert "ark" not in providers, "ark 已退役（2026-09-29），不该再出现在能力表里"
+    assert "reference" in providers["dashscope"]["supported_modes"], "wan2.7-r2v 支持参考图"
     assert "reference" not in providers["minimax"]["supported_modes"], "MiniMax 没有参考图参数，不能假装有"
-    print("PASS: reference 模式已登记；ark 声明支持、minimax 诚实声明不支持")
+    print("PASS: reference 模式已登记；dashscope 声明支持、minimax 诚实声明不支持")
 
 
 def test_provider_routing() -> None:
@@ -84,7 +85,7 @@ def test_provider_routing() -> None:
 
     expect_capability_error(
         "MISSING_REFERENCE_IMAGE",
-        provider="ark",
+        provider="dashscope",
         model=None,
         video_mode="reference",
         duration_seconds=5,
@@ -95,7 +96,12 @@ def test_provider_routing() -> None:
     )
     print("PASS: 参考图模式缺图时报 MISSING_REFERENCE_IMAGE")
 
-    ark = validate_video_generation(
+    # 原先这里断言"ark 的 plan 声明参考图不与首帧并存"。ark 退役后，能力表里已没有
+    # `reference_includes_first_frame=False` 的 provider（dashscope r2v 允许并存），
+    # 所以改成钉**退役必须被拦住**：给一个已退役的名字却报"未知 provider"会误导，
+    # 而适配器那条互斥规则仍有 test_payloads 直接钉着（退役的是投放面，不是这条规则）。
+    expect_capability_error(
+        "PROVIDER_RETIRED",
         provider="ark",
         model=None,
         video_mode="reference",
@@ -105,8 +111,7 @@ def test_provider_routing() -> None:
         last_frame_path=None,
         reference_paths=[PLACEHOLDER],
     )
-    assert ark["reference_includes_first_frame"] is False, "Seedance 的参考图与首帧互斥"
-    print("PASS: ark 参考图模式下 plan 声明不与首帧并存")
+    print("PASS: 退役的 ark 在参考图模式下被明确拦下（PROVIDER_RETIRED，而非未知 provider）")
 
     dashscope = validate_video_generation(
         provider="dashscope",
@@ -137,6 +142,8 @@ def test_payloads(project_id: str, frame_path: str, anchor_path: str) -> None:
         reference_images=[{"kind": "character", "label": "小明", "file_path": anchor_path}],
     )
 
+    # ark 适配器已退役但**刻意保留**（见 capabilities.RETIRED_VIDEO_PROVIDERS）：这条单测
+    # 钉的是适配器自己的互斥规则，删了它规则就无人看管。退役的是投放面，不是这条规则。
     ark = _ark_content_items(request, "prompt")
     roles = [item.get("role") for item in ark]
     assert "reference_image" in roles, "Seedance 的参考图必须带 role=reference_image"

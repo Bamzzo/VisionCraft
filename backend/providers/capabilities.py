@@ -11,6 +11,27 @@ PROVIDER_ALIASES = {
     "dashscope_wan": "dashscope",
 }
 
+# 已退役的视频 provider（2026-09-29，竹木决定）。
+#
+# 缘由不是代码缺陷：火山方舟的 Seedance 2.0 需要**账号余额 ≥ 200 元**才能开通，本账号
+# （2107602280）开通不了，实测报 `404 ModelNotOpen`（预检 §13.10/§13.11）。而 ark 的四种
+# 模式与 dashscope 完全重复覆盖，dashscope 已全部真实验收通过 —— 退役它**不产生任何能力空洞**。
+#
+# 退役的含义（三处一起改，缺一个就会"广告了却做不到"）：
+#   1. 能力表不再列出它 ⇒ 前端 `<select>` 直接由 `state.capabilities.video` 渲染，选项随之消失；
+#   2. 隐式兜底链不再包含它 ⇒ 默认 siliconflow 的机器不会再把请求丢给一家用不了的；
+#   3. 诊断面板不再把它算作"视频可用" ⇒ 只配了 ark 密钥的机器如实报「未配置访问密钥」，
+#      而不是报可用、再由 provider 层 404。
+#
+# **保留**：适配器实现、单价表里 ark 的档位（它是"未登记取最贵档"的保守基准，删了会放松预算
+# 护栏）、以及显式 `provider_override="ark"` 的分发路径（`test_video_provider_guard.py` 用它
+# 打桩验证"闸门在网络之前拦下"）。这些都不是投放面，不构成"广告"。
+#
+# 恢复方式：账号门槛满足后，删掉下面这一条即可（适配器与测试都还在）。
+RETIRED_VIDEO_PROVIDERS: dict[str, str] = {
+    "ark": "火山方舟 Seedance 2.0 需账号余额 ≥ 200 元才能开通，本账号无法开通；其四种模式与 dashscope 完全重复，已退役。",
+}
+
 MODE_REQUIREMENTS = {
     "t2v": {"requires_first_frame": False, "requires_last_frame": False},
     "i2v": {"requires_first_frame": True, "requires_last_frame": False},
@@ -37,15 +58,27 @@ def default_video_provider() -> str:
     return normalize_video_provider(os.getenv("VISIONCRAFT_VIDEO_PROVIDER", "minimax")) or "minimax"
 
 
+def retired_video_provider_reason(provider: str | None) -> str | None:
+    """已知但已退役的 provider => 原因；否则 None。
+
+    单独开成一个函数，是为了让"退役"只有一个定义处：能力表、诊断、校验都读这里，
+    不会出现"表里没有、校验却放行"这类自相矛盾。
+    """
+    canonical = normalize_video_provider(provider)
+    if not canonical:
+        return None
+    return RETIRED_VIDEO_PROVIDERS.get(canonical)
+
+
 def get_provider_capabilities() -> dict:
     deepseek_live = bool(os.getenv("DEEPSEEK_API_KEY"))
     siliconflow_live = bool(os.getenv("SILICONFLOW_API_KEY"))
     ark_image_live = bool(os.getenv("VOLC_IMAGE_API_KEY") or os.getenv("VOLC_API_KEY"))
-    ark_video_live = bool(os.getenv("VOLC_VIDEO_API_KEY") or os.getenv("VOLC_API_KEY"))
     dashscope_video_live = bool(os.getenv("DASHSCOPE_API_KEY"))
     minimax_video_live = bool(os.getenv("MINIMAX_API_KEY"))
+    # ark 视频已退役（见 RETIRED_VIDEO_PROVIDERS），故不再有 `ark_video_live` 这个入参：
+    # 能力表里没有它的条目，密钥在不在都不该影响任何一家可达性。
     video_providers = _video_provider_catalog(
-        ark_video_live=ark_video_live,
         dashscope_video_live=dashscope_video_live,
         minimax_video_live=minimax_video_live,
         siliconflow_live=siliconflow_live,
@@ -121,6 +154,15 @@ def validate_video_generation(
         raise CapabilityError("UNSUPPORTED_VIDEO_MODE", f"不支持的视频模式：{video_mode}")
 
     requested_provider = normalize_video_provider(provider) or default_video_provider()
+    # 退役判定必须排在"未知 provider"之前：ark 是个**已知**名字，报"未知"会让人以为
+    # 是自己拼错了，反复试；这里要直接说清为什么不能用、以及该改用什么。
+    retired_reason = retired_video_provider_reason(requested_provider)
+    if retired_reason:
+        raise CapabilityError(
+            "PROVIDER_RETIRED",
+            f"{requested_provider} 已退役，不能再用于新生成。{retired_reason}"
+            "请改用 dashscope（四种模式全覆盖，已真实验收）或 minimax（参考图模式除外）。",
+        )
     capability = get_video_provider_capability(requested_provider)
     if not capability:
         raise CapabilityError("UNKNOWN_PROVIDER", f"未知视频 Provider：{provider or requested_provider}")
@@ -185,7 +227,10 @@ def get_provider_diagnostics() -> dict:
         else siliconflow_key or ark_image_key
     )
     canonical_video = normalize_video_provider(video_provider) or "minimax"
-    video_configured = {
+    # 默认 provider 若指向一家已退役的，绝不能借它的密钥报"已配置"：那会让诊断面板说
+    # 可用、而 provider 层 404。退役就是不可用，密钥在不在都不改变这一点。
+    video_retired = retired_video_provider_reason(canonical_video)
+    video_configured = False if video_retired else {
         "siliconflow": siliconflow_key,
         "ark": ark_video_key,
         "dashscope": dashscope_key,
@@ -210,9 +255,11 @@ def get_provider_diagnostics() -> dict:
             "configured": bool(video_configured),
             "provider": canonical_video,
             "model": _default_model_for_provider(canonical_video),
-            "status_label": "已配置" if video_configured else "未配置",
+            "status_label": "已退役" if video_retired else ("已配置" if video_configured else "未配置"),
+            "retired_reason": video_retired,
+            # 只列仍在投放面上的 provider。ark 已退役，若还列成 available=True，就和
+            # 「能力表里根本没有它」自相矛盾 —— 而诊断面板的全部意义正是不自相矛盾。
             "available_providers": {
-                "ark": ark_video_key,
                 "dashscope": dashscope_key,
                 "minimax": minimax_key,
                 "siliconflow": siliconflow_key,
@@ -225,37 +272,20 @@ def get_provider_diagnostics() -> dict:
 
 
 def _video_provider_catalog(**live_flags: bool) -> list[dict]:
-    ark_model = os.getenv("VOLC_VIDEO_MODEL") or os.getenv("DOUBAO_VIDEO_ENDPOINT") or os.getenv("SEEDANCE_V2_ENDPOINT", "doubao-seedance-2-0-260128")
     dashscope_t2v = os.getenv("DASHSCOPE_T2V_MODEL", "wan2.7-t2v")
     dashscope_i2v = os.getenv("DASHSCOPE_I2V_MODEL", "wan2.7-i2v")
     # 参考生视频是单独的模型：wan2.7-i2v 只吃首帧，参考图要 r2v 才收。
     dashscope_r2v = os.getenv("DASHSCOPE_R2V_MODEL", "wan2.7-r2v")
     minimax_model = os.getenv("MINIMAX_VIDEO_MODEL", "MiniMax-H3")
     siliconflow_model = os.getenv("SILICONFLOW_VIDEO_MODEL", "Wan-AI/Wan2.2-T2V-A14B")
+    # ark 条目整条移除：能力表只列**可交付**的 provider（见 RETIRED_VIDEO_PROVIDERS）。
+    #
+    # 一个必须说清的后果：它原先声明的 `reference_includes_first_frame: False`（参考图与首帧
+    # 互斥）随条目退场，于是这条能力声明在剩下的 provider 组合下恒为 True —— 换个角度说，
+    # `validate_video_generation` 里那条分支现在没有 provider 会走到。这是**有意的取舍**：
+    # ark 适配器的互斥规则仍有单测钉着（test_reference_generation.test_payloads 直接调
+    # `_ark_content_items`），所以规则本身不是无人看管，只是暂时不在投放路径上。
     return [
-        {
-            "id": "ark",
-            "label": "火山 Seedance",
-            "aliases": ["seedance", "volc", "volcengine"],
-            "mode": "live-ready" if live_flags["ark_video_live"] else "not-configured",
-            "supported_modes": ["t2v", "i2v", "keyframes", "reference"],
-            "supported_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
-            "supported_durations": [5, 10],
-            "supported_resolutions": ["720p", "1080p"],
-            "default_resolution": os.getenv("VOLC_VIDEO_RESOLUTION", "720p"),
-            "default_model": ark_model,
-            # 官方：图生视频-首帧 / 首尾帧 / 全模态参考生视频是 3 种互斥场景。
-            # 参考图模式必须自己独占，带上首帧会被云端拒绝。
-            "reference_includes_first_frame": False,
-            "models": [
-                {
-                    "id": ark_model,
-                    "label": "Seedance 2.0",
-                    "supported_modes": ["t2v", "i2v", "keyframes", "reference"],
-                    "default_resolution": os.getenv("VOLC_VIDEO_RESOLUTION", "720p"),
-                }
-            ],
-        },
         {
             "id": "dashscope",
             "label": "阿里百炼 Wan",

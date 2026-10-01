@@ -137,7 +137,7 @@ def test_local_generate_binds_new_version() -> None:
         frozen = prepare_version_for_generation(
             project_id,
             shot_id,
-            {"description": "局部重生成描述", "video_mode": "t2v", "provider": "ark"},
+            {"description": "局部重生成描述", "video_mode": "t2v", "provider": "dashscope"},
         )
         assert frozen["id"] != old_id
         assert frozen["video_path"] is None
@@ -156,7 +156,7 @@ def test_i2v_without_first_frame_rejected() -> None:
     try:
         before = _version_count(shot_id)
         try:
-            prepare_version_for_generation(project_id, shot_id, {"video_mode": "i2v", "provider": "ark"})
+            prepare_version_for_generation(project_id, shot_id, {"video_mode": "i2v", "provider": "dashscope"})
             raise AssertionError("缺首帧的 I2V 应当被拒绝")
         except ShotEditError as exc:
             assert "首帧" in str(exc) or exc.code == "MISSING_FIRST_FRAME"
@@ -229,7 +229,7 @@ def test_traceability_and_no_secrets() -> None:
             {
                 "description": "可追溯版本",
                 "video_mode": "i2v",
-                "provider": "ark",
+                "provider": "dashscope",
                 "model": None,
                 "duration_seconds": 5,
                 "first_frame_path": "/assets/demo/first.jpg",
@@ -238,7 +238,7 @@ def test_traceability_and_no_secrets() -> None:
         blob = str(frozen)
         assert frozen["id"]
         assert frozen["video_mode"] == "i2v"
-        assert frozen["provider"] == "ark"
+        assert frozen["provider"] == "dashscope"
         assert frozen["first_frame_path"] == "/assets/demo/first.jpg"
         assert "sk-" not in blob
         assert "api_key" not in blob.lower() or frozen.get("api_key") is None
@@ -274,11 +274,11 @@ def test_http_draft_freeze_rollback_and_enqueue() -> None:
         mismatch = client.post(f"/api/projects/{project_id}/shots/{shot_id}/versions/{uuid.uuid4().hex}/rollback")
         assert mismatch.status_code in {400, 404}
 
-        fake = VideoGenerationResult(status="completed", video_path="/assets/demo/mock.mp4", provider="ark", model="mock")
+        fake = VideoGenerationResult(status="completed", video_path="/assets/demo/mock.mp4", provider="dashscope", model="mock")
         with patch("backend.services.video_service.generate_video_asset", return_value=fake):
             queued = client.post(
                 f"/api/projects/{project_id}/shots/{shot_id}/video",
-                json={"description": "入队绑定版本", "video_mode": "t2v", "provider": "ark"},
+                json={"description": "入队绑定版本", "video_mode": "t2v", "provider": "dashscope"},
             )
         assert queued.status_code == 200, queued.text
         body = queued.json()
