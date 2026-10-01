@@ -239,27 +239,41 @@ async function main() {
     await openStage(page, "video");
     await page.waitForSelector('section[data-model-stage="video_generation"]');
     const videoOrigin = await page.locator('section[data-model-stage="video_generation"]').innerText();
-    if (!/minimax/i.test(videoOrigin)) throw new Error("视频阶段应预选 MiniMax");
+    // 断言与配置同源：默认视频 provider 是可配置的（VISIONCRAFT_VIDEO_PROVIDER），
+    // 写死 "minimax" 会在改配置时误报。这里读能力载荷自己的 default_video_provider，
+    // 再要求面板「本阶段将使用：<provider> /」那行正是它（面板里显示的是 provider id，不是中文标签）。
+    const caps = await apiGet(page, "/api/providers/capabilities");
+    const defaultVideoProvider = caps.default_video_provider;
+    if (!defaultVideoProvider) throw new Error("能力载荷未给出 default_video_provider");
+    const usedLine = videoOrigin.match(/本阶段将使用：\s*([^\s/]+)/);
+    if (!usedLine) throw new Error(`视频阶段面板缺少「本阶段将使用」行：${videoOrigin.slice(0, 120)}`);
+    if (usedLine[1] !== defaultVideoProvider) {
+      throw new Error(`视频阶段应预选默认 provider ${defaultVideoProvider}，实际是 ${usedLine[1]}`);
+    }
     if (!videoOrigin.includes("默认预选") && !videoOrigin.includes("用户选择")) {
       throw new Error("视频模型应标明默认预选或用户选择");
     }
     pass("视觉/视频默认模型可见");
     const videoSelect = page.locator('section[data-model-stage="video_generation"] [data-model-field="model"]');
-    if ((await videoSelect.locator("option").count()) > 1) {
-      const current = await videoSelect.inputValue();
-      const next = await videoSelect.locator("option").nth(1).getAttribute("value");
-      if (next && next !== current) {
-        await videoSelect.selectOption(next);
-        await page.click('section[data-model-stage="video_generation"] [data-adapt="save-model-config"]');
-        await page.waitForFunction(
-          () => (document.querySelector('section[data-model-stage="video_generation"]')?.innerText || "").includes("用户选择"),
-          null,
-          { timeout: 10000 }
-        );
-        pass("切换并保存视频阶段模型后显示用户选择");
-      }
+    const optionValues = await videoSelect.locator("option").evaluateAll((nodes) => nodes.map((node) => node.value));
+    const currentModel = await videoSelect.inputValue();
+    // 不能假设「第 2 个选项一定与当前值不同」。dashscope 在视频阶段有 3 个模型
+    // （wan2.7-t2v / wan2.7-i2v / wan2.7-r2v），而阶段默认模型正好是排第二位那个，
+    // 于是旧写法 `nth(1) !== current` 为假 —— **既不打印 PASS 也不打印 SKIP**，
+    // 检查静默少一条（表现：skip 计数 2→1，而整轮仍是绿的）。
+    // 断言条数的变化必须能解释，所以这里改成「找一个与当前值不同的选项」，找不到才如实 skip。
+    const nextModel = optionValues.find((value) => value && value !== currentModel);
+    if (nextModel) {
+      await videoSelect.selectOption(nextModel);
+      await page.click('section[data-model-stage="video_generation"] [data-adapt="save-model-config"]');
+      await page.waitForFunction(
+        () => (document.querySelector('section[data-model-stage="video_generation"]')?.innerText || "").includes("用户选择"),
+        null,
+        { timeout: 10000 }
+      );
+      pass("切换并保存视频阶段模型后显示用户选择");
     } else {
-      skip("视频阶段只有一个模型，无法切换");
+      skip(`视频阶段只有一个可选模型（${currentModel}），无法切换`);
     }
 
     const retryLabel = await page.locator("#retryWorkflowBtn").getAttribute("title").catch(() => "");

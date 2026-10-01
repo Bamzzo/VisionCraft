@@ -164,6 +164,36 @@ async function main() {
     pass("登记后 I2V 前置条件满足");
     await page.screenshot({ path: path.join(OUT, "p7-local-keyframe-1440.png"), fullPage: true });
 
+    // provider 自动修正（真行为验证）：先手动选一个**不支持参考图**的 provider，
+    // 再把生成模式切到参考图，断言它被自动换成支持该模式的 provider。
+    // 旧写法用「provider 在不在选项里」判断要不要修正，而选项列表包含全部 provider，
+    // 判断恒为真 → 永远不修正 → 界面留着 MiniMax、模型下拉被过滤成空、提交才报错。
+    await page.selectOption("#videoProviderSelect", "minimax");
+    await page.selectOption("#videoModeSelect", "reference");
+    await page.waitForFunction(
+      () => document.getElementById("videoProviderSelect")?.value !== "minimax",
+      null,
+      { timeout: 8000 }
+    );
+    const corrected = await page.evaluate(() => {
+      const select = document.getElementById("videoProviderSelect");
+      const option = select?.selectedOptions?.[0];
+      const modelSelect = document.getElementById("videoModelSelect");
+      return {
+        value: select?.value || "",
+        disabled: Boolean(option?.disabled),
+        modelCount: modelSelect ? modelSelect.querySelectorAll("option").length : 0,
+        model: modelSelect?.value || "",
+      };
+    });
+    if (corrected.disabled) {
+      throw new Error(`切到参考图后仍选中不支持该模式的 provider：${corrected.value}`);
+    }
+    if (!corrected.modelCount || !corrected.model) {
+      throw new Error("自动修正后模型下拉仍为空，说明 provider 并未真正换成支持该模式的");
+    }
+    pass(`参考图模式下 provider 自动从 minimax 修正为 ${corrected.value}`);
+
     if (OTHER_ID) {
       await selectProject(page, OTHER_ID);
       await openStage(page, "video");

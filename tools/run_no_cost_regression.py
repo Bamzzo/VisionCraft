@@ -108,6 +108,7 @@ def build_checks() -> list[Check]:
     # --- Node unit and contract tests -------------------------------------
     for script in (
         "tools/test_workflow_view_model.mjs",
+        "tools/test_video_provider_resolution.mjs",
         "tools/test_job_observer.mjs",
         "tools/test_live_2shot_wait.js",
         "tools/test_live_2shot_project_guard.js",
@@ -128,7 +129,11 @@ def build_checks() -> list[Check]:
         "test_adaptation_start_refresh.py",
         "test_adaptation_workflow.py",
         "test_medium_text_adaptation.py",
+        # 目录漂移/签名对比这类检查依赖外部 git；这里只登记本项目自产的契约测试。
         "test_long_text_adaptation.py",
+        # P5-B-2 第一层：章节感知索引 + FTS5 全文索引的混合召回。这一条的核心断言是
+        # "向量路径漏召的块，被字面索引补齐"——关掉全文索引它就会红，不是空壳。
+        "test_source_chunk_retrieval.py",
         "test_upload_assets.py",
         "test_job_center.py",
         "test_media_transfer.py",
@@ -168,6 +173,7 @@ def build_checks() -> list[Check]:
     for script in (
         "test_mock_web_smoke.py",
         "test_local_keyframe_browser.py",
+        "test_scope_draft_browser.py",
         "test_anchor_ui_browser.py",
         "test_p6c_real_assembly_browser.py",
         "test_p6d_assembly_browser.py",
