@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.config import DATA_DIR, init_environment  # noqa: E402
-from backend.database import connect, init_db, utc_now  # noqa: E402
+from backend.database import connect, init_db, to_json, utc_now  # noqa: E402
 from backend.providers.capabilities import validate_video_generation  # noqa: E402
 from backend.providers.video_provider import refresh_remote_video_task  # noqa: E402
 from backend.providers.live_budget import (  # noqa: E402
@@ -286,7 +286,7 @@ def main() -> None:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 shot_id, project_id, 1, "方源转身入暗", "首尾帧一致性验收镜头",
-                "方源", "风沙荒原 → 水墨暗处", "continuous move", PROMPT, NEGATIVE, "",
+                to_json(["方源"]), "风沙荒原 → 水墨暗处", "continuous move", PROMPT, NEGATIVE, "",
                 "keyframes_ready", version_id, now, now,
             ),
         )

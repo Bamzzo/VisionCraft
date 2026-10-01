@@ -2335,3 +2335,68 @@ counts 恒为 **7 pass / 0 fail** ⇒ **不是确定性回归**。
 **断言零变化**：加固后隔离复跑全绿、counts 仍是 7/0；**D 轮 `run-20261001-175827`
 全量 61/61 · 581 pass / 0 fail / 1 skip，逐项 counts 与 A 轮 0 项不一致**
 （p6b 86.0s / p6c 84.1s，均在正常区间）。提交 = `dce357e`（p6c）、`998bee1`（p6b）。
+
+## 14.32 「服务未连接」：一个坏单元格打穿整页（2026-10-01 深夜）
+
+竹木打开本地预览后报**「显示服务未连接」**。表象像后端没起，实测**服务全程活着**
+（`/api/health` 200）——**文案不是判据**。
+
+**真身**：20 个项目里 **9 个**的 `GET /api/projects/{id}` 返 **500**；而前端加载后
+**默认自动选中列表第一项**（`kfsmoke_ark_36c63a96`，恰是坏的之一）⇒ 首屏即失败、
+整页显示「未连接」。定位过程：`netstat -ano` 拿端口 PID → 逐项打 20 个详情端点
+（**9 个 500**）→ 读后端日志取最后一个 traceback：
+
+```
+main.py:229 get_project_endpoint
+  → project_service.py:308 get_project
+    → project_service.py:376 _normalize_shot  from_json(shot["characters"])
+      → database.py:55 json.loads
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+**根因两层（写侧才是根）**：
+
+| 层 | 事实 |
+|---|---|
+| 数据 | `shots.characters` 有 **9 行**存的是**裸字符串 `方源`**（该列要求 JSON 数组文本） |
+| 读侧 | `database.from_json()` 护栏只有 `if not value: return default` —— 只兜 `None`/`''`，**兜不住「非空但非法」** ⇒ 一个坏格子 = 整页 500 |
+| **写侧（源头）** | `tools/run_i2v_smoke.py:75`、`run_keyframes_smoke.py:289`、`run_reference_smoke.py:254` 用**裸 INSERT 写裸 Python 字符串**、**绕过 `to_json`**。**3 工具 × 3 provider ＝ 正好 9 行**，与 9 个受害项目**一一对应**（i2v×3 / refsmoke×3 / kfsmoke×3） |
+
+**取证口径：全库扫描，而不是只查那一列**。把**所有 JSON 文本列**都 `json.loads`
+一遍的探针结论 = **非法 JSON 恰好只这 9 行**（其余表/列 0 条）；另扫
+**「能解析但类型不对」**（`characters` 解析成 `str` 而非 `list`）也是 **0**
+（这类值**不会**被「非法 JSON」探针抓到，但下游 `.map()` 一样会炸）。**边界清楚才好定修法**。
+
+**三层修法（缺一层都会复发）**：
+
+1. **读侧容错**：`from_json` 捕获 `JSONDecodeError` / `TypeError` → 返回 default，
+   **并 `logger.warning` 留痕**。**容错必须配留痕**，否则脏值被静默吞掉、下次更难查；
+2. **写侧堵源**：三个工具改用 `to_json([...])`；
+3. **数据修复**：先 `shutil.copy2` 备份（`output/backup-visioncraft-db-20261001-202357.bak`），
+   再 `UPDATE shots SET characters='["方源"]' WHERE characters='方源'`，
+   **影响 9 行**，全库复扫 **9 → 0**。
+
+**验证（判据必须能证伪）**：
+
+- `from_json` 单元用例 6 条全不抛（`方源`→`[]`、正常数组/对象原样、`'"方源"'`→`'方源'`）；
+- **HTTP 全 20 个项目 200**（改代码前、重启后各一次）；
+- **活体证伪**（关键——要证明是**代码在挡**，不是"数据恰好干净"）：往**临时项目**
+  注入 `characters='方源'`、打**运行中的**服务 ⇒ **HTTP 200 且该镜头 `characters=[]`**
+  （**不是 500**），清理后项目数回 20、残留 shot **0** ⇒ **PASS**；
+- 日志**确实打出** `from_json: 非空但非法 JSON，已退化为默认值；value='方源'`。
+
+**⚠️ 服务不会自己热更**：本地 uvicorn **未带 `--reload`**（`output/_try_local.log`
+只有 `Uvicorn running on ...`、**无 reloader 行**）⇒ 改完代码**旧进程照跑旧代码**。
+定位旧进程 = `netstat -ano` 里 `:8000 LISTENING` 的**最后一列**（本次 **1066484**）；
+杀掉后按 README 命令 `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`
+在**同一 8000** 起回（预览地址不变）。
+
+**回归（改了共用 `from_json`，必须全量复跑）**：`run-20261001-203025`
+**61/61 · 581 pass / 0 fail / 1 skip**，且与 E 轮基线 `run-20261001-185023`
+**逐项 counts 0 项不一致**（最强零漂移）。`elapsed` 3131.2s vs 基线 2957s
+（1.06×，延续当日环境偏慢；**`elapsed` 不作为回归判据**）。
+
+**教训**：① **「未连接」这类前端文案 ≠ 后端不可用**，先逐项读状态码；
+② **读路径不该有「一个格子坏 → 整页死」的失败模式**，但容错要成对——
+**容错 + 留痕 + 修数据 + 堵源头**；③ **裸 SQL 写 JSON 列必然绕过 `to_json`**，
+凡直写 JSON 列的脚本都要复核这一点。

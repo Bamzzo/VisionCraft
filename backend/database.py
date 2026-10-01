@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -6,6 +7,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .config import DB_PATH, init_environment
+
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now() -> str:
@@ -50,9 +54,26 @@ def to_json(value: Any) -> str:
 
 
 def from_json(value: str | None, default: Any = None) -> Any:
+    """把库里的 JSON 文本解析回对象。
+
+    容错是**故意**的：`if not value` 只兜住 `None` / `''`，兜不住
+    「非空但非法」的值（历史遗留脏值、手改过的行、早期工具直写裸字符串）。
+    这种行以前会让整个读接口抛 `JSONDecodeError` → HTTP 500 —— 一个坏格子
+    就能把项目详情整页打成「服务未连接」。读路径不该有这种全有全无的失败：
+    解析不了就退化为 default，让其余字段照常可读。
+    （成因判例：tools/run_i2v_smoke.py 等三个冒烟工具曾把 shots.characters
+      写成裸字符串 `方源`，见 docs/codex-handoff-delivery-2026-09.md §14.32。）
+    """
     if not value:
         return default
-    return json.loads(value)
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(
+            "from_json: 非空但非法 JSON，已退化为默认值；value=%.120r",
+            value,
+        )
+        return default
 
 
 def init_db() -> None:

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from backend.config import DATA_DIR, init_environment
-from backend.database import connect, init_db, utc_now
+from backend.database import connect, init_db, to_json, utc_now
 from backend.providers.video_provider import VideoAssetRequest, generate_video_asset
 from backend.services.asset_service import persist_binary_asset
 
@@ -72,7 +72,7 @@ def main() -> None:
             """INSERT INTO shots
             (id, project_id, shot_index, title, description, characters, scene, camera_motion, visual_prompt, negative_prompt, audio_prompt, status, current_version_id, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (shot_id, project_id, 1, "方源与双蛊", "固定首帧 I2V 兼容性验证", "方源", "风沙荒原", "slow push-in", PROMPT, "text, watermark, logo, identity drift", "", "keyframes_ready", version_id, now, now),
+            (shot_id, project_id, 1, "方源与双蛊", "固定首帧 I2V 兼容性验证", to_json(["方源"]), "风沙荒原", "slow push-in", PROMPT, "text, watermark, logo, identity drift", "", "keyframes_ready", version_id, now, now),
         )
         conn.execute(
             """INSERT INTO shot_versions
