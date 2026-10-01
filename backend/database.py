@@ -124,6 +124,7 @@ def init_db() -> None:
         _ensure_shot_drafts(conn)
         _ensure_adaptation_tables(conn)
         _ensure_medium_text_tables(conn)
+        _ensure_source_chunk_fts(conn)
         _ensure_column(conn, "adaptation_options", "scope_id", "TEXT")
         _ensure_column(conn, "story_bibles", "scope_id", "TEXT")
         _ensure_column(conn, "storyboard_drafts", "scope_id", "TEXT")
@@ -142,6 +143,36 @@ def init_db() -> None:
             _ensure_column(conn, table, "used_local_fallback", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(conn, table, "config_source", "TEXT")
         _ensure_column(conn, "adaptation_options", "stale", "INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_source_chunk_fts(conn: sqlite3.Connection) -> None:
+    """章节级全文索引（FTS5 trigram）。
+
+    中文没有词间空格，FTS5 默认的 unicode61 会把一整段连续汉字切成一个 token，
+    等于查不到；trigram 按三字滑窗建索引，才做得成中文字面子串检索。
+
+    代价有两个，调用方必须知道：
+    ① **查询至少 3 个字符**——短于 3 字时 trigram 静默返回 0 条（已实测），
+       不能把"查不到"读成"没有匹配"；
+    ② 它是**字面子串**检索，不是语义检索。用户输入里的 `*`、`OR`、`NEAR` 都不会
+       被当作运算符（实测：`方源*` 与 `方源 OR 春秋` 均匹配 0 条），而裸引号
+       （如 `x"y`）会抛 `unterminated string`——所以查询必须短语化转义后再进 MATCH。
+
+    建表失败（SQLite 未编入 FTS5）不阻断启动，检索退回纯向量路径。
+    """
+    try:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS source_chunk_fts USING fts5(
+              project_id UNINDEXED,
+              chunk_id UNINDEXED,
+              text,
+              tokenize='trigram'
+            )
+            """
+        )
+    except sqlite3.OperationalError as exc:
+        print(f"WARN: 章节全文索引不可用（{exc}），检索将退回纯向量路径")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:

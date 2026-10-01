@@ -5,6 +5,7 @@ import uuid
 
 from ..database import connect, from_json, to_json, utc_now
 from ..services.job_service import create_job, update_job
+from ..services.memory_service import index_source_chunk_fts
 from ..services.project_service import get_project, update_project_status
 from ..workflow.medium_text_planner import (
     LONG_LIMIT,
@@ -511,6 +512,9 @@ def _persist_analysis(
                     now,
                 ),
             )
+    # 在事务之外重建全文索引：本函数整批替换了 source_chunks，索引必须跟着换，
+    # 否则检索会命向已经不存在的块。放在 with 后面是为了不让第二个连接进这个事务。
+    index_source_chunk_fts(project_id)
 
 
 def _upsert_scope(
