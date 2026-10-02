@@ -20,26 +20,69 @@
 
 | # | 动作 | 为什么 | 现状 |
 |---|---|---|---|
-| 1 | **备份真实数据目录** | live 会往 `backend/data` 写项目/视频/向量库。上一次清理遗留就是因为没人备份 | ⚠️ 未做 |
-| 2 | **先在不授权状态下试一次，期望 `BLOCKED_BEFORE_CALL`** | **护栏 ≠ 验证**（预检 §8 的口径）。"闸门在"是声明；拦得住才是证据。这一步**能证伪**：真发出去就说明闸门没生效 | ⚠️ 未做 |
-| 3 | **重启后端并带上 live 环境变量** | 环境变量**只在进程启动时读**；当前跑着的（若有）是 mock 配置 | ⚠️ 未做 |
-| 4 | **定下单价**（见 §4） | 两套公开数字差 20%，直接影响闸门估算 | ⚠️ 有分歧 |
-| 5 | 真实静帧就位 | 见 §5，**已满足**（6 张可选，不用花钱买图） | ✅ |
+| 1 | **备份真实数据目录** | live 会往 `backend/data` 写项目/视频/向量库。上一次清理遗留就是因为没人备份 | ✅ `output/backup-data-20261002-124152`（73 文件 / 119.39 MB，DB sha256 `2e1280ba…`） |
+| 2 | **先在不授权状态下试一次，期望被拦** | **护栏 ≠ 验证**（预检 §8 的口径）。"闸门在"是声明；拦得住才是证据。这一步**能证伪**：真发出去就说明闸门没生效 | ✅ **已实测 15/15**（见 §2.1） |
+| 3 | **重启后端并带上 live 环境变量** | 环境变量**只在进程启动时读**；当前跑着的（若有）是 mock 配置 | ⚠️ 未做（＝§6 的 A2） |
+| 4 | **定下单价**（见 §4） | 两套公开数字差 20%，直接影响闸门估算 | ⚠️ 有分歧（D4：先按 0.72 保守估） |
+| 5 | 真实静帧就位 | 见 §5，**已满足**（6 张可选，不用花钱买图） | ✅ `output/live-assets/` + `manifest.json` |
 
 > 第 2 步值得单独说：它把"闸门是否覆盖到这条路径"从**声明**变成**实测**。
 > 做法＝设 `VISIONCRAFT_LIVE_MAX_VIDEO_CALLS=1`、**不设** `VISIONCRAFT_ALLOW_LIVE_LLM`，
 > 然后在界面点一次生成。期望：**不打开 HTTP**，返回 `BLOCKED_BEFORE_CALL`。
+
+### 2.1 空跑结果（2026-10-02，零费用，`tmp/_emptyrun_gate.py`）
+
+做法与上一条不同、更硬：不设任何 live 开关，**从 HTTP 路由打进去**（`TestClient`），
+并把 `urllib.request.urlopen` 换成"记录 + 抛错"的**网络绊线** —— 只要有模块想把请求发出去，
+用例立刻失败并留下 URL。判据是**计数与状态**，不是耗时。
+
+| 路径 | 结果 | 证据 |
+|---|---|---|
+| 逐镜 `POST …/shots/{id}/video` | ✅ 被拦 | job `failed`，`error_message="真实视频调用尚未授权（dashscope）…"` |
+| 批量 `POST …/videos` | ✅ 被拦 | job `failed`，`"镜01: 真实视频调用尚未授权（dashscope）…"` |
+| 文本（`live_strict`） | ✅ 被拦 | job `failed`，`"改编方案处于严格真实模式，但真实调用尚未授权，任务已失败。"` —— **不是静默降级** |
+| 零费用 | ✅ | 无新增 `video_tasks`；`live_video_call_count` 0→0；网络绊线 0 次 |
+
+报告：`output/playwright/live-4shot-20261002/emptyrun_gate.json`。
+
+**附带发现（会改变本次跑的配方）**：批量端点在付费闸门**之前**还有一道
+`assert_batch_generation_allowed`（黑名单式放行）。夹具状态为 `created` 时批量端点直接
+**HTTP 400 / STORYBOARD_NOT_CONFIRMED**，根本没走到闸门；把状态推到 `production_ready`
+才抵达闸门。⇒ 真实跑里"生成全部"要点得动，项目必须已经过了分镜确认与视觉锚点门；
+**逐镜生成不受此限**（文档原话："单镜头局部生成不受此限"）。
+
 
 ## 2. 已知缺口（记档，**不阻塞**本次）
 
 | # | 缺口 | 影响 | 建议 |
 |---|---|---|---|
 | 1 | **图像链没有 dashscope 后端** | `image_provider.py` 候选集只有 `siliconflow`（无 key）/ `ark`（账号不可用）⇒ 点"AI 生成首帧"会**静默**落占位 SVG | **不阻塞**：走上传真实静帧（这条路径已被 5 镜 live 测试验证过） |
+| 1a | ⚠️ **分镜阶段会真的向 ark 发包** | `_insert_shots` **无条件**调 `generate_image_asset`；只要 `ARK_API_KEY` 在环境里，就会 POST `ark.cn-beijing.volces.com/api/v3/images/generations`（账号已不可用）。4 镜 ≈ 5 次无效外发 | **进程级清掉 `ARK_API_KEY`**（连带 `VOLC_*`）⇒ 图像链直接落本地占位图，**零外发且更快**。已实测（§2.2 C1/C2） |
+| 1b | ⚠️ **分镜产物是 SVG 占位图，不能当 i2v 输入** | 上一条的下游：首/末帧都成 `.svg`；而 `media_transfer_service` 明确拒绝 SVG | 跑完分镜后**必须**用 `register-local` 把 4 张真实 JPEG 挂上首帧 |
+| 1c | ⚠️ **`register-local` 只换首帧，末帧原样保留** | 挂完真帧：首帧 JPEG、**末帧仍是 SVG**。⇒ 用 **keyframes 模式**会在闸门放行**并自增 `live_video_call_count` 之后**才抛 `SVG_NOT_ALLOWED` —— 钱没花，但名额白吃一个 | **必须用 `i2v`**（只发首帧）。已实测（§2.2 B3/B4） |
 | 2 | `.env` 的 `DASHSCOPE_IMAGE_MODEL=wan2.7-image` 是**死配置** | 没有任何代码读它，会误导后来人以为图像链走百炼 | 一并记档；顺手加注释或删掉 |
-| 3 | **图像链既无计价也无闸门** | `live_budget.py` 里只有 video/LLM 的单价。若哪天真接图像 API，会**绕过预算** | 记为护栏缺口，别当已覆盖 |
+| 3 | **图像链既无计价也无闸门** | `live_budget.py` 里只有 video/LLM 的单价。若哪天真接图像 API，会**绕过预算** | 记为护栏缺口，别当已覆盖。⚠️ 但它**会**外发（见 1a）——"无闸门"比想象的更严重 |
 | 4 | **`p6demo_story` 的血缘是 `ark`（已退役）** | 4 镜真实产物的 `shot_versions` 写的是 `ark / doubao-seedance-2-0-260128`，而投放面已撤下 ark | 若要演示项目与投放面一致 ⇒ 重跑；否则在文档里标明"历史产物" |
 | 5 | **录屏是 mock 纯导航走查** | 见 §3 | 本次跑通后再定 |
 | 6 | 成本控制只覆盖 video + LLM | 与 3/4 同源 | — |
+
+### 2.2 挂帧与 i2v 预检（2026-10-02，零费用，`tmp/_emptyrun_keyframe_attach.py`）
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| A1 图像链落盘 | ✅ SVG 占位图 | `/assets/project_ceaee2abc6/asset_cd05ae8e5e.svg` |
+| A2 `ARK_API_KEY` 在环境里时**真的外发** | ✅ 外发 | `['https://ark.cn-beijing.volces.com/api/v3/images/generations']` |
+| C1 清掉 `ARK_API_KEY` 后**零外发** | ✅ | `[]` |
+| C2 清掉后仍落本地占位图（行为等价） | ✅ SVG | — |
+| B1 `register-local` 接受真实 JPEG | ✅ HTTP 200 | `asset_83084c0b2c.jpg` / `image/jpeg` / 70017 B |
+| B2 挂载后首帧变 JPEG | ✅ | `/assets/…/asset_83084c0b2c.jpg` |
+| B3 挂载后**末帧仍是 SVG** | ✅（＝陷阱成立） | `/assets/…/asset_cd05ae8e5e.svg` |
+| B4 `i2v` 请求抵达闸门（首帧校验通过） | ✅ HTTP 200 | `provider=dashscope, model=wan2.7-i2v, video_mode=i2v` |
+| B5 被付费闸门拦下 | ✅ | `真实视频调用尚未授权（dashscope）…` |
+| B6 挂帧 + 生成这一段零外发 | ✅ | `[]` |
+
+报告：`output/playwright/live-4shot-20261002/keyframe_attach_precheck.json`。
+
 
 ## 3. 交付物（录屏）的真实状态
 
@@ -161,13 +204,16 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
 
 ### 8.3 我该自己做的（不用你管，做完报数）
 
-1. **备份 `backend/data`**（需 A3 点头）。
-2. **收费前空跑一次**：不设授权，点生成，期望 `BLOCKED_BEFORE_CALL` —— 把「闸门覆盖这条路径」
-   从声明变成实测。
-3. **素材落盘 + 血缘登记**（需 A4 点头）。
-4. **审计模板就位**：按 `live-run-audit.md` §2 的六个文件预置空壳。
-5. **技术确认**：live 模式下首帧如何挂到镜头（上传路径 vs 已确认分镜的字段），
-   确保 4 镜都真的带首帧再开跑。
+1. ✅ **备份 `backend/data`** —— `output/backup-data-20261002-124152`（73 文件 / 119.39 MB，DB sha256 `2e1280ba…`）。
+2. ✅ **收费前空跑一次** —— 15/15，三条付费路径（逐镜视频 / 批量视频 / live 文本）全部被拦，零外发、零计数自增。见 §2.1。
+3. ✅ **素材落盘 + 血缘登记** —— 6 张真帧 → `output/live-assets/` + `manifest.json`（sha256 全部复核，源视频俱在）。
+4. ✅ **审计模板就位** —— 六个空壳在 `output/playwright/live-4shot-20261002/`
+   （**另开目录**：`live-multishot/` 里存着旧 5 镜测试的记录，不能覆盖）。
+5. ✅ **技术确认：live 模式下首帧怎么挂** —— 结论见 §2.2：
+   走 `POST …/shots/{id}/keyframes/register-local`（项目内 JPEG/PNG 上传，无图像 provider）；
+   **必须配 `video_mode=i2v`**；分镜自产的 SVG 首/末帧不可用，必须被真帧替换。
+6. ✅（新增）**进程级清掉 `ARK_API_KEY`** —— 否则分镜阶段会向 ark 发无效包。见 §2 的 1a。
+
 
 ### 8.4 只有竹木能提供的两件事（**不影响我开工**，但要记着）
 
@@ -185,3 +231,38 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
   （两套数字的分歧**如实记在 §4**，不擅自选一个改进去）。
 - 单价只做了公开价目检索，**未在阿里云控制台核对本账号实际价目**。
 - 免费额度的**剩余量未查**（只有控制台可见）。
+
+## 10. 定稿的开闸配方（2026-10-02，空跑与挂帧预检之后）
+
+> 与 §1 第 3 条相比，配方多了两处**由实测逼出来**的改动：
+> ① **清掉 `ARK_API_KEY`**（否则分镜阶段向 ark 发无效包）；
+> ② **`video_mode=i2v`**（末帧是 SVG，keyframes 模式会吃掉名额）。
+
+环境（**仅进程级，不写 `.env`**）：
+
+| 变量 | 值 | 作用 |
+|---|---|---|
+| `VISIONCRAFT_ALLOW_LIVE_LLM` | `1` | 开闸（同时连带开视频/视觉） |
+| `VISIONCRAFT_LIVE_MAX_VIDEO_CALLS` | `4` | 4 镜各一次（硬上限 5） |
+| `VISIONCRAFT_LIVE_BUDGET_CNY` | `20` | 沿用"单批 ≤ 20 元" |
+| `ARK_API_KEY` | **清空/不设** | 图像链不再向 ark 发包 |
+| `VOLC_API_KEY` / `VOLC_IMAGE_API_KEY` | **清空/不设** | 同上（`_ark_api_key()` 读这两个） |
+| `VISIONCRAFT_VIDEO_PROVIDER` | `dashscope`（`.env` 已有） | 默认 provider |
+
+流程（每步之间**停下核对**，不一口气跑完）：
+
+```
+1 建项目(live_strict, 4 镜) → POST /api/projects
+2 跑分镜（3 次文本）       → POST /api/projects/{id}/run
+3 核对：4 个镜头 + 首末帧都是 .svg（预期如此，是占位图不是故障）
+4 挂 4 张真帧              → POST …/shots/{sid}/keyframes/register-local  ×4，mode=i2v
+5 生成视频（4 次）         → 逐镜 POST …/shots/{sid}/video {"video_mode":"i2v"}
+   ⚠️ 不用批量端点：它前面还有 assert_batch_generation_allowed（需已过锚点门）
+6 视觉检查（1 次）         → POST …/vision-review（role=keyframe，指向真 JPEG）
+7 合成成片                 → POST …/assemble
+8 审计（六文件）+ 抽三帧证伪（起/中/末）+ 账单交竹木核
+```
+
+**失败面与止损**：任一步失败就地停下报案，不自动重试（重试会重复计费）。
+闸门已实测拦得住未授权路径，但**开闸后**闸门只保证次数与预算，不保证 provider 那边真的成功。
+
