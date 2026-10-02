@@ -236,7 +236,9 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
 
 > 与 §1 第 3 条相比，配方多了两处**由实测逼出来**的改动：
 > ① **清掉 `ARK_API_KEY`**（否则分镜阶段向 ark 发无效包）；
-> ② **`video_mode=i2v`**（末帧是 SVG，keyframes 模式会吃掉名额）。
+> ② **`video_mode=i2v`**（live 分镜路径落库时 `first_frame_path`/`last_frame_path` **均为 `None`**——它不生成 SVG 占位帧；keyframes 模式要求「首+末」双帧 ⇒ 只有 i2v 可行）。
+>
+> ⚠️ **2026-10-02 实拍修正**：① 中「清掉 `ARK_API_KEY`」在 live 路径下是**保险而非必需**——live 分镜不生成占位帧，图像链（siliconflow→ark→本地 SVG）**根本不会被调用**；该外发现象只在 mock 路径观测到。
 
 环境（**仅进程级，不写 `.env`**）：
 
@@ -254,9 +256,12 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
 ```
 1 建项目(live_strict, 4 镜) → POST /api/projects
 2 跑分镜（3 次文本）       → POST /api/projects/{id}/run
-3 核对：4 个镜头 + 首末帧都是 .svg（预期如此，是占位图不是故障）
+3 核对：4 个镜头；**live 路径下 `first_frame_path`/`last_frame_path` 均为 `None`（不生成占位帧，属预期，不是故障）**——「首末帧都是 .svg」只在 mock 路径成立
+   ⚠️ 改编门链：建项目后经 `options/{n}/select → scope/confirm → bible/confirm → storyboard/confirm`（前两次 confirm 各 1 次文本调用，第三次不调模型只提权镜头）
 4 挂 4 张真帧              → POST …/shots/{sid}/keyframes/register-local  ×4，mode=i2v
-5 生成视频（4 次）         → 逐镜 POST …/shots/{sid}/video {"video_mode":"i2v"}
+5 生成视频（4 次）         → 逐镜 POST …/shots/{sid}/video {"video_mode":"i2v","first_frame_path":"<已挂帧的 /assets/…jpg>"}
+   ⚠️ 必须显式带 first_frame_path：挂帧（register-local）只写 shot_versions 不写 shot_drafts，而校验读的是 draft
+      ⇒ 漏传即 400 MISSING_FIRST_FRAME（前端 app.js:872 自己补了该字段，脚本/第三方调用者会被静默绊倒）
    ⚠️ 不用批量端点：它前面还有 assert_batch_generation_allowed（需已过锚点门）
 6 视觉检查（1 次）         → POST …/vision-review（role=keyframe，指向真 JPEG）
 7 合成成片                 → POST …/assemble
