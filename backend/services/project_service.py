@@ -459,6 +459,12 @@ def delete_project(project_id: str) -> bool:
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (FTS_TABLE,)
         ).fetchone():
             conn.execute(f"DELETE FROM {FTS_TABLE} WHERE project_id = ?", (project_id,))
+    # 向量同理且更隐蔽：collection 按 provider 命名、换模型还会新增，没人收就永远是垃圾。
+    # 实测开发机上 2228 条向量全部来自已删项目。放在 `with connect()` 之外做，别一边握着
+    # 数据库连接一边操作 Chroma。
+    from .memory_service import purge_project_vectors
+
+    purge_project_vectors(project_id)
     return cursor.rowcount > 0
 
 

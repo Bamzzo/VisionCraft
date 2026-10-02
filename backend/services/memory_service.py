@@ -59,6 +59,35 @@ def reset_project_memory(project_id: str, provider: EmbeddingProvider | None = N
         collection.delete(ids=ids)
 
 
+def purge_project_vectors(project_id: str) -> int:
+    """把这个项目的向量从**所有** collection 里删掉，返回删除条数。
+
+    为什么不能只删"当前 provider 的那个"：collection 按 provider 命名，换模型还会新增
+    （`visioncraft_memory_sem_<model>`），而 `delete_project` 之后没有人会再来收尾。
+    `known_collection_names()` 也救不了 —— 它只知道**当前模型**的语义 collection，换过
+    模型的历史 collection 会漏掉。所以这里直接遍历 `list_collections()`。
+
+    实测代价：开发机上 2228 条 `visioncraft_memory` 向量**全部**来自已删项目 ——
+    52 MB 的 Chroma 目录里只有垃圾（`delete_project` 原先根本不碰 Chroma）。
+    """
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    removed = 0
+    for collection in client.list_collections():
+        try:
+            existing = collection.get(where={"project_id": project_id}, include=[])
+            ids = existing.get("ids") or []
+            if ids:
+                collection.delete(ids=ids)
+                removed += len(ids)
+        except Exception as exc:  # noqa: BLE001 - 单个 collection 出问题不该阻断删除
+            logger.warning(
+                "清理 collection %s 中项目 %s 的向量失败：%s", collection.name, project_id, exc
+            )
+    if removed:
+        logger.info("已清理项目 %s 的 %d 条向量", project_id, removed)
+    return removed
+
+
 def index_project_memory(project_id: str) -> int:
     with connect() as conn:
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()

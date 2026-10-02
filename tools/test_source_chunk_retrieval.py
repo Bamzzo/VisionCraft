@@ -301,6 +301,58 @@ def test_index_never_returns_deleted_chunks() -> None:
         _cleanup(project_id)
 
 
+def _vector_count(project_id: str) -> int:
+    """项目在**所有** collection 里的向量总数 —— 换过 provider 就会有多个 collection。"""
+    import chromadb
+
+    from backend.config import CHROMA_DIR
+
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    total = 0
+    for collection in client.list_collections():
+        try:
+            got = collection.get(where={"project_id": project_id}, include=[])
+        except Exception:  # noqa: BLE001 - 某个 collection 坏了不该让计数失败
+            continue
+        total += len(got.get("ids") or [])
+    return total
+
+
+def test_delete_project_purges_fts_rows_and_vectors() -> None:
+    """删项目必须把**派生的索引**一起收掉。两条泄漏都是"查询侧兜得住"型的：
+
+    - `source_chunk_fts` 是 FTS5 **虚表**，不参与外键级联 —— 删 `projects` 行不会带走它，
+      而 `_fts_candidates` 的 JOIN 会把悬空行挡掉，所以功能上一直看不出来；
+    - 向量在 Chroma 里，检索靠 `where={"project_id": ...}` 过滤，别的项目也看不见它。
+
+    实测代价（开发机）：`source_chunks` 只剩 6 行时 `source_chunk_fts` 积了 2675 行悬空行，
+    Chroma 里 2621 条向量**全部**来自已删项目（52 MB 只有垃圾）。
+    """
+    project_id = _project(CORPUS.read_text(encoding="utf-8", errors="replace"), "P5-B-2 删除清理")
+    try:
+        run_medium_analysis(project_id)
+        memory_service.index_project_memory(project_id)
+        with connect() as conn:
+            fts_rows = conn.execute(
+                "SELECT COUNT(*) AS n FROM source_chunk_fts WHERE project_id = ?", (project_id,)
+            ).fetchone()["n"]
+        vectors = _vector_count(project_id)
+        assert fts_rows > 0, f"建完索引却没有全文索引行（{fts_rows}），这条用例就证明不了删除清理"
+        assert vectors > 0, f"建完索引却没有向量（{vectors} 条），这条用例就证明不了删除清理"
+
+        delete_project(project_id)
+        with connect() as conn:
+            fts_after = conn.execute(
+                "SELECT COUNT(*) AS n FROM source_chunk_fts WHERE project_id = ?", (project_id,)
+            ).fetchone()["n"]
+        vectors_after = _vector_count(project_id)
+        assert fts_after == 0, f"删项目后全文索引仍留 {fts_after} 行悬空行"
+        assert vectors_after == 0, f"删项目后 Chroma 仍留 {vectors_after} 条孤儿向量"
+        print(f"PASS: 删项目同时收掉派生索引（FTS {fts_rows}→0 行、向量 {vectors}→0 条）")
+    finally:
+        _cleanup(project_id)
+
+
 def test_short_text_projects_are_unaffected() -> None:
     """短文本没有章节块：全文索引应空着，检索走原路，行为不变。"""
     project_id = _project("春秋蝉鸣少年归，白凝冰在雪原上。方源走在山路上。", "P5-B-2 短文本")
@@ -377,6 +429,7 @@ def main() -> None:
     test_short_query_floor_does_not_silently_empty_results()
     test_adversarial_queries_do_not_raise()
     test_index_never_returns_deleted_chunks()
+    test_delete_project_purges_fts_rows_and_vectors()
     test_short_text_projects_are_unaffected()
     test_http_memory_endpoints_smoke()
     print("ALL SOURCE CHUNK RETRIEVAL TESTS PASSED")
