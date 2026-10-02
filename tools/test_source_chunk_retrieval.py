@@ -78,9 +78,17 @@ def _chunks(project_id: str) -> list[dict]:
 
 
 def _vector_top(project_id: str, query: str, n: int = VECTOR_TOP_N) -> list[str]:
-    """**绕过合并逻辑**直取向量候选，用来证明"没有 FTS 会漏召"。"""
-    result = memory_service.get_collection().query(
-        query_texts=[query],
+    """**绕过合并逻辑**直取向量候选，用来证明"没有 FTS 会漏召"。
+
+    向量必须显式算：collection 现在按 provider 隔离、**不注册 embedding_function**
+    （见 `backend/providers/embedding_provider`）。继续用 `query_texts=` 会让 Chroma
+    去要它自己的默认模型，那既不可控、也不是这条断言想测的东西。
+    """
+    from backend.providers.embedding_provider import get_embedding_provider
+
+    provider = get_embedding_provider()
+    result = memory_service.get_collection(provider).query(
+        query_embeddings=provider.embed_texts([query]),
         n_results=n,
         where={"project_id": project_id},
         include=["metadatas"],
@@ -196,7 +204,14 @@ def test_literal_recall_is_precise_and_attributed() -> None:
 
 
 def test_fts_recovers_what_the_vector_path_misses() -> None:
-    """核心一条：没有这一层就会漏召，且漏掉的是唯一正确答案。"""
+    """核心一条：没有这一层就会漏召，且漏掉的是唯一正确答案。
+
+    ⚠️ 这条断言的**前提**是"向量侧是弱的 hash"。一旦 `EMBEDDING_PROVIDER` 换成真语义
+    模型，向量路径多半自己就召回了 —— 下面那句 `raise` 就是为这种情形准备的：
+    断言会失去分辨力，与其静默通过不如炸掉。所以这里**显式钉在 hash 上**，
+    测的是"FTS 相对弱向量的增益"，而不是"当前配置下碰巧怎样"。
+    """
+    os.environ["EMBEDDING_PROVIDER"] = "hash"
     source = CORPUS.read_text(encoding="utf-8", errors="replace")
     project_id = _project(source, "P5-B-2 召回增益")
     try:

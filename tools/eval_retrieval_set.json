@@ -1,0 +1,28 @@
+{
+  "note": "检索评测集。语料是真实中文长文本（`<工作区根>/output/test_texts/蛊真人100000字.txt`，95,618 字 / 30 节），不是为某次实现编的样例。每条用例的判据是 `must_contain`：目标块必须真的包含这个片段（已核唯一性，语料中恰好出现 1 次）。这样判据落在**文本本身**上，不依赖块 id —— 换切分参数、换 embedding provider、重跑索引都不会让标注失效。",
+  "categories": {
+    "literal": "查询就是原文字面片段。对照组：任何 provider 都不该在这类上退步。",
+    "paraphrase": "同一个事实换一种说法，尽量避开原文特征词。这是本轮要解决的问题。",
+    "abstract": "不给特征名词，只描述它是什么。考的是能不能靠语义定位。"
+  },
+  "cases": [
+    {"category": "literal", "query": "敲着有节奏的梆子", "must_contain": "敲着有节奏的梆子"},
+    {"category": "literal", "query": "一百多位十五岁的少年", "must_contain": "一百多位十五岁的少年"},
+    {"category": "literal", "query": "这个世界存在着一条光阴之河", "must_contain": "这个世界存在着一条光阴之河"},
+    {"category": "literal", "query": "空窍表面流动着白光", "must_contain": "空窍表面流动着白光"},
+    {"category": "literal", "query": "阁内供奉着古月先人的牌位", "must_contain": "阁内供奉着古月先人的牌位"},
+    {"category": "literal", "query": "山雾不是很浓", "must_contain": "山雾不是很浓"},
+
+    {"category": "paraphrase", "query": "夜里巡街报时的人敲着木梆子", "must_contain": "敲着有节奏的梆子"},
+    {"category": "paraphrase", "query": "众多年轻人集合在村寨中央最高建筑的门口", "must_contain": "一百多位十五岁的少年，此刻汇集在家主阁前"},
+    {"category": "paraphrase", "query": "祖先的灵位被供在主楼之中", "must_contain": "阁内供奉着古月先人的牌位"},
+    {"category": "paraphrase", "query": "传说中有一条时间之河在支撑世界运转", "must_contain": "这个世界存在着一条光阴之河"},
+    {"category": "paraphrase", "query": "动用那件宝物必须以生命为代价", "must_contain": "每一次使用春秋蝉，都必须付出生命"},
+    {"category": "paraphrase", "query": "球状的内壁上有一层会发亮的光膜", "must_contain": "空窍表面流动着白光"},
+    {"category": "paraphrase", "query": "要把你的老巢彻底摧毁", "must_contain": "踏破你的魔窟"},
+    {"category": "paraphrase", "query": "稀薄的雾气被阳光轻易刺穿", "must_contain": "山雾不是很浓"},
+
+    {"category": "abstract", "query": "修士体内那个不和五脏六腑共处的球形空间叫什么", "must_contain": "不和五脏六腑同处一个空间"},
+    {"category": "abstract", "query": "能让使用者回到过去的那件宝物是怎么运作的", "must_contain": "逆流而上，回到从前"}
+  ]
+}

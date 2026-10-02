@@ -598,6 +598,10 @@ def main() -> int:
     for key in ("VISIONCRAFT_ALLOW_LIVE_LLM", "VISIONCRAFT_ALLOW_LIVE_VISION",
                 "VISIONCRAFT_ALLOW_LIVE_VIDEO", "VISIONCRAFT_ALLOW_LIVE"):
         env[key] = "0"
+    # Embedding 也必须 fail closed。`EMBEDDING_PROVIDER=dashscope` 会让**每一次索引**
+    # 都走网络并计费；`.env` 一旦翻成远端，这一轮就不再是"零费用"回归了 —— 而它偏偏
+    # 还叫这个名字。所以在这里钉死 hash，与上面那几个开关同一个理由。
+    env["EMBEDDING_PROVIDER"] = "hash"
     env["PYTHONIOENCODING"] = "utf-8"
 
     # The host injects a Python delete shim through PYTHONPATH. Its bulk-delete

@@ -449,6 +449,16 @@ def delete_project(project_id: str) -> bool:
         shutil.rmtree(resolved)
     with connect() as conn:
         cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        # 全文索引是 FTS5 **虚表**，不参与外键级联 —— 不显式删，行就会永远留下，指向已经
+        # 不存在的块。检索侧有 JOIN 兜着（查不出错，所以一直没人发现），但表会一路涨：
+        # 实测开发机上删过 7 轮评测项目之后，`source_chunks` 只剩 6 行，`source_chunk_fts`
+        # 却积到 2675 行。这里删干净，别把"索引与内容同源"只交给查询侧守。
+        from .memory_service import FTS_TABLE
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (FTS_TABLE,)
+        ).fetchone():
+            conn.execute(f"DELETE FROM {FTS_TABLE} WHERE project_id = ?", (project_id,))
     return cursor.rowcount > 0
 
 

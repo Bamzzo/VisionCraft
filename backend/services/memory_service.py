@@ -1,15 +1,23 @@
-import hashlib
-import math
+import logging
+import os
 from typing import Iterable
 
 import chromadb
 
 from ..config import CHROMA_DIR
 from ..database import connect
+from ..providers.embedding_provider import (
+    EmbeddingProvider,
+    collection_name_for_provider,
+    embed_texts_with_fallback,
+    get_embedding_provider,
+    known_collection_names,
+)
 
 
-COLLECTION_NAME = "visioncraft_memory"
-EMBEDDING_DIM = 384
+logger = logging.getLogger(__name__)
+
+
 FTS_TABLE = "source_chunk_fts"
 # trigram 分词器的最小匹配长度：短于 3 个字符它**静默**返回 0 条（已实测），
 # 所以这类查询不能进 MATCH，必须退回字面重合打分，否则"能查到"会变成"查不到"。
@@ -17,33 +25,34 @@ FTS_MIN_QUERY_CHARS = 3
 # 字面命中加成：有上限的固定值。FTS 的职责是"找得到"，不是"排得更好"——
 # 排序仍由同一套分数决定，跨语料的 bm25 量级不稳定，不适合直接当分数用。
 FTS_HIT_BONUS = 0.05
+# 字面候选池的规模。字面打分是纯本地 O(块数) 计算，但**进池不只是为了打分**——它要
+# 参与最终排序，所以扩进来的必须真是"字面更像"的那些，不能把整个语料倒进来。
+LEXICAL_CANDIDATE_MULTIPLIER = 6
+LEXICAL_CANDIDATE_MIN = 12
 
 
-class HashEmbeddingFunction:
-    def name(self) -> str:
-        return "visioncraft_hash_embedding"
+def get_collection(provider: EmbeddingProvider | None = None):
+    """取当前 provider 的 collection。
 
-    def __call__(self, input: list[str]) -> list[list[float]]:  # Chroma expects the parameter name `input`.
-        return [_embed_text(text) for text in input]
-
-    def embed_query(self, input: list[str]) -> list[list[float]]:
-        return self(input)
-
-    def embed_documents(self, input: list[str]) -> list[list[float]]:
-        return self(input)
-
-
-def get_collection():
+    collection 按 provider 隔离（见 `embedding_provider` 模块开头）：hash 是 384 维、
+    语义模型是 1024 维，混存不报错但排序不可解释。这里**不注册 embedding_function**，
+    写入与查询都显式传向量 —— 否则 Chroma 会拿它自己的默认模型去算，既不可控又多一次
+    模型下载。
+    """
+    provider = provider or get_embedding_provider()
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
     return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=HashEmbeddingFunction(),
-        metadata={"hnsw:space": "cosine"},
+        name=collection_name_for_provider(provider),
+        metadata={
+            "hnsw:space": "cosine",
+            "embedding_name": provider.name,
+            "embedding_dimension": provider.dimension,
+        },
     )
 
 
-def reset_project_memory(project_id: str) -> None:
-    collection = get_collection()
+def reset_project_memory(project_id: str, provider: EmbeddingProvider | None = None) -> None:
+    collection = get_collection(provider)
     existing = collection.get(where={"project_id": project_id}, include=[])
     ids = existing.get("ids") or []
     if ids:
@@ -51,7 +60,6 @@ def reset_project_memory(project_id: str) -> None:
 
 
 def index_project_memory(project_id: str) -> int:
-    reset_project_memory(project_id)
     with connect() as conn:
         project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         bible = conn.execute("SELECT * FROM story_bibles WHERE project_id = ?", (project_id,)).fetchone()
@@ -106,9 +114,15 @@ def index_project_memory(project_id: str) -> int:
         documents.append(f"{row['name']} {row['type']} {row['description']} {row['prompt']}")
         metadatas.append({"project_id": project_id, "kind": f"asset:{row['type']}", "label": row["name"], "file_path": row["file_path"]})
 
-    collection = get_collection()
-    if ids:
-        collection.add(ids=ids, documents=documents, metadatas=metadatas)
+    if not ids:
+        return 0
+    # 先嵌入、再按**实际使用的** provider 选 collection 与清旧行。顺序不能反：
+    # 远端失败会整批降级成 hash，这时如果先清了语义 collection，就会把上一轮语义索引
+    # 白删一遍，而新数据其实写进了 hash collection。
+    provider, embeddings = embed_texts_with_fallback(get_embedding_provider(), documents)
+    collection = get_collection(provider)
+    reset_project_memory(project_id, provider)
+    collection.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
     # 全文索引在这里一并重建：向量索引与全文索引同源，是这套检索唯一站得住的保证。
     # 返回值仍是写入向量的条数（端点的既有契约），全量条数只做记录。
     index_source_chunk_fts(project_id)
@@ -235,10 +249,56 @@ def _fts_candidates(project_id: str, query: str, limit: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _lexical_candidates(project_id: str, query: str, limit: int) -> list[dict]:
+    """对**本项目的全部块**做字面重合打分，取前 `limit` 条（只保留得分 > 0 的）。
+
+    为什么必须全扫 —— 这是一个实测出来的缺陷，不是调优：
+
+    最终分数是 `lexical*0.8 + vector*0.2 + fts_hit*0.05`，字面项占大头；但候选池原先只由
+    「向量近邻 `limit*3` 条」+「FTS 命中 `limit*3` 条」拼成，产品走 `limit=2` 时池子只有
+    **十几条**（语料有 131 块）。于是**占 0.8 权重的那一项只能在这十几条里挑**，而这几条是
+    弱向量随机挑的、加上对无空格中文短语常常一条都不返回的 trigram FTS。
+
+    实测（`tools/eval_retrieval.py`，k=2，16 例）：hybrid 的改写类召回 **0/8**，而同一条
+    `_lexical_score` 在全部块上打分能答对 **6/8**（`lexical_only` 口径）。差距不在打分函数，
+    **在候选池**——料没进来，分再准也排不出来。
+
+    代价有上界：原文在分析阶段就按章节切块，且本项目明确拒绝 >10 万字，块数是百量级；
+    这是一次字符包含统计，不涉及网络与磁盘随机读。
+
+    边界：只覆盖 `source_chunks`（与 FTS 同源）。故事圣经/角色/场景/镜头那些非原文记忆
+    暂不做全扫——它们条数少且都在向量池里，留待确有需要时再加。
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id AS chunk_id, text, chapter_index FROM source_chunks "
+            "WHERE project_id = ? ORDER BY chunk_index",
+            (project_id,),
+        ).fetchall()
+    if not rows:
+        return []
+    scored = sorted(
+        ((_lexical_score(query, str(row["text"] or "")), row) for row in rows),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    return [
+        {
+            "chunk_id": row["chunk_id"],
+            "text": str(row["text"] or ""),
+            "chapter_index": row["chapter_index"],
+        }
+        for score, row in scored[: max(1, int(limit))]
+        if score > 0
+    ]
+
+
 def search_project_memory(project_id: str, query: str, limit: int = 6) -> list[dict]:
-    collection = get_collection()
+    provider = get_embedding_provider()
+    provider, query_embeddings = embed_texts_with_fallback(provider, [query])
+    collection = get_collection(provider)
     result = collection.query(
-        query_texts=[query],
+        query_embeddings=query_embeddings,
         n_results=max(1, min(limit * 3, 50)),
         where={"project_id": project_id},
         include=["documents", "metadatas", "distances"],
@@ -256,9 +316,12 @@ def search_project_memory(project_id: str, query: str, limit: int = 6) -> list[d
             "vector_score": max(0.0, 1 - float(distance or 0)),
             "fts_hit": False,
         }
-    # 全文索引补精确召回。本地 hash embedding 对中文短查询太弱，只靠它 + 字面重合
-    # 加权时，一个就写在原文里的名字也可能进不了候选；这里把字面命中的块并进候选集，
-    # 让它至少有机会被排序。
+    if not candidates:
+        # 当前 collection 空、别的 collection 却有这个项目的行 —— 几乎总是"换了 provider
+        # 但没重建索引"。静默返回空会让人以为内容没了，这里必须留一条能查到的告警。
+        _warn_if_other_collection_has_project(project_id, collection_name_for_provider(provider))
+    # 全文索引补精确召回。向量侧再强也不该放弃这条路：它答的是"字面就在原文里"，
+    # 而那类问题不该由近邻搜索去赌。hash provider 下尤其重要——它连字面命中都可能漏。
     chunk_ids = {item["metadata"].get("chunk_id") for item in candidates.values()}
     for row in _fts_candidates(project_id, query, limit * 3):
         chunk_id = row["chunk_id"]
@@ -279,11 +342,35 @@ def search_project_memory(project_id: str, query: str, limit: int = 6) -> list[d
             "vector_score": 0.0,
             "fts_hit": True,
         }
+    # 第三条候选来源：字面全扫。上面两条都答不了"同义改写"——弱向量抓不住语义，trigram
+    # FTS 对无空格中文短语又常常一条都不返；而同一套字面打分在全部块上本来就答得出
+    # （见 `_lexical_candidates` 的实测 6/8 vs 0/8），只是原先没让它看到那些块。
+    # 池子不配得上 0.8 的权重，字面这一路就等于没接上。
+    chunk_ids = {item["metadata"].get("chunk_id") for item in candidates.values()}
+    for row in _lexical_candidates(
+        project_id, query, max(limit * LEXICAL_CANDIDATE_MULTIPLIER, LEXICAL_CANDIDATE_MIN)
+    ):
+        chunk_id = row["chunk_id"]
+        if not chunk_id or chunk_id in chunk_ids:
+            continue
+        metadata = {"project_id": project_id, "kind": "source_text", "label": "", "chunk_id": chunk_id}
+        if row.get("chapter_index") is not None:
+            metadata["chapter_index"] = int(row["chapter_index"])
+        item_id = f"{project_id}:source:{chunk_id}"
+        candidates[item_id] = {
+            "id": item_id,
+            "document": row["text"],
+            "metadata": metadata,
+            "vector_score": 0.0,
+            "fts_hit": False,
+        }
+        chunk_ids.add(chunk_id)
+    lexical_weight, vector_weight = _hybrid_weights(provider)
     items = []
     for item in candidates.values():
-        # 本地 hash embedding 较轻量，中文短查询需要提高字面重合权重。
+        # 权重按 provider 取：hash 只能靠字面重合，语义模型可以让向量说话。
         lexical = _lexical_score(query, item["document"])
-        score = (lexical * 0.8) + (item["vector_score"] * 0.2) + (FTS_HIT_BONUS if item["fts_hit"] else 0.0)
+        score = (lexical * lexical_weight) + (item["vector_score"] * vector_weight) + (FTS_HIT_BONUS if item["fts_hit"] else 0.0)
         items.append(
             {
                 "id": item["id"],
@@ -332,19 +419,6 @@ def _chunk_text(text: str, size: int = 900, overlap: int = 120) -> Iterable[str]
     return chunks
 
 
-def _embed_text(text: str) -> list[float]:
-    vector = [0.0] * EMBEDDING_DIM
-    normalized = text.lower()
-    grams = [normalized[i : i + 2] for i in range(max(1, len(normalized) - 1))]
-    for gram in grams:
-        digest = hashlib.blake2b(gram.encode("utf-8", errors="ignore"), digest_size=8).digest()
-        bucket = int.from_bytes(digest[:4], "little") % EMBEDDING_DIM
-        sign = 1 if digest[4] % 2 == 0 else -1
-        vector[bucket] += sign
-    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
-    return [value / norm for value in vector]
-
-
 def _lexical_score(query: str, document: str) -> float:
     query_chars = {char for char in query.lower() if not char.isspace()}
     if not query_chars:
@@ -357,3 +431,70 @@ def _lexical_score(query: str, document: str) -> float:
 def _compact_excerpt(text: str, limit: int = 140) -> str:
     compact = " ".join(str(text).split())
     return compact[:limit]
+
+
+def _hybrid_weights(provider: EmbeddingProvider) -> tuple[float, float]:
+    """字面分与向量分的权重。**两个 provider 用同一套**：0.8 / 0.2。
+
+    这里原本按 provider 分档（hash 0.8/0.2，语义模型 0.3/0.7），理由是"向量强了就该让
+    向量说话"。实测把这个直觉否掉了（`tmp/_fusion_lab.py`，同一索引、同一 16 例、k=2）：
+
+    | 字面/向量 | hash | dashscope:text-embedding-v4 |
+    |---|---|---|
+    | **0.8 / 0.2** | recall 0.8750 / MRR 0.8438 | **recall 0.9375 / MRR 0.8750** |
+    | 0.7 / 0.3 | 0.8750 / 0.8438 | 0.9375 / 0.8438 |
+    | 0.3 / 0.7 | 0.8125 / 0.8125 | 0.8125 / 0.7812 |
+
+    换成 0.3/0.7 之后反而掉一档：**向量一旦占主导，会把字面完全命中的块挤出 top-2**，
+    而后者的相关度是真高。语义该补的是"字面答不出的那些"（改写类 0.75 → 0.88），不是
+    去推翻字面已经答对的。
+
+    也试过 RRF（名次融合，不配权重）：dashscope 下很好（0.9375 / MRR 0.9375），
+    但 hash 下崩到 0.5000 —— 名次融合给噪声表和有效表**同等权重**，而 hash 是必须
+    可用的离线兜底。所以不采用。
+
+    仍可用 `HYBRID_LEXICAL_WEIGHT` / `HYBRID_VECTOR_WEIGHT` 覆盖（调参入口留着）。
+    `provider` 参数保留，是为了让"哪天实测出需要分档"时能就地改，不必再改调用点。
+    """
+    lexical = _float_env("HYBRID_LEXICAL_WEIGHT", 0.8)
+    vector = _float_env("HYBRID_VECTOR_WEIGHT", 0.2)
+    total = lexical + vector
+    if total <= 0:
+        return 0.8, 0.2
+    return lexical / total, vector / total
+
+
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _warn_if_other_collection_has_project(project_id: str, current_collection_name: str) -> None:
+    """当前 collection 里查不到这个项目，却在别的 collection 里找到了 —— 记一条 warning。
+
+    这是"换了 embedding provider 但没重建索引"的唯一可见症状。没有它，用户看到的是
+    "检索突然全空"，而这看起来像数据丢了。
+    """
+    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    for name in known_collection_names():
+        if name == current_collection_name:
+            continue
+        try:
+            collection = client.get_collection(name)
+            existing = collection.get(where={"project_id": project_id}, include=[])
+        except Exception:  # noqa: BLE001 - collection 不存在是正常情况
+            continue
+        if existing.get("ids"):
+            logger.warning(
+                "collection %s 里还有项目 %s 的向量，但当前 collection %s 是空的；"
+                "换了 embedding provider 之后需要重建索引。",
+                name,
+                project_id,
+                current_collection_name,
+            )
+            return
