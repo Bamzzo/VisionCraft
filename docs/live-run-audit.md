@@ -147,6 +147,58 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
 **未定位**：为何第二段完全无关。候选机制见 `PITFALLS.md`（同名条目）；
 决定性实验 = **单镜重跑 `duration=2`（≈1.20 元）看硬切是否消失**，**须先经竹木批准**。
 
+### 5.2b ✅ 根因已定位（2026-10-02，受控实验，实付 1.44 元）
+
+**结论：`dashscope:wan2.7-i2v` 在 `duration=5` 下会生成两段独立片段再拼接；`duration=2` 不会。**
+即 **问题出在请求时长 × i2v 模式**，不是本流水线、也不是"输入图太好/太差"。
+
+**受控设计（唯一变量 = 时长）**
+
+| 维度 | 值 |
+|---|---|
+| 输入首帧 | `project_ade652fc91/asset_e6705d3f66.jpg`，sha256 `d6723994a6a7ab55`（两侧**逐字节相同**，70017 B） |
+| provider / 模型 / 模式 | 均 `dashscope` / `wan2.7-i2v` / `i2v` |
+| 分辨率 / 帧率 | 均 1280×720 / 30fps |
+| **唯一差异** | duration：**5s（已有）** vs **2s（新跑 `asset_6c87f76bce.mp4`）** |
+| 容器 | `i2v_dashscope_612ff237`（1 镜冒烟容器，避免改动主项目） |
+
+**结果**
+
+| 判据 | 5s | 2s |
+|---|---|---|
+| **I 帧时间戳** | **[0.0, 2.467]**（两段） | **[0.0]**（单段） |
+| 相邻帧 PSNR 最低 | 11.4 dB | 17.8 dB |
+| 内容（13 帧等间隔） | 前半山雾 → **漂移进黑暗森林** | **全程同一场景+同一人物+绿蝶连续移动** |
+| 判定 | **两段拼接** ❌ | **单段完整** ✅ |
+
+并排图：`CTRL_5s_vs_2s_stacked.jpg`（上=5s，下=2s）。原始行图在 `strip_cmp/CTRL_sameImg_*.jpg`。
+
+**交叉验证（零成本，借用历史付费素材）**：仓库里 9 条视频**共用同一张输入图**
+（`p6demo_compare` 三家对照 + `i2v_*` 冒烟 + `kfsmoke` + `refsmoke`，首帧 sha 全为 `fde81a1bb8a10aa6`）：
+
+| provider / 模式 | 时长 | I 帧 | 结论 |
+|---|---|---|---|
+| dashscope **i2v** | 5s | [0.0, 2.467] | 两段 ❌ |
+| dashscope **i2v** | 2s | [0.0] | 单段 ✅ |
+| dashscope **keyframes** | 5s | [0.0] | 单段 ✅ |
+| dashscope **r2v** | 5s | [0.0] | 单段 ✅ |
+| ark i2v | 5s | [0.0] | 单段 ✅ |
+| minimax i2v | 4s | [0.0] | 单段 ✅ |
+
+⇒ **只有 `dashscope + i2v + 长时长` 这一个组合会断。** 推测模型的单次生成单元约 **2.5s**，
+超过即被实现为"两段拼接"，第二段脱离输入画面自由生成（**此为推测，未直接验证**）。
+
+**产品级后果（比技术根因更重要）**：能力表 `/api/providers/capabilities` 里 dashscope
+`supported_durations = [2, 5, 10, 15]`，前端时长下拉即照此渲染 ⇒ **UI 默认给出的 5s 正是会出废片的档位**，
+而 `status: completed` 一路绿灯。**用户不会知道。**
+
+**可用配方（按已验证程度排序）**
+1. dashscope i2v **duration=2**（已验证单段；但整片变短）
+2. dashscope **keyframes + 自选末帧**，5s（已验证单段；需两张图）
+3. 换 provider：ark / minimax 的 4–5s i2v 均单段（ark 已退役，minimax 仍可用）
+
+**未验证**：4s/10s 是否同样出问题；是否 2.5s 为硬边界；2s 结论是否可复现（当前 n=1）。
+
 ### 5.3 六条发现
 
 | ID | 级别 | 摘要 |
