@@ -17,6 +17,15 @@ MAX_VIDEO_CALLS = 1
 # Hard ceiling so a typo cannot authorize unbounded MiniMax submits.
 HARD_MAX_VIDEO_CALLS = 5
 
+# 图像链（2026-10-03 新增闸门）。此前图像链**既无计价也无闸门**：只要密钥在场就会
+# 真的 POST 到 provider，是本项目付费面唯一没有覆盖的缺口。
+# 计价单位是「张」而不是「次」，因为百炼 wan2.7-image 按张计费（0.2 元/张），
+# 而组图模式一次请求可出多张（n≤12）。
+IMAGE_PRICE_CNY_PER_IMAGE = 0.20
+MAX_IMAGES = 12
+# 防手滑的硬顶：即便环境变量写错也不会无限生成。
+HARD_MAX_IMAGES = 24
+
 # Conservative FX so USD list prices are not under-converted into the 5 CNY cap.
 USD_CNY = 7.5
 COST_BUFFER = 1.30
@@ -432,6 +441,102 @@ def assert_live_video_allowed(
     )
     plan["call_index"] = _increment_counter(project_id, "live_video_call_count")
     return plan
+
+
+def live_max_images() -> int:
+    raw = os.getenv("VISIONCRAFT_LIVE_MAX_IMAGES")
+    if raw is None or str(raw).strip() == "":
+        return MAX_IMAGES
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return MAX_IMAGES
+    if value < 1:
+        return MAX_IMAGES
+    return min(value, HARD_MAX_IMAGES)
+
+
+def live_image_authorized() -> bool:
+    """图像链**只认自己的开关**，刻意不跟随 `VISIONCRAFT_ALLOW_LIVE_LLM`。
+
+    理由：`generate_image_asset` 被 mock 工作流**无条件**调用（建一个项目就是
+    N+1 次：首镜首帧 + 每镜尾帧）。若它跟随 LLM 总开关，那么一次 live 会话期间
+    顺手跑个 mock 演示就会产生几十张真图费用——那与「上限即授权」正好相反。
+    所以图像必须单独显式开闸（`VISIONCRAFT_ALLOW_LIVE_IMAGE=1`）。
+    """
+    return os.getenv("VISIONCRAFT_ALLOW_LIVE_IMAGE") == "1"
+
+
+def estimate_image_cny(count: int = 1) -> float:
+    return IMAGE_PRICE_CNY_PER_IMAGE * max(1, int(count or 1))
+
+
+def check_live_image_budget(project_id: str, *, count: int = 1) -> dict:
+    """图像真实调用的唯一闸门：授权开关 → 每项目张数上限 → 预算。
+
+    与视频闸门同构，但**两条链各自独立**：图像不跟随 `VISIONCRAFT_ALLOW_LIVE_LLM`，
+    也不受视频次数上限牵连（见 `live_image_authorized`）。
+    """
+    count = max(1, int(count or 1))
+    if not live_image_authorized():
+        raise BudgetBlockedError(
+            "真实图像调用尚未授权（dashscope）。请确认模型、张数与预算后再开启。"
+        )
+    image_max = live_max_images()
+    used = _load_counter(project_id, "live_image_count")
+    if used + count > image_max:
+        raise BudgetBlockedError(
+            f"图像生成将达到 {image_max} 张的真实调用上限（已用 {used} 张，本次 {count} 张），已阻止（BLOCKED_BEFORE_CALL）。"
+        )
+    snapshot = _assert_live_usage(project_id)
+    cost = estimate_image_cny(count)
+    spent = estimate_image_cny(used)
+    projected = snapshot["estimated_cny"] + spent + cost
+    if projected > snapshot["budget_cny"]:
+        raise BudgetBlockedError(
+            f"图像调用后预计累计 {round(projected, 4)} 元超过 {snapshot['budget_cny']} 元预算上限，已阻止（BLOCKED_BEFORE_CALL）。"
+        )
+    return {
+        "provider": "dashscope",
+        "kind": "image",
+        "count": count,
+        "unit_cny": IMAGE_PRICE_CNY_PER_IMAGE,
+        "estimated_cny": round(cost, 4),
+        "image_used": used,
+        "image_max": image_max,
+        "planned_total_cny": snapshot["estimated_cny"],
+        "budget_cny": snapshot["budget_cny"],
+        "remaining_cny": snapshot["remaining_cny"],
+    }
+
+
+def assert_live_image_allowed(project_id: str, *, count: int = 1) -> dict:
+    plan = check_live_image_budget(project_id, count=count)
+    plan["call_index"] = record_live_image_use(project_id, count=plan["count"])
+    return plan
+
+
+def record_live_image_use(project_id: str, *, count: int = 1) -> int:
+    """出图**成功之后**才吃名额。
+
+    与视频链「开 HTTP 前就记账」不同，这里刻意分成两步（`check_live_image_budget`
+    预检 + 本条计数），因为图像分发是**候选链**：默认档顺序是
+    `siliconflow → ark → dashscope`，而 ark 的账号已不可用，它必然失败后落到
+    dashscope。若在开 HTTP 前就计数，一次真图会被记成**两张**——12 张的额度实际
+    只剩 6 张，而组图模式（`generate_image_series`）正需要一口气出 4~12 张。
+    所以名额绑定「真正落盘的图」，而不是「试过的候选」。
+    """
+    return _increment_counter_by(project_id, "live_image_count", max(1, int(count or 1)))
+
+
+def _increment_counter_by(project_id: str, column: str, amount: int = 1) -> int:
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE projects SET {column} = COALESCE({column}, 0) + ?, updated_at = ? WHERE id = ?",
+            (max(0, int(amount)), utc_now(), project_id),
+        )
+        row = conn.execute(f"SELECT {column} FROM projects WHERE id = ?", (project_id,)).fetchone()
+    return int(row[column] or 0)
 
 
 def _load_counter(project_id: str, column: str) -> int:

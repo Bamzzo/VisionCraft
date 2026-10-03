@@ -1136,7 +1136,9 @@ function assemblyStatusOf(project) {
     shot_count: mapped.length,
     ready_count: mapped.filter((item) => item.ready).length,
     stale: Boolean(project?.assembly_stale),
-    audio_note: "当前有效镜头视频是合成的唯一画面来源。未启用背景音频和字幕时，只拼接视频流。",
+    audio_note:
+      "当前有效镜头视频是合成的唯一画面来源。未启用背景音频、原声和字幕时，只拼接视频流并使用 -an；" +
+      "若镜头本身带原声而「保留原视频音频」未勾选，这些原声不会进入成片。",
     active_job: active || null,
     current_final: finals[0]
       ? { id: finals[0].id, file_path: finals[0].file_path, created_at: finals[0].created_at, description: finals[0].description }
@@ -1248,7 +1250,10 @@ function assemblyStageHtml(project) {
         : "原声开（当前镜头无可用原声，不会伪造）"
     );
   } else {
-    audioBits.push("原声关");
+    // F5：镜头确实带原声却没开保留时，别只说「原声关」——那会让人以为本来就没声音。
+    audioBits.push(
+      sourceCount ? `原声关（${sourceCount} 个镜头有原声，将被丢弃）` : "原声关"
+    );
   }
   audioBits.push(bgOn ? "背景音开" : "背景音关");
   audioBits.push(subOn ? "字幕开" : "字幕关");

@@ -2,6 +2,7 @@ import uuid
 
 from ..database import connect, utc_now
 from ..providers.image_provider import ImageAssetRequest, generate_image_asset
+from .asset_service import link_asset_to_path
 
 
 IMAGE_ASSET_TYPES = {"character", "scene", "first-frame", "last-frame", "keyframe", "reference"}
@@ -175,15 +176,8 @@ def _create_keyframe_version(conn, project_id: str, shot, version, first_path: s
 
 
 def _linked_asset(conn, project_id: str, asset_type: str, name: str, description: str, prompt: str, file_path: str, ref: str) -> str:
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
-    conn.execute(
-        """
-        INSERT INTO assets
-        (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (asset_id, project_id, asset_type, name, description, prompt, file_path, ref, utc_now()),
-    )
+    # F4：同 (project_id, file_path) 只留一行，避免同一首帧出现「带元数据 + 全空壳」两行。
+    link_asset_to_path(conn, project_id, asset_type, name, description, prompt, file_path, ref)
     return file_path
 
 
@@ -198,24 +192,16 @@ def _propagate_next_first_frame(conn, project_id: str, shot_index: int, last_pat
     ).fetchone()
     if not next_shot or not next_shot["current_version_id"]:
         return False
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
-    conn.execute(
-        """
-        INSERT INTO assets
-        (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            asset_id,
-            project_id,
-            "first-frame",
-            f"Shot {shot_index + 1} First Frame continuity update",
-            f"First frame inherited from Shot {shot_index} manual keyframe update.",
-            prompt,
-            last_path,
-            f"continuity:strict:manual-update-from-shot-{shot_index}",
-            now,
-        ),
+    # F4：尾帧文件通常已有资产行，这里不再插重复空壳（同一 file_path 只留一行）。
+    link_asset_to_path(
+        conn,
+        project_id,
+        "first-frame",
+        f"Shot {shot_index + 1} First Frame continuity update",
+        f"First frame inherited from Shot {shot_index} manual keyframe update.",
+        prompt,
+        last_path,
+        f"continuity:strict:manual-update-from-shot-{shot_index}",
     )
     conn.execute(
         "UPDATE shot_versions SET first_frame_path = ?, video_path = NULL WHERE id = ?",

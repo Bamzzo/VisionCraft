@@ -1269,6 +1269,274 @@ def test_occurred_cost_uses_actual_calls_not_full_budget() -> None:
     pass_("本地估算按已发生 3+1+1 计，不把完整 2 镜预算写成实际费用")
 
 
+def test_image_gate_blocks_unauthorized_and_caps_images() -> None:
+    """图像链闸门：未授权即拦、**不跟随 LLM 总开关**、授权后按张计数并在上限处阻止。"""
+    import urllib.request
+
+    import backend.providers.image_provider as image_provider
+    from backend.providers.live_budget import (
+        IMAGE_PRICE_CNY_PER_IMAGE,
+        MAX_IMAGES,
+        assert_live_image_allowed,
+        check_live_image_budget,
+        estimate_image_cny,
+        live_image_authorized,
+        live_max_images,
+    )
+
+    project_id = _project()
+    request = image_provider.ImageAssetRequest(
+        project_id=project_id,
+        asset_type="first-frame",
+        name="图像闸门夹具",
+        description="gate fixture",
+        prompt="a calm night road",
+        accent="#2563eb",
+    )
+    try:
+        assert live_image_authorized() is False
+        assert live_max_images() == MAX_IMAGES == 12
+        assert IMAGE_PRICE_CNY_PER_IMAGE == 0.20
+        assert abs(estimate_image_cny(4) - 0.8) < 1e-9
+
+        try:
+            check_live_image_budget(project_id, count=1)
+            raise AssertionError("unauthorized image budget check must be blocked")
+        except BudgetBlockedError as exc:
+            assert exc.code == "BLOCKED_BEFORE_CALL"
+
+        # 图像链刻意**不**跟随 VISIONCRAFT_ALLOW_LIVE_LLM：generate_image_asset 被 mock
+        # 工作流无条件调用（首镜首帧 + 每镜尾帧），跟随总开关就等于一次 live 会话顺手烧钱。
+        with _env(VISIONCRAFT_ALLOW_LIVE_LLM="1"):
+            assert live_image_authorized() is False
+            try:
+                check_live_image_budget(project_id, count=1)
+                raise AssertionError("image gate must not follow the LLM master switch")
+            except BudgetBlockedError as exc:
+                assert exc.code == "BLOCKED_BEFORE_CALL"
+
+        # 未授权时落本地 SVG 占位图，且**一次网络都不碰**
+        opened: list[str] = []
+        original_urlopen = urllib.request.urlopen
+
+        def counting_urlopen(target, *args, **kwargs):
+            opened.append(getattr(target, "full_url", str(target)))
+            raise AssertionError("unauthorized image path must not open a socket")
+
+        urllib.request.urlopen = counting_urlopen  # type: ignore[assignment]
+        try:
+            asset_id = image_provider.generate_image_asset(request)
+        finally:
+            urllib.request.urlopen = original_urlopen
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        assert row is not None
+        assert str(row["file_path"]).endswith(".svg")
+        assert opened == []
+
+        # 组图在未授权时必须在上抛处被拦，而不是静默降级成占位图
+        try:
+            image_provider.generate_image_series(request, count=4)
+            raise AssertionError("unauthorized image series must be blocked")
+        except BudgetBlockedError as exc:
+            assert exc.code == "BLOCKED_BEFORE_CALL"
+
+        # 授权后：按「张」计数，累计到上限就拦
+        with _env(VISIONCRAFT_ALLOW_LIVE_IMAGE="1", VISIONCRAFT_LIVE_BUDGET_CNY="12"):
+            plan = assert_live_image_allowed(project_id, count=4)
+            assert plan["count"] == 4
+            assert plan["estimated_cny"] == 0.8
+            assert plan["call_index"] == 4
+            with connect() as conn:
+                used = conn.execute(
+                    "SELECT live_image_count FROM projects WHERE id = ?", (project_id,)
+                ).fetchone()["live_image_count"]
+            assert used == 4
+            try:
+                check_live_image_budget(project_id, count=9)
+                raise AssertionError("image cap must block the 13th image")
+            except BudgetBlockedError as exc:
+                assert exc.code == "BLOCKED_BEFORE_CALL"
+                assert "12 张" in str(exc)
+        assert live_image_authorized() is False
+        pass_("图像闸门未授权即拦且不跟随 LLM 总开关，授权后按张计数并在上限处阻止")
+    finally:
+        _cleanup()
+
+
+def test_dashscope_image_call_parses_sequential_payload() -> None:
+    """百炼图像响应按 choice/content **全量**解析，组图参数与 宽*高 尺寸正确下发。"""
+    import urllib.request
+
+    import backend.providers.image_provider as image_provider
+
+    captured: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, payload: bytes, content_type: str = "application/json"):
+            self._payload = payload
+            self.headers = {"Content-Type": content_type}
+
+        def read(self) -> bytes:
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def fake_urlopen(target, *args, **kwargs):
+        url = getattr(target, "full_url", str(target))
+        if "/multimodal-generation/generation" in url:
+            captured.append(json.loads((getattr(target, "data", b"{}") or b"{}").decode("utf-8")))
+            body = {
+                "output": {
+                    "choices": [
+                        {"message": {"content": [{"image": "https://img.example/one.png"}]}},
+                        {"message": {"content": [{"image": "https://img.example/two.png"}]}},
+                    ]
+                }
+            }
+            return FakeResponse(json.dumps(body, ensure_ascii=False).encode("utf-8"))
+        return FakeResponse(b"\x89PNG\r\n\x1a\n" + b"0" * 16, "image/png")
+
+    request = image_provider.ImageAssetRequest(
+        project_id="p_img_parse",
+        asset_type="first-frame",
+        name="解析夹具",
+        description="parse fixture",
+        prompt="a calm night road",
+        accent="#2563eb",
+    )
+    original_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+    try:
+        with _env(
+            DASHSCOPE_API_KEY="mock-dashscope-key",
+            DASHSCOPE_IMAGE_MODEL="wan2.7-image",
+            DASHSCOPE_IMAGE_SIZE="1280*720",
+        ):
+            results = image_provider._dashscope_image_call(request, count=2, sequential=True)
+    finally:
+        urllib.request.urlopen = original_urlopen
+
+    assert len(results) == 2
+    assert all(isinstance(payload, bytes) and suffix == ".png" for payload, suffix in results)
+    assert len(captured) == 1
+    params = captured[0]["parameters"]
+    assert params["n"] == 2
+    assert params["enable_sequential"] is True
+    assert params["size"] == "1280*720"
+    assert captured[0]["model"] == "wan2.7-image"
+    blocks = captured[0]["input"]["messages"][0]["content"]
+    assert any("text" in block for block in blocks)
+    pass_("百炼图像响应按 choice/content 全量解析，组图参数与像素尺寸正确下发")
+
+
+def _mini_jpeg(
+    width: int,
+    height: int,
+    *,
+    app1_thumb: tuple[int, int] | None = None,
+    dqt_deficit: int = 0,
+) -> bytes:
+    """拼一个最小 JPEG。
+
+    ``app1_thumb`` 在 APP1(Exif) 段里塞一张缩略图的 SOF；``dqt_deficit`` 让 DQT 的
+    **声明长度比实际数据长**，从而把真 SOF 藏在声明段尾之前——那是本项目 158B 夹具
+    的形态，也是「按段长跳段」会踩的坑。
+    """
+
+    def sof(w: int, h: int) -> bytes:
+        return (
+            b"\xff\xc0" + (11).to_bytes(2, "big") + b"\x08"
+            + h.to_bytes(2, "big") + w.to_bytes(2, "big") + b"\x01\x01\x11\x00"
+        )
+
+    out = bytearray(b"\xff\xd8")
+    if app1_thumb is not None:
+        payload = b"Exif\x00\x00" + b"\x00" * 6 + sof(app1_thumb[0], app1_thumb[1])
+        out += b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    body = b"\x00" + b"\x08" * 64
+    out += b"\xff\xdb" + (len(body) + 2 + dqt_deficit).to_bytes(2, "big") + body
+    out += sof(width, height)
+    out += b"\xff\xda" + (8).to_bytes(2, "big") + b"\x01\x01\x00\x00\x3f\x00" + b"\x00\x00"
+    return bytes(out)
+
+
+def test_image_chain_counts_only_the_provider_that_delivered() -> None:
+    """图像候选链里失败的候选**不许白吃名额**：一次真图只能记一张。
+
+    默认档顺序是 siliconflow(无 key) → ark(账号不可用) → dashscope。若在开 HTTP 前
+    逐家计数，一次真图会被记成两张，12 张的额度实际只剩 6 张——而组图模式正需要
+    一口气出 4~12 张。这条钉住「名额绑定真正落盘的图」。
+    """
+    import backend.providers.image_provider as image_provider
+
+    project_id = _project()
+    request = image_provider.ImageAssetRequest(
+        project_id=project_id,
+        asset_type="first-frame",
+        name="链计数夹具",
+        description="chain counting fixture",
+        prompt="a calm night road",
+        accent="#2563eb",
+    )
+    calls: list[str] = []
+    original_ark = image_provider._generate_ark_image
+    original_dashscope = image_provider._generate_dashscope_image
+
+    def failing_ark(_request):
+        calls.append("ark")
+        raise RuntimeError("ark account retired")
+
+    def fake_dashscope(_request):
+        calls.append("dashscope")
+        return "asset_fake_delivered"
+
+    try:
+        image_provider._generate_ark_image = failing_ark  # type: ignore[assignment]
+        image_provider._generate_dashscope_image = fake_dashscope  # type: ignore[assignment]
+        with _env(
+            VISIONCRAFT_IMAGE_PROVIDER="siliconflow",
+            VISIONCRAFT_ALLOW_LIVE_IMAGE="1",
+            VISIONCRAFT_LIVE_BUDGET_CNY="12",
+            VOLC_IMAGE_API_KEY="present-so-ark-is-tried",
+        ):
+            asset_id = image_provider.generate_image_asset(request)
+        assert asset_id == "asset_fake_delivered", asset_id
+        assert calls == ["ark", "dashscope"], calls
+        with connect() as conn:
+            used = conn.execute(
+                "SELECT live_image_count FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()["live_image_count"]
+        assert used == 1, f"失败的候选不该吃名额：实际记了 {used} 张"
+        pass_("图像候选链只在真正出图的 provider 上计一张")
+    finally:
+        image_provider._generate_ark_image = original_ark  # type: ignore[assignment]
+        image_provider._generate_dashscope_image = original_dashscope  # type: ignore[assignment]
+        _cleanup()
+
+
+def test_jpeg_dimensions_order_and_exif_thumbnail_skip() -> None:
+    from backend.services.asset_service import _image_dimensions
+
+    # ① 宽高顺序必须用**非正方形**才能证伪（1×1 夹具照不出交换 bug）
+    assert _image_dimensions(_mini_jpeg(1280, 720), ".jpg") == (1280, 720)
+    assert _image_dimensions(_mini_jpeg(720, 1280), ".jpg") == (720, 1280)
+
+    # ② EXIF(APP1) 内嵌缩略图的 SOF 排在主图之前：必须返回主图尺寸，不是缩略图 160×90
+    assert _image_dimensions(_mini_jpeg(1280, 720, app1_thumb=(160, 90)), ".jpg") == (1280, 720)
+
+    # ③ DQT 声明长度比实际长（真 SOF 落在声明段尾之前）：跳段会漏，逐字节才走得到
+    assert _image_dimensions(_mini_jpeg(64, 48, dqt_deficit=6), ".jpg") == (64, 48)
+
+    # ④ 既有 158B 最小夹具（畸形短 DQT）仍须解析为 1×1——它是 register-local 的既有契约
+    assert _image_dimensions(JPEG_BYTES, ".jpg") == (1, 1)
+    pass_("JPEG 宽高顺序正确、遇 EXIF 缩略图取主图、畸形短段仍能解析")
+
+
 def main() -> None:
     _guard_network()
     init_environment()
@@ -1278,6 +1546,8 @@ def main() -> None:
     os.environ.pop("VISIONCRAFT_ALLOW_LIVE_VIDEO", None)
     os.environ.pop("VISIONCRAFT_LIVE_BUDGET_CNY", None)
     os.environ.pop("VISIONCRAFT_LIVE_MAX_VIDEO_CALLS", None)
+    os.environ.pop("VISIONCRAFT_ALLOW_LIVE_IMAGE", None)
+    os.environ.pop("VISIONCRAFT_LIVE_MAX_IMAGES", None)
     try:
         test_budget_estimate_uses_buffer()
         test_text_requests_are_capped()
@@ -1302,6 +1572,10 @@ def main() -> None:
         test_js_persist_wait_helpers()
         test_maybe_cleanup_retains_db_inflight_despite_stale_lineage()
         test_occurred_cost_uses_actual_calls_not_full_budget()
+        test_image_gate_blocks_unauthorized_and_caps_images()
+        test_dashscope_image_call_parses_sequential_payload()
+        test_image_chain_counts_only_the_provider_that_delivered()
+        test_jpeg_dimensions_order_and_exif_thumbnail_skip()
         print("PASS: live budget and local keyframe safeguards (no live network)")
     finally:
         _cleanup()

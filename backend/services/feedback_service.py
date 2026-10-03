@@ -2,7 +2,7 @@ import uuid
 
 from ..database import connect, utc_now
 from ..providers.image_provider import ImageAssetRequest, generate_image_asset
-from ..services.asset_service import create_linked_asset
+from ..services.asset_service import create_linked_asset, link_asset_to_path
 
 
 GLOBAL_HINTS = ("从现在", "现在开始", "以后", "后续", "所有", "全局", "一直", "都", "统一", "永久")
@@ -192,25 +192,17 @@ def _propagate_next_first_frame(conn, project_id: str, shot_index: int, last_pat
     if not next_shot or not next_shot["current_version_id"]:
         return False
 
-    asset_id = f"asset_{uuid.uuid4().hex[:10]}"
     first_path = last_path
-    conn.execute(
-        """
-        INSERT INTO assets
-        (id, project_id, type, name, description, prompt, file_path, embedding_ref, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            asset_id,
-            project_id,
-            "first-frame",
-            f"Shot {shot_index + 1} First Frame continuity refresh",
-            f"First frame refreshed from Shot {shot_index} feedback revision.",
-            prompt,
-            first_path,
-            f"continuity:strict:feedback-refresh-from-shot-{shot_index}",
-            now,
-        ),
+    # F4：同一 (project_id, file_path) 只留一行，避免重复空壳资产。
+    link_asset_to_path(
+        conn,
+        project_id,
+        "first-frame",
+        f"Shot {shot_index + 1} First Frame continuity refresh",
+        f"First frame refreshed from Shot {shot_index} feedback revision.",
+        prompt,
+        first_path,
+        f"continuity:strict:feedback-refresh-from-shot-{shot_index}",
     )
     conn.execute(
         "UPDATE shot_versions SET first_frame_path = ?, video_path = ? WHERE id = ?",

@@ -596,7 +596,8 @@ def main() -> int:
     env = {**os.environ}
     # Baseline: fail closed. Tests that exercise the guard rails set these themselves.
     for key in ("VISIONCRAFT_ALLOW_LIVE_LLM", "VISIONCRAFT_ALLOW_LIVE_VISION",
-                "VISIONCRAFT_ALLOW_LIVE_VIDEO", "VISIONCRAFT_ALLOW_LIVE"):
+                "VISIONCRAFT_ALLOW_LIVE_VIDEO", "VISIONCRAFT_ALLOW_LIVE_IMAGE",
+                "VISIONCRAFT_ALLOW_LIVE"):
         env[key] = "0"
     # Embedding 也必须 fail closed。`EMBEDDING_PROVIDER=dashscope` 会让**每一次索引**
     # 都走网络并计费；`.env` 一旦翻成远端，这一轮就不再是"零费用"回归了 —— 而它偏偏

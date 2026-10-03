@@ -1004,6 +1004,15 @@ def _assembly_note(settings: dict, *, source_audio_shot_count: int = 0, shot_cou
             parts.append("原声音量 1.0，背景音按配置音量混合。")
         if sub:
             parts.append("字幕会烧录到画面，不接入字幕大模型。")
+    # F5：默认不保留原声本身是刻意行为（与 P6-C 一致），但「镜头带真实原声却被静默丢掉」
+    # 必须让用户看得见。此前只有开着 keep_source_audio 时才提到原声，关着时提示只讲
+    # "-an"，用户无从知道自己正在丢真实音轨。这里把后果显式化，不改默认值。
+    if not keep and source_audio_shot_count:
+        total = shot_count or source_audio_shot_count
+        parts.append(
+            f"⚠ 检测到 {source_audio_shot_count}/{total} 个镜头带原声，但当前未开启「保留原声」，"
+            "这些原声不会进入成片；如需保留请勾选「保留原视频音频」后重新合成。"
+        )
     parts.append("不接入真实 TTS 或音乐生成。")
     return "".join(parts)
 

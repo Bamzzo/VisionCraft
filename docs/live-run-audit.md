@@ -309,10 +309,78 @@ output/playwright/live-multishot/browser_screenshot_hashes.json
 | F2 | 用法契约（真实拦停 1 次） | 脚本调 `/shots/{id}/video` **必须显式带 `first_frame_path`**，否则 400 `MISSING_FIRST_FRAME`（挂帧只写 `shot_versions` 不写 `shot_drafts`，校验读 draft；前端 `app.js:872` 自己补了）。**本轮未扣费** |
 | F3 | 产品缺陷（元数据） | 真实 1280×720 的首帧，`assets.width/height` 写成 **720×1280**（写反）；视觉复核记录随之写错 |
 | F4 | 数据卫生 | 每个首帧 **2 条资产行**（1 条带元数据 + 1 条 `role=None` 全空壳）指向同一 `file_path` |
-| F5 | 交付口径 | 成片**默认无音轨**（`DEFAULT_ASSEMBLY_SETTINGS.audio_enabled=False`），但 4 段素材都带真实 AAC ⇒ 属默认行为，非丢帧 |
+| F5 | 交付口径 | 成片**默认无音轨**（`DEFAULT_ASSEMBLY_SETTINGS.keep_source_audio=False`），但 4 段素材都带真实 AAC ⇒ 属默认行为，非缺陷；真问题是**关着时提示不说这件事** |
 | F6 | 失败副作用 | 首次 400 之前已把 `shot_drafts.video_mode` 由 `t2v` 改成 `i2v` ⇒ 失败会留下被污染的草稿（非事务性） |
 
 ### 5.4 清理
 
 本项目的清理条件按 §4 口径改口径后执行：`4 shots / 4 unique remote_task_id / 4 video_tasks /
 4 video 资产 / 1 final-video / 0 duplicate`。**须先经竹木看过产物再清。**
+
+### 5.5 六条发现的处置（2026-10-03，只改代码）
+
+| ID | 处置 | 证据 |
+|---|---|---|
+| F1 | 不改（认知项） | — |
+| F2 | 不改（契约项，前端已自补） | `frontend/js/app.js:872` |
+| F3 | ✅ **已修** | `asset_service._image_dimensions` 的 JPEG 分支重写：SOF 里**高在前、宽在后**（`content[i+5:i+7]`=高、`[i+7:i+9]`=宽）。跳段策略收敛为「**只跳 APP1(0xE1)/APP2(0xE2)/APP13(0xED)**，其余标记逐字节前进」——纯按段长跳会漏掉 158B 最小夹具里被**畸形短 DQT** 包住的真 SOF。证伪断言：`test_live_safeguards.py::test_jpeg_dimensions_order_and_exif_thumbnail_skip`（1280×720 与 720×1280 必须不同；EXIF 缩略图 160×90 不得顶掉主图；`dqt_deficit=6` 的畸形段仍须解析；既有 158B 夹具仍须 1×1）。全库 **32,526 张真实图扫描 0 例多 SOF** ⇒ EXIF 保护是防御性的，不是已知坑 |
+| F4 | ✅ **已修** | 新增 `asset_service.link_asset_to_path()`：按 `(project_id, file_path)` 去重，命中返回既有 id。`keyframe_service._linked_asset` / `_propagate_next_first_frame` / `feedback_service._propagate_next_first_frame` 三处改调它。复现脚本 `tmp/_repro_f4.py`：修前「register + attach 到 2 镜」⇒ **4 行**；修后 ⇒ **1 行**（`distinct file_path=1, duplicated={}`） |
+| F5 | ✅ **已修（改提示，不改默认值）** | 默认无音轨是**刻意行为**（与 P6-C 一致），翻默认属产品决策，不擅自改。真正的缺陷是「镜头带真原声却被静默丢掉」不可见。改法：① `video_service._assembly_note()` 在 `keep=False` 且 `source_audio_shot_count>0` 时追加「⚠ 检测到 N/M 个镜头带原声…不会进入成片」；② 前端摘要原只说「原声关」→ 改为「原声关（N 个镜头有原声，将被丢弃）」（`render.js` 的 `audioBits`）。断言：`test_assembly.py::test_assembly_note_surfaces_dropped_source_audio`（关着必须点明会丢；没原声时不许报；开着要说「将保留 N/M」） |
+| F6 | 不改（本轮范围外） | 非事务性副作用，需单独设计 |
+
+**顺带查出并修掉的洞（同属 10-03 代码改动）**：
+
+1. **图像链此前完全无闸门**（`live_budget` 里没有 image 项），而 `.env` 的 `ARK_API_KEY` 经
+   `init_environment()` setdefault 成 `VOLC_API_KEY` ⇒ `ark` 分支**默认就在真发包**。
+   现统一走 `live_image_authorized()`（独立开关 `VISIONCRAFT_ALLOW_LIVE_IMAGE`，**刻意不跟随**
+   `VISIONCRAFT_ALLOW_LIVE_LLM`——因为 `generate_image_asset` 被 `_insert_shots` **无条件**调用）
+   + `check_live_image_budget()`（按**张**计价，0.20 元/张，默认 12 张、硬顶 24、DB 列
+   `projects.live_image_count`）。
+2. **候选链白吃名额**：计数原本在开 HTTP 前逐家执行，而默认链
+   `siliconflow(无 key) → ark(账号不可用) → dashscope` 里 ark 必然失败 ⇒ 一次真图记**两张**，
+   12 张额度实际只剩 6 张。现改为**出图成功后才计**（`record_live_image_use`）。
+   断言：`test_live_safeguards.py::test_image_chain_counts_only_the_provider_that_delivered`。
+3. **新增 dashscope 图像分支**（`wan2.7-image`；组图 `enable_sequential`，n≤12；端点与视频链同源
+   `DASHSCOPE_API_HOST` 的 `/api/v1/services/aigc/multimodal-generation/generation`）——此前候选集
+   只有无 key 的 `siliconflow` 与账号不可用的 `ark`，**产品实际出不了真图**，`.env` 的
+   `DASHSCOPE_IMAGE_MODEL` 曾是死配置；现在它是活配置，且值已正确（`wan2.7-image`）。
+
+### 6. #59「长时长分段」免费替代：已付素材 I 帧实测（2026-10-03）
+
+**背景**：原计划付 ¥7.2（0.72 口径）跑一次 `duration=10` 的 i2v，用来判定「长时长到底怎么断」。
+改为**零费用**：直接量 10-02 已付的 4 个 5s 片段（`project_ade652fc91`，`dashscope/wan2.7-i2v`），
+**样本 4 条 > 原计划 1 条**，且顺带得到内容层的定量证据。
+
+**方法**：`ffprobe -show_entries frame=pict_type,best_effort_timestamp_time` 取 I 帧时间戳；
+`ffmpeg format=gray,signalstats,metadata=print` 取平均亮度 YAVG（0–255）。工具 `output/_iframes.py`。
+
+**分段实测（4/4 完全一致）**
+
+| 镜头 | 分辨率 | 时长 | nb_frames | I 帧时间戳 | 段数 | 首段时长 |
+|---|---|---|---|---|---|---|
+| 夜路独行 | 1280×720 | 5.000 | 150 | `[0.0, 2.467]` | 2 | 2.467s |
+| 闻声驻足 | 1280×720 | 5.000 | 150 | `[0.0, 2.467]` | 2 | 2.467s |
+| 暗定决心 | 1280×720 | 5.000 | 150 | `[0.0, 2.467]` | 2 | 2.467s |
+| 山门留语 | 1280×720 | 5.000 | 150 | `[0.0, 2.467]` | 2 | 2.467s |
+
+⇒ 边界**恒定落在 t=2.467s**（≈5/2 − 1 帧 @30fps）；结合「`duration=2` 单段完整（已验证）」，
+最一致的解释是**生成器存在 ~2.5s 的原生单元**：2s → 1 单元，5s → 2 单元，**10s → 预计 4 单元**
+（**预测，未实测**）。**结论**：付费 10s 实验只能证实「段数=4」，不改变交付判断 ⇒ **建议跳过（省 ~¥7.2）**；
+若确需精确段数再补做一次。
+
+**内容层定量证据（同批素材，顺带得到）**
+
+| 首帧 | 实际像素 | YAVG | 判定 |
+|---|---|---|---|
+| kf1-mountain-figure | 1280×720 | 168.5 | 明亮（日间） |
+| kf2-cliff-pair | 1280×720 | 152.6 | 明亮（日间） |
+| kf3-back-into-ink | 1280×720 | 51.6 | 暗（夜间） |
+| kf4-two-closeup | 1280×720 | 160.1 | 明亮（日间） |
+| ↑ 各片**开帧**亮度 | — | 166.9 / 148.9 / 49.4 / 157.2 | 逐条跟随各自输入 |
+
+⇒ ① **3/4 首帧是明亮日间**，与文案「夜路、月光」矛盾（仅 kf3 是夜）；② 各片开帧亮度**逐条跟随其
+输入首帧** ⇒ **生成器是忠实的，错的是输入**。这就是 §5.2 ⑦ 的定量铁证：**修输入（#60），不是调 provider**。
+
+**旁证**：这批首帧 DB 里 `width/height` 写的是 **720×1280**（写反），实际像素 **1280×720** ——
+正是 F3 修掉的缺陷，此处为**修前历史数据**，与 F3 结论自洽。
+

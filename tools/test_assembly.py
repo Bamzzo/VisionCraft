@@ -135,11 +135,35 @@ def test_rejects_missing_and_placeholder_videos() -> None:
         cleanup(project_id)
 
 
+def test_assembly_note_surfaces_dropped_source_audio() -> None:
+    """F5：镜头带真实原声、但未开启「保留原声」时，提示必须点明原声会被丢弃。
+
+    此前 keep_source_audio=False 的提示只说「只拼接视频流并使用 -an」，用户看不出
+    自己正在丢掉真实音轨（10-02 的 4 段素材都带真实 AAC 却合成出无声成片）。
+    这条把「后果必须可见」钉成契约——**不改默认值**，只保证不再静默。
+    """
+    base = dict(video_service.DEFAULT_ASSEMBLY_SETTINGS)
+    dropped = video_service._assembly_note(base, source_audio_shot_count=4, shot_count=4)
+    assert "4/4 个镜头带原声" in dropped, dropped
+    assert "不会进入成片" in dropped, dropped
+
+    silent = video_service._assembly_note(base, source_audio_shot_count=0, shot_count=4)
+    assert "个镜头带原声" not in silent, silent
+
+    kept = video_service._assembly_note(
+        dict(base, keep_source_audio=True), source_audio_shot_count=4, shot_count=4
+    )
+    assert "将保留 4/4 个镜头的原声" in kept, kept
+    assert "不会进入成片" not in kept, kept
+    print("PASS: assembly note makes dropped source audio explicit")
+
+
 def main() -> None:
     init_environment()
     init_db()
     test_success_persists_asset_and_clears_stale()
     test_rejects_missing_and_placeholder_videos()
+    test_assembly_note_surfaces_dropped_source_audio()
     print("PASS: P6-A assembly contract")
 
 
